@@ -267,6 +267,81 @@ def _normalize_cached_result(command: str, entry: dict[str, Any]) -> dict[str, A
     }
 
 
+def _safe_callback_call(callback: VerifyProgressCallback, method_name: str, *args: Any, **kwargs: Any) -> None:
+    method = getattr(callback, method_name, None)
+    if method is None:
+        return
+    try:
+        method(*args, **kwargs)
+    except TypeError:
+        # Backward compatibility for callbacks that do not accept newer keyword args.
+        method(*args)
+
+
+def _tail_output_text(value: Any, limit: int = 600) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
+
+
+def _emit_command_complete_event(
+    callback: VerifyProgressCallback,
+    job_id: str,
+    command: str,
+    result: dict[str, Any],
+    *,
+    completed: int,
+    total: int,
+) -> None:
+    _safe_callback_call(
+        callback,
+        "on_command_complete",
+        job_id,
+        command,
+        int(result.get("exit_code", 1)),
+        float(result.get("duration_seconds", 0.0)),
+        completed=completed,
+        total=total,
+        stdout_tail=_tail_output_text(result.get("stdout", "")),
+        stderr_tail=_tail_output_text(result.get("stderr", "")),
+    )
+
+
+def _start_command_tick_thread(
+    callback: VerifyProgressCallback,
+    *,
+    job_id: str,
+    command: str,
+    timeout_seconds: int,
+) -> tuple[threading.Event, float, threading.Thread]:
+    stop_event = threading.Event()
+    started = time.perf_counter()
+    timeout_sec = max(1.0, float(timeout_seconds))
+
+    def _ticker() -> None:
+        while not stop_event.wait(1.0):
+            elapsed = max(0.0, time.perf_counter() - started)
+            progress_pct = min(99.0, (elapsed / timeout_sec) * 100.0)
+            eta_sec = max(0.0, timeout_sec - elapsed)
+            _safe_callback_call(
+                callback,
+                "on_heartbeat",
+                job_id,
+                elapsed,
+                eta_sec,
+                "running",
+                current_command=command,
+                command_elapsed_sec=elapsed,
+                command_timeout_sec=timeout_sec,
+                command_progress_pct=progress_pct,
+            )
+
+    thread = threading.Thread(target=_ticker, daemon=True)
+    thread.start()
+    return stop_event, started, thread
+
+
 def _store_success_result(
     entries: dict[str, dict[str, Any]],
     key: str,
@@ -685,7 +760,14 @@ def run_verify_with_callback(
                     )
                     _log_command_result(log_path, jsonl_path, cached_result)
                     callback.on_cache_hit("verify_" + nonce, command)
-                    callback.on_command_complete("verify_" + nonce, command, cached_result.get("exit_code", 0), cached_result.get("duration_seconds", 0.0))
+                    _emit_command_complete_event(
+                        callback,
+                        "verify_" + nonce,
+                        command,
+                        cached_result,
+                        completed=index + 1,
+                        total=len(runnable_commands),
+                    )
                     callback.on_progress("verify_" + nonce, index + 1, len(runnable_commands), "")
                     if _is_failure(cached_result):
                         fail_fast_skipped_commands = runnable_commands[index + 1 :]
@@ -693,8 +775,38 @@ def run_verify_with_callback(
                     continue
                 cache_misses += 1
 
-            live_result = _normalize_live_result(run_command(command, project_dir, per_command_timeout))
-            callback.on_command_complete("verify_" + nonce, command, live_result.get("exit_code", 1), live_result.get("duration_seconds", 0.0))
+            stop_tick, cmd_started, tick_thread = _start_command_tick_thread(
+                callback,
+                job_id="verify_" + nonce,
+                command=command,
+                timeout_seconds=per_command_timeout,
+            )
+            try:
+                live_result = _normalize_live_result(run_command(command, project_dir, per_command_timeout))
+            finally:
+                stop_tick.set()
+                tick_thread.join(timeout=0.1)
+            cmd_elapsed = max(0.0, time.perf_counter() - cmd_started)
+            _safe_callback_call(
+                callback,
+                "on_heartbeat",
+                "verify_" + nonce,
+                cmd_elapsed,
+                max(0.0, float(per_command_timeout) - cmd_elapsed),
+                "running",
+                current_command=command,
+                command_elapsed_sec=cmd_elapsed,
+                command_timeout_sec=float(per_command_timeout),
+                command_progress_pct=100.0,
+            )
+            _emit_command_complete_event(
+                callback,
+                "verify_" + nonce,
+                command,
+                live_result,
+                completed=index + 1,
+                total=len(runnable_commands),
+            )
             results.append(live_result)
             _log_command_result(log_path, jsonl_path, live_result)
             if cache_enabled and cache_key:
@@ -738,19 +850,54 @@ def run_verify_with_callback(
 
             try:
                 with ThreadPoolExecutor(max_workers=min(verify_workers, len(runnable_with_keys))) as pool:
-                    future_map = {
-                        pool.submit(_run_with_timeout_detection, command, project_dir, per_command_timeout, log_path, jsonl_path): (command, cache_key)
-                        for command, cache_key in runnable_with_keys
-                    }
-
+                    future_map: dict[Any, tuple[str, str | None, float, int, threading.Event, threading.Thread]] = {}
+                    total_commands = len(runnable_with_keys)
                     completed_count = 0
+                    for index, (command, cache_key) in enumerate(runnable_with_keys):
+                        callback.on_command_start("verify_" + nonce, command, index, total_commands)
+                        callback.on_progress("verify_" + nonce, completed_count, total_commands, command)
+                        stop_tick, cmd_started, tick_thread = _start_command_tick_thread(
+                            callback,
+                            job_id="verify_" + nonce,
+                            command=command,
+                            timeout_seconds=per_command_timeout,
+                        )
+                        future = pool.submit(
+                            _run_with_timeout_detection,
+                            command,
+                            project_dir,
+                            per_command_timeout,
+                            log_path,
+                            jsonl_path,
+                        )
+                        future_map[future] = (command, cache_key, cmd_started, index, stop_tick, tick_thread)
+
                     for future in as_completed(future_map, timeout=max_overall_timeout):
-                        command, cache_key = future_map[future]
-                        callback.on_command_start("verify_" + nonce, command, completed_count, len(runnable_with_keys))
+                        command, cache_key, started_at, _index, stop_tick, tick_thread = future_map[future]
 
                         try:
                             live_result = _normalize_live_result(future.result(timeout=per_command_timeout))
-                            callback.on_command_complete("verify_" + nonce, command, live_result.get("exit_code", 1), live_result.get("duration_seconds", 0.0))
+                            cmd_elapsed = max(0.0, time.perf_counter() - started_at)
+                            _safe_callback_call(
+                                callback,
+                                "on_heartbeat",
+                                "verify_" + nonce,
+                                cmd_elapsed,
+                                max(0.0, float(per_command_timeout) - cmd_elapsed),
+                                "running",
+                                current_command=command,
+                                command_elapsed_sec=cmd_elapsed,
+                                command_timeout_sec=float(per_command_timeout),
+                                command_progress_pct=100.0,
+                            )
+                            _emit_command_complete_event(
+                                callback,
+                                "verify_" + nonce,
+                                command,
+                                live_result,
+                                completed=completed_count + 1,
+                                total=total_commands,
+                            )
                             results.append(live_result)
                             _log_command_result(log_path, jsonl_path, live_result)
                             if cache_enabled and cache_key:
@@ -767,6 +914,26 @@ def run_verify_with_callback(
                                 "timed_out": True,
                             }
                             callback.on_error("verify_" + nonce, command, "timeout")
+                            _safe_callback_call(
+                                callback,
+                                "on_heartbeat",
+                                "verify_" + nonce,
+                                elapsed,
+                                0.0,
+                                "running",
+                                current_command=command,
+                                command_elapsed_sec=elapsed,
+                                command_timeout_sec=float(per_command_timeout),
+                                command_progress_pct=100.0,
+                            )
+                            _emit_command_complete_event(
+                                callback,
+                                "verify_" + nonce,
+                                command,
+                                timeout_result,
+                                completed=completed_count + 1,
+                                total=total_commands,
+                            )
                             results.append(timeout_result)
                             _log_command_result(log_path, jsonl_path, timeout_result)
                             _append_line(log_path, f"FUTURE_TIMEOUT {command}")
@@ -781,9 +948,32 @@ def run_verify_with_callback(
                                 "timed_out": False,
                             }
                             callback.on_error("verify_" + nonce, command, str(exc))
+                            _safe_callback_call(
+                                callback,
+                                "on_heartbeat",
+                                "verify_" + nonce,
+                                elapsed,
+                                None,
+                                "running",
+                                current_command=command,
+                                command_elapsed_sec=elapsed,
+                                command_timeout_sec=float(per_command_timeout),
+                                command_progress_pct=100.0,
+                            )
+                            _emit_command_complete_event(
+                                callback,
+                                "verify_" + nonce,
+                                command,
+                                error_result,
+                                completed=completed_count + 1,
+                                total=total_commands,
+                            )
                             results.append(error_result)
                             _log_command_result(log_path, jsonl_path, error_result)
                             _append_line(log_path, f"FUTURE_ERROR {command} ERROR={exc!r}")
+                        finally:
+                            stop_tick.set()
+                            tick_thread.join(timeout=0.1)
 
                         completed_count += 1
                         callback.on_progress("verify_" + nonce, completed_count, len(runnable_with_keys), "")
@@ -794,9 +984,23 @@ def run_verify_with_callback(
                             avg_time = elapsed / completed_count
                             remaining = len(runnable_with_keys) - completed_count
                             eta = avg_time * remaining
-                        callback.on_heartbeat("verify_" + nonce, elapsed, eta, "running")
+                        _safe_callback_call(
+                            callback,
+                            "on_heartbeat",
+                            "verify_" + nonce,
+                            elapsed,
+                            eta,
+                            "running",
+                            current_command="",
+                            command_elapsed_sec=None,
+                            command_timeout_sec=None,
+                            command_progress_pct=None,
+                        )
 
             except TimeoutError:
+                for _future, (_command, _cache_key, _started_at, _index, stop_tick, tick_thread) in future_map.items():
+                    stop_tick.set()
+                    tick_thread.join(timeout=0.1)
                 elapsed = time.perf_counter() - overall_start
                 _append_line(log_path, f"THREADPOOL_TIMEOUT overall_timeout={max_overall_timeout}s elapsed={elapsed:.3f}s")
                 for command, cache_key in runnable_with_keys:
@@ -812,6 +1016,9 @@ def run_verify_with_callback(
                         results.append(timeout_result)
                         _log_command_result(log_path, jsonl_path, timeout_result)
             except Exception as exc:
+                for _future, (_command, _cache_key, _started_at, _index, stop_tick, tick_thread) in future_map.items():
+                    stop_tick.set()
+                    tick_thread.join(timeout=0.1)
                 elapsed = time.perf_counter() - overall_start
                 _append_line(log_path, f"THREADPOOL_ERROR ERROR={exc!r}")
                 _append_line(log_path, "FALLBACK_SEQUENTIAL_EXECUTION")
@@ -820,8 +1027,40 @@ def run_verify_with_callback(
                 for i, (command, cache_key) in enumerate(runnable_with_keys):
                     if not any(r["command"] == command for r in results):
                         callback.on_command_start("verify_" + nonce, command, i, len(runnable_with_keys))
-                        live_result = _normalize_live_result(_run_with_timeout_detection(command, project_dir, per_command_timeout, log_path, jsonl_path))
-                        callback.on_command_complete("verify_" + nonce, command, live_result.get("exit_code", 1), live_result.get("duration_seconds", 0.0))
+                        stop_tick, cmd_started, tick_thread = _start_command_tick_thread(
+                            callback,
+                            job_id="verify_" + nonce,
+                            command=command,
+                            timeout_seconds=per_command_timeout,
+                        )
+                        try:
+                            live_result = _normalize_live_result(
+                                _run_with_timeout_detection(command, project_dir, per_command_timeout, log_path, jsonl_path)
+                            )
+                        finally:
+                            stop_tick.set()
+                            tick_thread.join(timeout=0.1)
+                        cmd_elapsed = max(0.0, time.perf_counter() - cmd_started)
+                        _safe_callback_call(
+                            callback,
+                            "on_heartbeat",
+                            "verify_" + nonce,
+                            cmd_elapsed,
+                            max(0.0, float(per_command_timeout) - cmd_elapsed),
+                            "running",
+                            current_command=command,
+                            command_elapsed_sec=cmd_elapsed,
+                            command_timeout_sec=float(per_command_timeout),
+                            command_progress_pct=100.0,
+                        )
+                        _emit_command_complete_event(
+                            callback,
+                            "verify_" + nonce,
+                            command,
+                            live_result,
+                            completed=i + 1,
+                            total=len(runnable_with_keys),
+                        )
                         results.append(live_result)
                         _log_command_result(log_path, jsonl_path, live_result)
                         if cache_enabled and cache_key:

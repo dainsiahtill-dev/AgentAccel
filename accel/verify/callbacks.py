@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol, Any
+from typing import Protocol
 from enum import Enum, auto
 
 
@@ -25,13 +25,35 @@ class VerifyProgressCallback(Protocol):
     def on_command_start(self, job_id: str, command: str, index: int, total: int) -> None:
         """单个命令开始执行"""
 
-    def on_command_complete(self, job_id: str, command: str, exit_code: int, duration: float) -> None:
+    def on_command_complete(
+        self,
+        job_id: str,
+        command: str,
+        exit_code: int,
+        duration: float,
+        *,
+        completed: int | None = None,
+        total: int | None = None,
+        stdout_tail: str = "",
+        stderr_tail: str = "",
+    ) -> None:
         """单个命令完成"""
 
     def on_progress(self, job_id: str, completed: int, total: int, current_command: str) -> None:
         """进度更新 (每完成一个命令触发)"""
 
-    def on_heartbeat(self, job_id: str, elapsed_sec: float, eta_sec: float | None, state: str) -> None:
+    def on_heartbeat(
+        self,
+        job_id: str,
+        elapsed_sec: float,
+        eta_sec: float | None,
+        state: str,
+        *,
+        current_command: str = "",
+        command_elapsed_sec: float | None = None,
+        command_timeout_sec: float | None = None,
+        command_progress_pct: float | None = None,
+    ) -> None:
         """心跳 (每 10 秒触发)"""
 
     def on_cache_hit(self, job_id: str, command: str) -> None:
@@ -57,13 +79,35 @@ class NoOpCallback(VerifyProgressCallback):
     def on_command_start(self, job_id: str, command: str, index: int, total: int) -> None:
         pass
 
-    def on_command_complete(self, job_id: str, command: str, exit_code: int, duration: float) -> None:
+    def on_command_complete(
+        self,
+        job_id: str,
+        command: str,
+        exit_code: int,
+        duration: float,
+        *,
+        completed: int | None = None,
+        total: int | None = None,
+        stdout_tail: str = "",
+        stderr_tail: str = "",
+    ) -> None:
         pass
 
     def on_progress(self, job_id: str, completed: int, total: int, current_command: str) -> None:
         pass
 
-    def on_heartbeat(self, job_id: str, elapsed_sec: float, eta_sec: float | None, state: str) -> None:
+    def on_heartbeat(
+        self,
+        job_id: str,
+        elapsed_sec: float,
+        eta_sec: float | None,
+        state: str,
+        *,
+        current_command: str = "",
+        command_elapsed_sec: float | None = None,
+        command_timeout_sec: float | None = None,
+        command_progress_pct: float | None = None,
+    ) -> None:
         pass
 
     def on_cache_hit(self, job_id: str, command: str) -> None:

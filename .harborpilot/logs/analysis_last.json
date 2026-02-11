@@ -1,20 +1,19 @@
 {
-  "ts": "2026-02-11T23:05:22.077191+00:00",
-  "run_id": "run_20260212_tokenizer_calibration",
-  "goal": "Replace chars/4 token estimate with tokenizer-backed estimate and calibration factor.",
-  "acceptance_criteria": [
-    "estimated_tokens uses tokenizer when available.",
-    "calibration factor is configurable and applied.",
-    "fallback remains available when tokenizer is unavailable.",
-    "tests and docs updated."
-  ],
+  "ts": "2026-02-11T23:38:04.171712+00:00",
+  "task": "mcp_observability_and_fallbacks",
   "capability_matrix": {
     "repo": "read/write",
-    "terminal": "available",
-    "network": "available"
+    "terminal": true,
+    "network": true
   },
-  "risk_notes": [
-    "source token estimate still derives from chars-per-token ratio, not full source tokenization.",
-    "tokenizer backend can fall back to heuristic if runtime lacks tiktoken."
-  ]
+  "findings": [
+    "accel_context now supports missing changed_files via git/index/planner fallback chain.",
+    "accel_verify_events summary now prioritizes terminal status over stale running heartbeat.",
+    "verify events now carry command progress and output tails for realtime UX."
+  ],
+  "verification": {
+    "targeted_gate": "passed",
+    "full_gate": "reduced_due_baseline_failures",
+    "evidence_log": ".harborpilot/logs/verification_mcp_observability_20260212_01.log"
+  }
 }

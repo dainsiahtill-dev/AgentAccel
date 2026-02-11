@@ -45,7 +45,7 @@ DEFAULT_LOCAL_CONFIG: dict[str, Any] = {
         "token_estimator_model": "",
         "token_estimator_calibration": 1.0,
         "token_estimator_fallback_chars_per_token": 4.0,
-        "context_require_changed_files": True,
+        "context_require_changed_files": False,
         "accel_home": "",
         "per_command_timeout_seconds": 1200,
         "total_verify_timeout_seconds": 3600,
@@ -243,7 +243,7 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
     if os.environ.get("ACCEL_CONTEXT_REQUIRE_CHANGED_FILES") is not None:
         runtime["context_require_changed_files"] = _normalize_bool(
             os.environ["ACCEL_CONTEXT_REQUIRE_CHANGED_FILES"],
-            bool(runtime.get("context_require_changed_files", True)),
+            bool(runtime.get("context_require_changed_files", False)),
         )
     if os.environ.get("ACCEL_GPU_ENABLED") is not None:
         gpu["enabled"] = _normalize_bool(os.environ["ACCEL_GPU_ENABLED"], False)
@@ -318,8 +318,8 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
         default_value=4.0,
     )
     runtime["context_require_changed_files"] = _normalize_bool(
-        runtime.get("context_require_changed_files", True),
-        default_value=True,
+        runtime.get("context_require_changed_files", False),
+        default_value=False,
     )
 
     accel_home = runtime.get("accel_home")

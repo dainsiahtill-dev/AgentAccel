@@ -1,0 +1,381 @@
+{
+  "started_at": "2026-02-11T23:34:27.816710+00:00",
+  "calls": [
+    {
+      "tool": "accel_verify_start",
+      "elapsed_sec": 0.002,
+      "args": {
+        "project": "C:\\Users\\dains\\AppData\\Local\\Temp\\accel_mcp_cancel_3u9n0ibh",
+        "fast_loop": true,
+        "evidence_run": true
+      },
+      "result": {
+        "job_id": "verify_02e69d8929bc",
+        "status": "started"
+      }
+    },
+    {
+      "tool": "accel_verify_status",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_02e69d8929bc"
+      },
+      "result": {
+        "job_id": "verify_02e69d8929bc",
+        "state": "running",
+        "stage": "parallel",
+        "progress": 0.0,
+        "elapsed_sec": 0.8,
+        "eta_sec": null,
+        "current_command": "python -c \"import time; print('cancel-probe'); time.sleep(12); print('done')\"",
+        "total_commands": 1,
+        "completed_commands": 0
+      }
+    },
+    {
+      "tool": "accel_verify_events",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_02e69d8929bc",
+        "since_seq": 0,
+        "max_events": 80,
+        "include_summary": true
+      },
+      "result": {
+        "job_id": "verify_02e69d8929bc",
+        "events": [
+          {
+            "seq": 1,
+            "ts": "2026-02-11T23:34:27.843091+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_02e69d8929bc",
+            "elapsed_sec": 0.0,
+            "eta_sec": null,
+            "state": "running",
+            "stage": "running",
+            "progress": 0.0,
+            "current_command": "",
+            "completed_commands": 0,
+            "total_commands": 0
+          },
+          {
+            "seq": 2,
+            "ts": "2026-02-11T23:34:27.845978+00:00",
+            "event": "job_started",
+            "job_id": "verify_02e69d8929bc",
+            "total_commands": 1
+          },
+          {
+            "seq": 3,
+            "ts": "2026-02-11T23:34:27.849592+00:00",
+            "event": "stage_change",
+            "job_id": "verify_02e69d8929bc",
+            "stage": "load_cache"
+          },
+          {
+            "seq": 4,
+            "ts": "2026-02-11T23:34:27.849882+00:00",
+            "event": "stage_change",
+            "job_id": "verify_02e69d8929bc",
+            "stage": "select_cmds"
+          },
+          {
+            "seq": 5,
+            "ts": "2026-02-11T23:34:27.851874+00:00",
+            "event": "stage_change",
+            "job_id": "verify_02e69d8929bc",
+            "stage": "running"
+          },
+          {
+            "seq": 6,
+            "ts": "2026-02-11T23:34:27.851888+00:00",
+            "event": "stage_change",
+            "job_id": "verify_02e69d8929bc",
+            "stage": "parallel"
+          },
+          {
+            "seq": 7,
+            "ts": "2026-02-11T23:34:27.851946+00:00",
+            "event": "command_start",
+            "job_id": "verify_02e69d8929bc",
+            "command": "python -c \"import time; print('cancel-probe'); time.sleep(12); print('done')\"",
+            "index": 0,
+            "total": 1
+          },
+          {
+            "seq": 8,
+            "ts": "2026-02-11T23:34:27.851959+00:00",
+            "event": "progress",
+            "job_id": "verify_02e69d8929bc",
+            "completed": 0,
+            "total": 1,
+            "progress_pct": 0.0
+          }
+        ],
+        "count": 8,
+        "total_available": 8,
+        "truncated": false,
+        "max_events": 80,
+        "since_seq": 0,
+        "summary": {
+          "latest_state": "running",
+          "latest_stage": "parallel",
+          "terminal_event_seen": false,
+          "event_type_counts": {
+            "heartbeat": 1,
+            "job_started": 1,
+            "stage_change": 4,
+            "command_start": 1,
+            "progress": 1
+          },
+          "command_stats": {
+            "started": 1,
+            "completed": 0,
+            "skipped": 0,
+            "errors": 0,
+            "cache_hits": 0
+          },
+          "seq_range": {
+            "first": 1,
+            "last": 8
+          }
+        }
+      }
+    },
+    {
+      "tool": "accel_verify_cancel",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_02e69d8929bc"
+      },
+      "result": {
+        "job_id": "verify_02e69d8929bc",
+        "status": "cancelled",
+        "cancelled": true,
+        "message": "Cancellation requested and finalized"
+      }
+    },
+    {
+      "tool": "accel_verify_status",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_02e69d8929bc"
+      },
+      "result": {
+        "job_id": "verify_02e69d8929bc",
+        "state": "cancelled",
+        "stage": "cancelled",
+        "progress": 0.0,
+        "elapsed_sec": 0.8,
+        "eta_sec": null,
+        "current_command": "python -c \"import time; print('cancel-probe'); time.sleep(12); print('done')\"",
+        "total_commands": 1,
+        "completed_commands": 0
+      }
+    },
+    {
+      "tool": "accel_verify_events",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_02e69d8929bc",
+        "since_seq": 0,
+        "max_events": 200,
+        "include_summary": true
+      },
+      "result": {
+        "job_id": "verify_02e69d8929bc",
+        "events": [
+          {
+            "seq": 1,
+            "ts": "2026-02-11T23:34:27.843091+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_02e69d8929bc",
+            "elapsed_sec": 0.0,
+            "eta_sec": null,
+            "state": "running",
+            "stage": "running",
+            "progress": 0.0,
+            "current_command": "",
+            "completed_commands": 0,
+            "total_commands": 0
+          },
+          {
+            "seq": 2,
+            "ts": "2026-02-11T23:34:27.845978+00:00",
+            "event": "job_started",
+            "job_id": "verify_02e69d8929bc",
+            "total_commands": 1
+          },
+          {
+            "seq": 3,
+            "ts": "2026-02-11T23:34:27.849592+00:00",
+            "event": "stage_change",
+            "job_id": "verify_02e69d8929bc",
+            "stage": "load_cache"
+          },
+          {
+            "seq": 4,
+            "ts": "2026-02-11T23:34:27.849882+00:00",
+            "event": "stage_change",
+            "job_id": "verify_02e69d8929bc",
+            "stage": "select_cmds"
+          },
+          {
+            "seq": 5,
+            "ts": "2026-02-11T23:34:27.851874+00:00",
+            "event": "stage_change",
+            "job_id": "verify_02e69d8929bc",
+            "stage": "running"
+          },
+          {
+            "seq": 6,
+            "ts": "2026-02-11T23:34:27.851888+00:00",
+            "event": "stage_change",
+            "job_id": "verify_02e69d8929bc",
+            "stage": "parallel"
+          },
+          {
+            "seq": 7,
+            "ts": "2026-02-11T23:34:27.851946+00:00",
+            "event": "command_start",
+            "job_id": "verify_02e69d8929bc",
+            "command": "python -c \"import time; print('cancel-probe'); time.sleep(12); print('done')\"",
+            "index": 0,
+            "total": 1
+          },
+          {
+            "seq": 8,
+            "ts": "2026-02-11T23:34:27.851959+00:00",
+            "event": "progress",
+            "job_id": "verify_02e69d8929bc",
+            "completed": 0,
+            "total": 1,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 9,
+            "ts": "2026-02-11T23:34:28.643637+00:00",
+            "event": "job_cancel_requested",
+            "job_id": "verify_02e69d8929bc",
+            "reason": "user_request"
+          },
+          {
+            "seq": 10,
+            "ts": "2026-02-11T23:34:28.643667+00:00",
+            "event": "job_cancelled_finalized",
+            "job_id": "verify_02e69d8929bc",
+            "reason": "user_request"
+          }
+        ],
+        "count": 10,
+        "total_available": 10,
+        "truncated": false,
+        "max_events": 200,
+        "since_seq": 0,
+        "summary": {
+          "latest_state": "cancelled",
+          "latest_stage": "cancelled",
+          "terminal_event_seen": true,
+          "event_type_counts": {
+            "heartbeat": 1,
+            "job_started": 1,
+            "stage_change": 4,
+            "command_start": 1,
+            "progress": 1,
+            "job_cancel_requested": 1,
+            "job_cancelled_finalized": 1
+          },
+          "command_stats": {
+            "started": 1,
+            "completed": 0,
+            "skipped": 0,
+            "errors": 0,
+            "cache_hits": 0
+          },
+          "seq_range": {
+            "first": 1,
+            "last": 10
+          }
+        }
+      }
+    }
+  ],
+  "project": "C:\\Users\\dains\\AppData\\Local\\Temp\\accel_mcp_cancel_3u9n0ibh",
+  "pre_cancel_status": {
+    "job_id": "verify_02e69d8929bc",
+    "state": "running",
+    "stage": "parallel",
+    "progress": 0.0,
+    "elapsed_sec": 0.8,
+    "eta_sec": null,
+    "current_command": "python -c \"import time; print('cancel-probe'); time.sleep(12); print('done')\"",
+    "total_commands": 1,
+    "completed_commands": 0
+  },
+  "pre_cancel_summary": {
+    "latest_state": "running",
+    "latest_stage": "parallel",
+    "terminal_event_seen": false,
+    "event_type_counts": {
+      "heartbeat": 1,
+      "job_started": 1,
+      "stage_change": 4,
+      "command_start": 1,
+      "progress": 1
+    },
+    "command_stats": {
+      "started": 1,
+      "completed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "cache_hits": 0
+    },
+    "seq_range": {
+      "first": 1,
+      "last": 8
+    }
+  },
+  "cancel_payload": {
+    "job_id": "verify_02e69d8929bc",
+    "status": "cancelled",
+    "cancelled": true,
+    "message": "Cancellation requested and finalized"
+  },
+  "final_status": {
+    "job_id": "verify_02e69d8929bc",
+    "state": "cancelled",
+    "stage": "cancelled",
+    "progress": 0.0,
+    "elapsed_sec": 0.8,
+    "eta_sec": null,
+    "current_command": "python -c \"import time; print('cancel-probe'); time.sleep(12); print('done')\"",
+    "total_commands": 1,
+    "completed_commands": 0
+  },
+  "final_summary": {
+    "latest_state": "cancelled",
+    "latest_stage": "cancelled",
+    "terminal_event_seen": true,
+    "event_type_counts": {
+      "heartbeat": 1,
+      "job_started": 1,
+      "stage_change": 4,
+      "command_start": 1,
+      "progress": 1,
+      "job_cancel_requested": 1,
+      "job_cancelled_finalized": 1
+    },
+    "command_stats": {
+      "started": 1,
+      "completed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "cache_hits": 0
+    },
+    "seq_range": {
+      "first": 1,
+      "last": 10
+    }
+  },
+  "ended_at": "2026-02-11T23:34:28.643723+00:00"
+}

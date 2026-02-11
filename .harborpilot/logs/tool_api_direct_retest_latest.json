@@ -1,0 +1,2440 @@
+{
+  "started_at": "2026-02-11T23:33:54.965342+00:00",
+  "calls": [
+    {
+      "tool": "accel_index_update",
+      "elapsed_sec": 0.025,
+      "args": {
+        "project": "C:\\Users\\dains\\AppData\\Local\\Temp\\accel_mcp_direct_adkb8n1t"
+      },
+      "result": {
+        "status": "ok",
+        "manifest": {
+          "version": 1,
+          "schema_version": 1,
+          "indexed_at": "2026-02-11T23:33:55.010574+00:00",
+          "mode": "update",
+          "full_rebuild": true,
+          "project_dir": "C:\\Users\\dains\\AppData\\Local\\Temp\\accel_mcp_direct_adkb8n1t",
+          "indexed_files": [
+            "src/sample.py"
+          ],
+          "changed_files": [
+            "src/sample.py"
+          ],
+          "removed_files": [],
+          "counts": {
+            "symbols": 0,
+            "references": 0,
+            "dependencies": 0,
+            "test_ownership": 0,
+            "files": 1,
+            "source_bytes": 90,
+            "source_chars_est": 90
+          },
+          "performance": {
+            "index_workers": 96,
+            "parallel_backend": "thread",
+            "parallelized": false,
+            "processed_files": 1
+          },
+          "delta": {
+            "pending_ops": {
+              "symbols": 0,
+              "references": 0,
+              "dependencies": 0
+            },
+            "compacted": true,
+            "compact_threshold": 200
+          }
+        }
+      }
+    },
+    {
+      "tool": "accel_context",
+      "elapsed_sec": 0.296,
+      "args": {
+        "project": "C:\\Users\\dains\\AppData\\Local\\Temp\\accel_mcp_direct_adkb8n1t",
+        "task": "MCP direct retest without changed_files",
+        "budget": "small",
+        "include_pack": false
+      },
+      "result": {
+        "status": "ok",
+        "out": "C:\\Users\\dains\\AppData\\Local\\agent-accel\\projects\\22613eb8281b5d2a\\context\\context_pack_7ce61194c8.json",
+        "top_files": 1,
+        "snippets": 1,
+        "verify_plan": {
+          "target_tests": [],
+          "target_checks": [
+            "pytest -q",
+            "mypy ."
+          ]
+        },
+        "selected_tests_count": 0,
+        "selected_checks_count": 2,
+        "context_chars": 1174,
+        "source_chars": 90,
+        "estimated_tokens": 396,
+        "estimated_source_tokens": 31,
+        "compression_ratio": 13.044444,
+        "token_reduction_ratio": 0.0,
+        "token_estimator": {
+          "backend_requested": "auto",
+          "backend_used": "tiktoken",
+          "encoding_requested": "cl100k_base",
+          "encoding_used": "cl100k_base",
+          "model": "",
+          "calibration": 1.0,
+          "fallback_chars_per_token": 4.0,
+          "context_chars_per_token": 2.964646,
+          "source_chars_per_token": 2.964646,
+          "raw_context_tokens": 396,
+          "raw_source_tokens": 31
+        },
+        "budget_effective": {
+          "max_chars": 12000,
+          "max_snippets": 30,
+          "top_n_files": 8,
+          "snippet_radius": 24,
+          "per_snippet_max_chars": 3000
+        },
+        "budget_source": "user",
+        "budget_preset": "small",
+        "budget_reason": "user_budget_input",
+        "changed_files_used": [
+          "src/sample.py"
+        ],
+        "changed_files_source": "manifest_recent",
+        "changed_files_count": 1,
+        "warnings": [
+          "changed_files inferred via manifest_recent; provide explicit changed_files for tighter precision"
+        ]
+      }
+    },
+    {
+      "tool": "accel_verify",
+      "elapsed_sec": 0.002,
+      "args": {
+        "project": "C:\\Users\\dains\\AppData\\Local\\Temp\\accel_mcp_direct_adkb8n1t",
+        "fast_loop": true,
+        "evidence_run": true
+      },
+      "result": {
+        "status": "started",
+        "exit_code": 0,
+        "timed_out": false,
+        "job_id": "verify_63b7054cf3e7",
+        "message": "Verification started asynchronously. Use accel_verify_status/events for live progress.",
+        "poll_interval_sec": 1.0,
+        "state": "running",
+        "stage": "running",
+        "progress": 0.0,
+        "elapsed_sec": 0.0
+      }
+    },
+    {
+      "tool": "accel_verify_start",
+      "elapsed_sec": 0.002,
+      "args": {
+        "project": "C:\\Users\\dains\\AppData\\Local\\Temp\\accel_mcp_direct_adkb8n1t",
+        "fast_loop": true,
+        "evidence_run": true
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "status": "started"
+      }
+    },
+    {
+      "tool": "accel_verify_status",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511"
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "state": "running",
+        "stage": "running",
+        "progress": 0.0,
+        "elapsed_sec": 0.0,
+        "eta_sec": null,
+        "current_command": "",
+        "total_commands": 0,
+        "completed_commands": 0
+      }
+    },
+    {
+      "tool": "accel_verify_events",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511",
+        "since_seq": 0,
+        "max_events": 120,
+        "include_summary": true
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "events": [
+          {
+            "seq": 1,
+            "ts": "2026-02-11T23:33:55.313574+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.0,
+            "eta_sec": null,
+            "state": "running",
+            "stage": "running",
+            "progress": 0.0,
+            "current_command": "",
+            "completed_commands": 0,
+            "total_commands": 0
+          }
+        ],
+        "count": 1,
+        "total_available": 1,
+        "truncated": false,
+        "max_events": 120,
+        "since_seq": 0,
+        "summary": {
+          "latest_state": "running",
+          "latest_stage": "running",
+          "terminal_event_seen": false,
+          "event_type_counts": {
+            "heartbeat": 1
+          },
+          "command_stats": {
+            "started": 0,
+            "completed": 0,
+            "skipped": 0,
+            "errors": 0,
+            "cache_hits": 0
+          },
+          "seq_range": {
+            "first": 1,
+            "last": 1
+          }
+        }
+      }
+    },
+    {
+      "tool": "accel_verify_status",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511"
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "state": "running",
+        "stage": "parallel",
+        "progress": 50.0,
+        "elapsed_sec": 0.7,
+        "eta_sec": 0.2,
+        "current_command": "",
+        "total_commands": 2,
+        "completed_commands": 1
+      }
+    },
+    {
+      "tool": "accel_verify_events",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511",
+        "since_seq": 0,
+        "max_events": 120,
+        "include_summary": true
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "events": [
+          {
+            "seq": 1,
+            "ts": "2026-02-11T23:33:55.313574+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.0,
+            "eta_sec": null,
+            "state": "running",
+            "stage": "running",
+            "progress": 0.0,
+            "current_command": "",
+            "completed_commands": 0,
+            "total_commands": 0
+          },
+          {
+            "seq": 2,
+            "ts": "2026-02-11T23:33:55.314928+00:00",
+            "event": "job_started",
+            "job_id": "verify_5df76d6fc511",
+            "total_commands": 2
+          },
+          {
+            "seq": 3,
+            "ts": "2026-02-11T23:33:55.321399+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "load_cache"
+          },
+          {
+            "seq": 4,
+            "ts": "2026-02-11T23:33:55.321735+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "select_cmds"
+          },
+          {
+            "seq": 5,
+            "ts": "2026-02-11T23:33:55.330008+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "running"
+          },
+          {
+            "seq": 6,
+            "ts": "2026-02-11T23:33:55.330024+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "parallel"
+          },
+          {
+            "seq": 7,
+            "ts": "2026-02-11T23:33:55.330069+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "index": 0,
+            "total": 2
+          },
+          {
+            "seq": 8,
+            "ts": "2026-02-11T23:33:55.330082+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 9,
+            "ts": "2026-02-11T23:33:55.331509+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "index": 1,
+            "total": 2
+          },
+          {
+            "seq": 10,
+            "ts": "2026-02-11T23:33:55.331524+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 11,
+            "ts": "2026-02-11T23:33:55.533836+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 1199.8,
+            "state": "running",
+            "current_command": "python -c \"print('quick-pass')\"",
+            "command_elapsed_sec": 0.2,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 100.0
+          },
+          {
+            "seq": 12,
+            "ts": "2026-02-11T23:33:55.533862+00:00",
+            "event": "command_complete",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "exit_code": 0,
+            "duration": 0.201,
+            "completed": 1,
+            "total": 2,
+            "stdout_tail": "quick-pass"
+          },
+          {
+            "seq": 13,
+            "ts": "2026-02-11T23:33:55.535601+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 1,
+            "total": 2,
+            "progress_pct": 50.0
+          },
+          {
+            "seq": 14,
+            "ts": "2026-02-11T23:33:55.535617+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 0.2,
+            "state": "running"
+          }
+        ],
+        "count": 14,
+        "total_available": 14,
+        "truncated": false,
+        "max_events": 120,
+        "since_seq": 0,
+        "summary": {
+          "latest_state": "running",
+          "latest_stage": "parallel",
+          "terminal_event_seen": false,
+          "event_type_counts": {
+            "heartbeat": 3,
+            "job_started": 1,
+            "stage_change": 4,
+            "command_start": 2,
+            "progress": 3,
+            "command_complete": 1
+          },
+          "command_stats": {
+            "started": 2,
+            "completed": 1,
+            "skipped": 0,
+            "errors": 0,
+            "cache_hits": 0
+          },
+          "seq_range": {
+            "first": 1,
+            "last": 14
+          }
+        }
+      }
+    },
+    {
+      "tool": "accel_verify_status",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511"
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "state": "running",
+        "stage": "parallel",
+        "progress": 50.0,
+        "elapsed_sec": 1.4,
+        "eta_sec": 1199.0,
+        "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+        "total_commands": 2,
+        "completed_commands": 1
+      }
+    },
+    {
+      "tool": "accel_verify_events",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511",
+        "since_seq": 0,
+        "max_events": 120,
+        "include_summary": true
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "events": [
+          {
+            "seq": 1,
+            "ts": "2026-02-11T23:33:55.313574+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.0,
+            "eta_sec": null,
+            "state": "running",
+            "stage": "running",
+            "progress": 0.0,
+            "current_command": "",
+            "completed_commands": 0,
+            "total_commands": 0
+          },
+          {
+            "seq": 2,
+            "ts": "2026-02-11T23:33:55.314928+00:00",
+            "event": "job_started",
+            "job_id": "verify_5df76d6fc511",
+            "total_commands": 2
+          },
+          {
+            "seq": 3,
+            "ts": "2026-02-11T23:33:55.321399+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "load_cache"
+          },
+          {
+            "seq": 4,
+            "ts": "2026-02-11T23:33:55.321735+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "select_cmds"
+          },
+          {
+            "seq": 5,
+            "ts": "2026-02-11T23:33:55.330008+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "running"
+          },
+          {
+            "seq": 6,
+            "ts": "2026-02-11T23:33:55.330024+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "parallel"
+          },
+          {
+            "seq": 7,
+            "ts": "2026-02-11T23:33:55.330069+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "index": 0,
+            "total": 2
+          },
+          {
+            "seq": 8,
+            "ts": "2026-02-11T23:33:55.330082+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 9,
+            "ts": "2026-02-11T23:33:55.331509+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "index": 1,
+            "total": 2
+          },
+          {
+            "seq": 10,
+            "ts": "2026-02-11T23:33:55.331524+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 11,
+            "ts": "2026-02-11T23:33:55.533836+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 1199.8,
+            "state": "running",
+            "current_command": "python -c \"print('quick-pass')\"",
+            "command_elapsed_sec": 0.2,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 100.0
+          },
+          {
+            "seq": 12,
+            "ts": "2026-02-11T23:33:55.533862+00:00",
+            "event": "command_complete",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "exit_code": 0,
+            "duration": 0.201,
+            "completed": 1,
+            "total": 2,
+            "stdout_tail": "quick-pass"
+          },
+          {
+            "seq": 13,
+            "ts": "2026-02-11T23:33:55.535601+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 1,
+            "total": 2,
+            "progress_pct": 50.0
+          },
+          {
+            "seq": 14,
+            "ts": "2026-02-11T23:33:55.535617+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 0.2,
+            "state": "running"
+          },
+          {
+            "seq": 15,
+            "ts": "2026-02-11T23:33:56.313908+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 1.0,
+            "eta_sec": 0.2,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 16,
+            "ts": "2026-02-11T23:33:56.341149+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 1.0,
+            "eta_sec": 1199.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 1.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.08
+          }
+        ],
+        "count": 16,
+        "total_available": 16,
+        "truncated": false,
+        "max_events": 120,
+        "since_seq": 0,
+        "summary": {
+          "latest_state": "running",
+          "latest_stage": "parallel",
+          "terminal_event_seen": false,
+          "event_type_counts": {
+            "heartbeat": 5,
+            "job_started": 1,
+            "stage_change": 4,
+            "command_start": 2,
+            "progress": 3,
+            "command_complete": 1
+          },
+          "command_stats": {
+            "started": 2,
+            "completed": 1,
+            "skipped": 0,
+            "errors": 0,
+            "cache_hits": 0
+          },
+          "seq_range": {
+            "first": 1,
+            "last": 16
+          }
+        }
+      }
+    },
+    {
+      "tool": "accel_verify_status",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511"
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "state": "running",
+        "stage": "parallel",
+        "progress": 50.0,
+        "elapsed_sec": 2.1,
+        "eta_sec": 1198.0,
+        "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+        "total_commands": 2,
+        "completed_commands": 1
+      }
+    },
+    {
+      "tool": "accel_verify_events",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511",
+        "since_seq": 0,
+        "max_events": 120,
+        "include_summary": true
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "events": [
+          {
+            "seq": 1,
+            "ts": "2026-02-11T23:33:55.313574+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.0,
+            "eta_sec": null,
+            "state": "running",
+            "stage": "running",
+            "progress": 0.0,
+            "current_command": "",
+            "completed_commands": 0,
+            "total_commands": 0
+          },
+          {
+            "seq": 2,
+            "ts": "2026-02-11T23:33:55.314928+00:00",
+            "event": "job_started",
+            "job_id": "verify_5df76d6fc511",
+            "total_commands": 2
+          },
+          {
+            "seq": 3,
+            "ts": "2026-02-11T23:33:55.321399+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "load_cache"
+          },
+          {
+            "seq": 4,
+            "ts": "2026-02-11T23:33:55.321735+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "select_cmds"
+          },
+          {
+            "seq": 5,
+            "ts": "2026-02-11T23:33:55.330008+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "running"
+          },
+          {
+            "seq": 6,
+            "ts": "2026-02-11T23:33:55.330024+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "parallel"
+          },
+          {
+            "seq": 7,
+            "ts": "2026-02-11T23:33:55.330069+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "index": 0,
+            "total": 2
+          },
+          {
+            "seq": 8,
+            "ts": "2026-02-11T23:33:55.330082+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 9,
+            "ts": "2026-02-11T23:33:55.331509+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "index": 1,
+            "total": 2
+          },
+          {
+            "seq": 10,
+            "ts": "2026-02-11T23:33:55.331524+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 11,
+            "ts": "2026-02-11T23:33:55.533836+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 1199.8,
+            "state": "running",
+            "current_command": "python -c \"print('quick-pass')\"",
+            "command_elapsed_sec": 0.2,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 100.0
+          },
+          {
+            "seq": 12,
+            "ts": "2026-02-11T23:33:55.533862+00:00",
+            "event": "command_complete",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "exit_code": 0,
+            "duration": 0.201,
+            "completed": 1,
+            "total": 2,
+            "stdout_tail": "quick-pass"
+          },
+          {
+            "seq": 13,
+            "ts": "2026-02-11T23:33:55.535601+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 1,
+            "total": 2,
+            "progress_pct": 50.0
+          },
+          {
+            "seq": 14,
+            "ts": "2026-02-11T23:33:55.535617+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 0.2,
+            "state": "running"
+          },
+          {
+            "seq": 15,
+            "ts": "2026-02-11T23:33:56.313908+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 1.0,
+            "eta_sec": 0.2,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 16,
+            "ts": "2026-02-11T23:33:56.341149+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 1.0,
+            "eta_sec": 1199.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 1.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.08
+          },
+          {
+            "seq": 17,
+            "ts": "2026-02-11T23:33:57.314424+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 2.0,
+            "eta_sec": 1199.0,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 18,
+            "ts": "2026-02-11T23:33:57.341419+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 2.0,
+            "eta_sec": 1198.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 2.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.17
+          }
+        ],
+        "count": 18,
+        "total_available": 18,
+        "truncated": false,
+        "max_events": 120,
+        "since_seq": 0,
+        "summary": {
+          "latest_state": "running",
+          "latest_stage": "parallel",
+          "terminal_event_seen": false,
+          "event_type_counts": {
+            "heartbeat": 7,
+            "job_started": 1,
+            "stage_change": 4,
+            "command_start": 2,
+            "progress": 3,
+            "command_complete": 1
+          },
+          "command_stats": {
+            "started": 2,
+            "completed": 1,
+            "skipped": 0,
+            "errors": 0,
+            "cache_hits": 0
+          },
+          "seq_range": {
+            "first": 1,
+            "last": 18
+          }
+        }
+      }
+    },
+    {
+      "tool": "accel_verify_status",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511"
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "state": "running",
+        "stage": "parallel",
+        "progress": 50.0,
+        "elapsed_sec": 2.8,
+        "eta_sec": 1198.0,
+        "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+        "total_commands": 2,
+        "completed_commands": 1
+      }
+    },
+    {
+      "tool": "accel_verify_events",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511",
+        "since_seq": 0,
+        "max_events": 120,
+        "include_summary": true
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "events": [
+          {
+            "seq": 1,
+            "ts": "2026-02-11T23:33:55.313574+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.0,
+            "eta_sec": null,
+            "state": "running",
+            "stage": "running",
+            "progress": 0.0,
+            "current_command": "",
+            "completed_commands": 0,
+            "total_commands": 0
+          },
+          {
+            "seq": 2,
+            "ts": "2026-02-11T23:33:55.314928+00:00",
+            "event": "job_started",
+            "job_id": "verify_5df76d6fc511",
+            "total_commands": 2
+          },
+          {
+            "seq": 3,
+            "ts": "2026-02-11T23:33:55.321399+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "load_cache"
+          },
+          {
+            "seq": 4,
+            "ts": "2026-02-11T23:33:55.321735+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "select_cmds"
+          },
+          {
+            "seq": 5,
+            "ts": "2026-02-11T23:33:55.330008+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "running"
+          },
+          {
+            "seq": 6,
+            "ts": "2026-02-11T23:33:55.330024+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "parallel"
+          },
+          {
+            "seq": 7,
+            "ts": "2026-02-11T23:33:55.330069+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "index": 0,
+            "total": 2
+          },
+          {
+            "seq": 8,
+            "ts": "2026-02-11T23:33:55.330082+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 9,
+            "ts": "2026-02-11T23:33:55.331509+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "index": 1,
+            "total": 2
+          },
+          {
+            "seq": 10,
+            "ts": "2026-02-11T23:33:55.331524+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 11,
+            "ts": "2026-02-11T23:33:55.533836+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 1199.8,
+            "state": "running",
+            "current_command": "python -c \"print('quick-pass')\"",
+            "command_elapsed_sec": 0.2,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 100.0
+          },
+          {
+            "seq": 12,
+            "ts": "2026-02-11T23:33:55.533862+00:00",
+            "event": "command_complete",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "exit_code": 0,
+            "duration": 0.201,
+            "completed": 1,
+            "total": 2,
+            "stdout_tail": "quick-pass"
+          },
+          {
+            "seq": 13,
+            "ts": "2026-02-11T23:33:55.535601+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 1,
+            "total": 2,
+            "progress_pct": 50.0
+          },
+          {
+            "seq": 14,
+            "ts": "2026-02-11T23:33:55.535617+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 0.2,
+            "state": "running"
+          },
+          {
+            "seq": 15,
+            "ts": "2026-02-11T23:33:56.313908+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 1.0,
+            "eta_sec": 0.2,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 16,
+            "ts": "2026-02-11T23:33:56.341149+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 1.0,
+            "eta_sec": 1199.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 1.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.08
+          },
+          {
+            "seq": 17,
+            "ts": "2026-02-11T23:33:57.314424+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 2.0,
+            "eta_sec": 1199.0,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 18,
+            "ts": "2026-02-11T23:33:57.341419+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 2.0,
+            "eta_sec": 1198.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 2.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.17
+          }
+        ],
+        "count": 18,
+        "total_available": 18,
+        "truncated": false,
+        "max_events": 120,
+        "since_seq": 0,
+        "summary": {
+          "latest_state": "running",
+          "latest_stage": "parallel",
+          "terminal_event_seen": false,
+          "event_type_counts": {
+            "heartbeat": 7,
+            "job_started": 1,
+            "stage_change": 4,
+            "command_start": 2,
+            "progress": 3,
+            "command_complete": 1
+          },
+          "command_stats": {
+            "started": 2,
+            "completed": 1,
+            "skipped": 0,
+            "errors": 0,
+            "cache_hits": 0
+          },
+          "seq_range": {
+            "first": 1,
+            "last": 18
+          }
+        }
+      }
+    },
+    {
+      "tool": "accel_verify_status",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511"
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "state": "running",
+        "stage": "parallel",
+        "progress": 50.0,
+        "elapsed_sec": 3.5,
+        "eta_sec": 1197.0,
+        "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+        "total_commands": 2,
+        "completed_commands": 1
+      }
+    },
+    {
+      "tool": "accel_verify_events",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511",
+        "since_seq": 0,
+        "max_events": 120,
+        "include_summary": true
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "events": [
+          {
+            "seq": 1,
+            "ts": "2026-02-11T23:33:55.313574+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.0,
+            "eta_sec": null,
+            "state": "running",
+            "stage": "running",
+            "progress": 0.0,
+            "current_command": "",
+            "completed_commands": 0,
+            "total_commands": 0
+          },
+          {
+            "seq": 2,
+            "ts": "2026-02-11T23:33:55.314928+00:00",
+            "event": "job_started",
+            "job_id": "verify_5df76d6fc511",
+            "total_commands": 2
+          },
+          {
+            "seq": 3,
+            "ts": "2026-02-11T23:33:55.321399+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "load_cache"
+          },
+          {
+            "seq": 4,
+            "ts": "2026-02-11T23:33:55.321735+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "select_cmds"
+          },
+          {
+            "seq": 5,
+            "ts": "2026-02-11T23:33:55.330008+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "running"
+          },
+          {
+            "seq": 6,
+            "ts": "2026-02-11T23:33:55.330024+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "parallel"
+          },
+          {
+            "seq": 7,
+            "ts": "2026-02-11T23:33:55.330069+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "index": 0,
+            "total": 2
+          },
+          {
+            "seq": 8,
+            "ts": "2026-02-11T23:33:55.330082+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 9,
+            "ts": "2026-02-11T23:33:55.331509+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "index": 1,
+            "total": 2
+          },
+          {
+            "seq": 10,
+            "ts": "2026-02-11T23:33:55.331524+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 11,
+            "ts": "2026-02-11T23:33:55.533836+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 1199.8,
+            "state": "running",
+            "current_command": "python -c \"print('quick-pass')\"",
+            "command_elapsed_sec": 0.2,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 100.0
+          },
+          {
+            "seq": 12,
+            "ts": "2026-02-11T23:33:55.533862+00:00",
+            "event": "command_complete",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "exit_code": 0,
+            "duration": 0.201,
+            "completed": 1,
+            "total": 2,
+            "stdout_tail": "quick-pass"
+          },
+          {
+            "seq": 13,
+            "ts": "2026-02-11T23:33:55.535601+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 1,
+            "total": 2,
+            "progress_pct": 50.0
+          },
+          {
+            "seq": 14,
+            "ts": "2026-02-11T23:33:55.535617+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 0.2,
+            "state": "running"
+          },
+          {
+            "seq": 15,
+            "ts": "2026-02-11T23:33:56.313908+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 1.0,
+            "eta_sec": 0.2,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 16,
+            "ts": "2026-02-11T23:33:56.341149+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 1.0,
+            "eta_sec": 1199.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 1.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.08
+          },
+          {
+            "seq": 17,
+            "ts": "2026-02-11T23:33:57.314424+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 2.0,
+            "eta_sec": 1199.0,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 18,
+            "ts": "2026-02-11T23:33:57.341419+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 2.0,
+            "eta_sec": 1198.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 2.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.17
+          },
+          {
+            "seq": 19,
+            "ts": "2026-02-11T23:33:58.314995+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 3.0,
+            "eta_sec": 1198.0,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 20,
+            "ts": "2026-02-11T23:33:58.341252+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 3.0,
+            "eta_sec": 1197.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 3.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.25
+          }
+        ],
+        "count": 20,
+        "total_available": 20,
+        "truncated": false,
+        "max_events": 120,
+        "since_seq": 0,
+        "summary": {
+          "latest_state": "running",
+          "latest_stage": "parallel",
+          "terminal_event_seen": false,
+          "event_type_counts": {
+            "heartbeat": 9,
+            "job_started": 1,
+            "stage_change": 4,
+            "command_start": 2,
+            "progress": 3,
+            "command_complete": 1
+          },
+          "command_stats": {
+            "started": 2,
+            "completed": 1,
+            "skipped": 0,
+            "errors": 0,
+            "cache_hits": 0
+          },
+          "seq_range": {
+            "first": 1,
+            "last": 20
+          }
+        }
+      }
+    },
+    {
+      "tool": "accel_verify_status",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511"
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "state": "running",
+        "stage": "parallel",
+        "progress": 50.0,
+        "elapsed_sec": 4.2,
+        "eta_sec": 1196.0,
+        "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+        "total_commands": 2,
+        "completed_commands": 1
+      }
+    },
+    {
+      "tool": "accel_verify_events",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511",
+        "since_seq": 0,
+        "max_events": 120,
+        "include_summary": true
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "events": [
+          {
+            "seq": 1,
+            "ts": "2026-02-11T23:33:55.313574+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.0,
+            "eta_sec": null,
+            "state": "running",
+            "stage": "running",
+            "progress": 0.0,
+            "current_command": "",
+            "completed_commands": 0,
+            "total_commands": 0
+          },
+          {
+            "seq": 2,
+            "ts": "2026-02-11T23:33:55.314928+00:00",
+            "event": "job_started",
+            "job_id": "verify_5df76d6fc511",
+            "total_commands": 2
+          },
+          {
+            "seq": 3,
+            "ts": "2026-02-11T23:33:55.321399+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "load_cache"
+          },
+          {
+            "seq": 4,
+            "ts": "2026-02-11T23:33:55.321735+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "select_cmds"
+          },
+          {
+            "seq": 5,
+            "ts": "2026-02-11T23:33:55.330008+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "running"
+          },
+          {
+            "seq": 6,
+            "ts": "2026-02-11T23:33:55.330024+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "parallel"
+          },
+          {
+            "seq": 7,
+            "ts": "2026-02-11T23:33:55.330069+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "index": 0,
+            "total": 2
+          },
+          {
+            "seq": 8,
+            "ts": "2026-02-11T23:33:55.330082+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 9,
+            "ts": "2026-02-11T23:33:55.331509+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "index": 1,
+            "total": 2
+          },
+          {
+            "seq": 10,
+            "ts": "2026-02-11T23:33:55.331524+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 11,
+            "ts": "2026-02-11T23:33:55.533836+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 1199.8,
+            "state": "running",
+            "current_command": "python -c \"print('quick-pass')\"",
+            "command_elapsed_sec": 0.2,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 100.0
+          },
+          {
+            "seq": 12,
+            "ts": "2026-02-11T23:33:55.533862+00:00",
+            "event": "command_complete",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "exit_code": 0,
+            "duration": 0.201,
+            "completed": 1,
+            "total": 2,
+            "stdout_tail": "quick-pass"
+          },
+          {
+            "seq": 13,
+            "ts": "2026-02-11T23:33:55.535601+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 1,
+            "total": 2,
+            "progress_pct": 50.0
+          },
+          {
+            "seq": 14,
+            "ts": "2026-02-11T23:33:55.535617+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 0.2,
+            "state": "running"
+          },
+          {
+            "seq": 15,
+            "ts": "2026-02-11T23:33:56.313908+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 1.0,
+            "eta_sec": 0.2,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 16,
+            "ts": "2026-02-11T23:33:56.341149+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 1.0,
+            "eta_sec": 1199.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 1.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.08
+          },
+          {
+            "seq": 17,
+            "ts": "2026-02-11T23:33:57.314424+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 2.0,
+            "eta_sec": 1199.0,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 18,
+            "ts": "2026-02-11T23:33:57.341419+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 2.0,
+            "eta_sec": 1198.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 2.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.17
+          },
+          {
+            "seq": 19,
+            "ts": "2026-02-11T23:33:58.314995+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 3.0,
+            "eta_sec": 1198.0,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 20,
+            "ts": "2026-02-11T23:33:58.341252+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 3.0,
+            "eta_sec": 1197.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 3.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.25
+          },
+          {
+            "seq": 21,
+            "ts": "2026-02-11T23:33:59.315271+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 4.0,
+            "eta_sec": 1197.0,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 22,
+            "ts": "2026-02-11T23:33:59.356417+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 4.0,
+            "eta_sec": 1196.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 4.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.34
+          }
+        ],
+        "count": 22,
+        "total_available": 22,
+        "truncated": false,
+        "max_events": 120,
+        "since_seq": 0,
+        "summary": {
+          "latest_state": "running",
+          "latest_stage": "parallel",
+          "terminal_event_seen": false,
+          "event_type_counts": {
+            "heartbeat": 11,
+            "job_started": 1,
+            "stage_change": 4,
+            "command_start": 2,
+            "progress": 3,
+            "command_complete": 1
+          },
+          "command_stats": {
+            "started": 2,
+            "completed": 1,
+            "skipped": 0,
+            "errors": 0,
+            "cache_hits": 0
+          },
+          "seq_range": {
+            "first": 1,
+            "last": 22
+          }
+        }
+      }
+    },
+    {
+      "tool": "accel_verify_status",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511"
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "state": "completed",
+        "stage": "completed",
+        "progress": 100.0,
+        "elapsed_sec": 4.2,
+        "eta_sec": 0.0,
+        "current_command": "",
+        "total_commands": 2,
+        "completed_commands": 2
+      }
+    },
+    {
+      "tool": "accel_verify_events",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511",
+        "since_seq": 0,
+        "max_events": 120,
+        "include_summary": true
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "events": [
+          {
+            "seq": 1,
+            "ts": "2026-02-11T23:33:55.313574+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.0,
+            "eta_sec": null,
+            "state": "running",
+            "stage": "running",
+            "progress": 0.0,
+            "current_command": "",
+            "completed_commands": 0,
+            "total_commands": 0
+          },
+          {
+            "seq": 2,
+            "ts": "2026-02-11T23:33:55.314928+00:00",
+            "event": "job_started",
+            "job_id": "verify_5df76d6fc511",
+            "total_commands": 2
+          },
+          {
+            "seq": 3,
+            "ts": "2026-02-11T23:33:55.321399+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "load_cache"
+          },
+          {
+            "seq": 4,
+            "ts": "2026-02-11T23:33:55.321735+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "select_cmds"
+          },
+          {
+            "seq": 5,
+            "ts": "2026-02-11T23:33:55.330008+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "running"
+          },
+          {
+            "seq": 6,
+            "ts": "2026-02-11T23:33:55.330024+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "parallel"
+          },
+          {
+            "seq": 7,
+            "ts": "2026-02-11T23:33:55.330069+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "index": 0,
+            "total": 2
+          },
+          {
+            "seq": 8,
+            "ts": "2026-02-11T23:33:55.330082+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 9,
+            "ts": "2026-02-11T23:33:55.331509+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "index": 1,
+            "total": 2
+          },
+          {
+            "seq": 10,
+            "ts": "2026-02-11T23:33:55.331524+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 11,
+            "ts": "2026-02-11T23:33:55.533836+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 1199.8,
+            "state": "running",
+            "current_command": "python -c \"print('quick-pass')\"",
+            "command_elapsed_sec": 0.2,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 100.0
+          },
+          {
+            "seq": 12,
+            "ts": "2026-02-11T23:33:55.533862+00:00",
+            "event": "command_complete",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "exit_code": 0,
+            "duration": 0.201,
+            "completed": 1,
+            "total": 2,
+            "stdout_tail": "quick-pass"
+          },
+          {
+            "seq": 13,
+            "ts": "2026-02-11T23:33:55.535601+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 1,
+            "total": 2,
+            "progress_pct": 50.0
+          },
+          {
+            "seq": 14,
+            "ts": "2026-02-11T23:33:55.535617+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 0.2,
+            "state": "running"
+          },
+          {
+            "seq": 15,
+            "ts": "2026-02-11T23:33:56.313908+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 1.0,
+            "eta_sec": 0.2,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 16,
+            "ts": "2026-02-11T23:33:56.341149+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 1.0,
+            "eta_sec": 1199.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 1.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.08
+          },
+          {
+            "seq": 17,
+            "ts": "2026-02-11T23:33:57.314424+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 2.0,
+            "eta_sec": 1199.0,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 18,
+            "ts": "2026-02-11T23:33:57.341419+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 2.0,
+            "eta_sec": 1198.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 2.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.17
+          },
+          {
+            "seq": 19,
+            "ts": "2026-02-11T23:33:58.314995+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 3.0,
+            "eta_sec": 1198.0,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 20,
+            "ts": "2026-02-11T23:33:58.341252+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 3.0,
+            "eta_sec": 1197.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 3.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.25
+          },
+          {
+            "seq": 21,
+            "ts": "2026-02-11T23:33:59.315271+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 4.0,
+            "eta_sec": 1197.0,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 22,
+            "ts": "2026-02-11T23:33:59.356417+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 4.0,
+            "eta_sec": 1196.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 4.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.34
+          },
+          {
+            "seq": 23,
+            "ts": "2026-02-11T23:33:59.530321+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 4.2,
+            "eta_sec": 1195.8,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 4.2,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 100.0
+          },
+          {
+            "seq": 24,
+            "ts": "2026-02-11T23:33:59.530356+00:00",
+            "event": "command_complete",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "exit_code": 0,
+            "duration": 4.198,
+            "completed": 2,
+            "total": 2,
+            "stdout_tail": "probe-start\nprobe-end"
+          },
+          {
+            "seq": 25,
+            "ts": "2026-02-11T23:33:59.532016+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 2,
+            "total": 2,
+            "progress_pct": 100.0
+          },
+          {
+            "seq": 26,
+            "ts": "2026-02-11T23:33:59.532034+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 4.2,
+            "eta_sec": 0.0,
+            "state": "running"
+          },
+          {
+            "seq": 27,
+            "ts": "2026-02-11T23:33:59.532378+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "cleanup"
+          },
+          {
+            "seq": 28,
+            "ts": "2026-02-11T23:33:59.533066+00:00",
+            "event": "job_completed",
+            "job_id": "verify_5df76d6fc511",
+            "status": "success",
+            "exit_code": 0
+          }
+        ],
+        "count": 28,
+        "total_available": 28,
+        "truncated": false,
+        "max_events": 120,
+        "since_seq": 0,
+        "summary": {
+          "latest_state": "completed",
+          "latest_stage": "completed",
+          "terminal_event_seen": true,
+          "event_type_counts": {
+            "heartbeat": 13,
+            "job_started": 1,
+            "stage_change": 5,
+            "command_start": 2,
+            "progress": 4,
+            "command_complete": 2,
+            "job_completed": 1
+          },
+          "command_stats": {
+            "started": 2,
+            "completed": 2,
+            "skipped": 0,
+            "errors": 0,
+            "cache_hits": 0
+          },
+          "seq_range": {
+            "first": 1,
+            "last": 28
+          }
+        }
+      }
+    },
+    {
+      "tool": "accel_verify_cancel",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511"
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "status": "completed",
+        "cancelled": false,
+        "message": "Job already in terminal state"
+      }
+    },
+    {
+      "tool": "accel_verify_status",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511"
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "state": "completed",
+        "stage": "completed",
+        "progress": 100.0,
+        "elapsed_sec": 4.2,
+        "eta_sec": 0.0,
+        "current_command": "",
+        "total_commands": 2,
+        "completed_commands": 2
+      }
+    },
+    {
+      "tool": "accel_verify_events",
+      "elapsed_sec": 0.0,
+      "args": {
+        "job_id": "verify_5df76d6fc511",
+        "since_seq": 0,
+        "max_events": 200,
+        "include_summary": true
+      },
+      "result": {
+        "job_id": "verify_5df76d6fc511",
+        "events": [
+          {
+            "seq": 1,
+            "ts": "2026-02-11T23:33:55.313574+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.0,
+            "eta_sec": null,
+            "state": "running",
+            "stage": "running",
+            "progress": 0.0,
+            "current_command": "",
+            "completed_commands": 0,
+            "total_commands": 0
+          },
+          {
+            "seq": 2,
+            "ts": "2026-02-11T23:33:55.314928+00:00",
+            "event": "job_started",
+            "job_id": "verify_5df76d6fc511",
+            "total_commands": 2
+          },
+          {
+            "seq": 3,
+            "ts": "2026-02-11T23:33:55.321399+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "load_cache"
+          },
+          {
+            "seq": 4,
+            "ts": "2026-02-11T23:33:55.321735+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "select_cmds"
+          },
+          {
+            "seq": 5,
+            "ts": "2026-02-11T23:33:55.330008+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "running"
+          },
+          {
+            "seq": 6,
+            "ts": "2026-02-11T23:33:55.330024+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "parallel"
+          },
+          {
+            "seq": 7,
+            "ts": "2026-02-11T23:33:55.330069+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "index": 0,
+            "total": 2
+          },
+          {
+            "seq": 8,
+            "ts": "2026-02-11T23:33:55.330082+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 9,
+            "ts": "2026-02-11T23:33:55.331509+00:00",
+            "event": "command_start",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "index": 1,
+            "total": 2
+          },
+          {
+            "seq": 10,
+            "ts": "2026-02-11T23:33:55.331524+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 0,
+            "total": 2,
+            "progress_pct": 0.0
+          },
+          {
+            "seq": 11,
+            "ts": "2026-02-11T23:33:55.533836+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 1199.8,
+            "state": "running",
+            "current_command": "python -c \"print('quick-pass')\"",
+            "command_elapsed_sec": 0.2,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 100.0
+          },
+          {
+            "seq": 12,
+            "ts": "2026-02-11T23:33:55.533862+00:00",
+            "event": "command_complete",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"print('quick-pass')\"",
+            "exit_code": 0,
+            "duration": 0.201,
+            "completed": 1,
+            "total": 2,
+            "stdout_tail": "quick-pass"
+          },
+          {
+            "seq": 13,
+            "ts": "2026-02-11T23:33:55.535601+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 1,
+            "total": 2,
+            "progress_pct": 50.0
+          },
+          {
+            "seq": 14,
+            "ts": "2026-02-11T23:33:55.535617+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 0.2,
+            "eta_sec": 0.2,
+            "state": "running"
+          },
+          {
+            "seq": 15,
+            "ts": "2026-02-11T23:33:56.313908+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 1.0,
+            "eta_sec": 0.2,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 16,
+            "ts": "2026-02-11T23:33:56.341149+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 1.0,
+            "eta_sec": 1199.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 1.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.08
+          },
+          {
+            "seq": 17,
+            "ts": "2026-02-11T23:33:57.314424+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 2.0,
+            "eta_sec": 1199.0,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 18,
+            "ts": "2026-02-11T23:33:57.341419+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 2.0,
+            "eta_sec": 1198.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 2.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.17
+          },
+          {
+            "seq": 19,
+            "ts": "2026-02-11T23:33:58.314995+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 3.0,
+            "eta_sec": 1198.0,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 20,
+            "ts": "2026-02-11T23:33:58.341252+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 3.0,
+            "eta_sec": 1197.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 3.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.25
+          },
+          {
+            "seq": 21,
+            "ts": "2026-02-11T23:33:59.315271+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 4.0,
+            "eta_sec": 1197.0,
+            "state": "running",
+            "stage": "parallel",
+            "progress": 50.0,
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "completed_commands": 1,
+            "total_commands": 2
+          },
+          {
+            "seq": 22,
+            "ts": "2026-02-11T23:33:59.356417+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 4.0,
+            "eta_sec": 1196.0,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 4.0,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 0.34
+          },
+          {
+            "seq": 23,
+            "ts": "2026-02-11T23:33:59.530321+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 4.2,
+            "eta_sec": 1195.8,
+            "state": "running",
+            "current_command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "command_elapsed_sec": 4.2,
+            "command_timeout_sec": 1200.0,
+            "command_progress_pct": 100.0
+          },
+          {
+            "seq": 24,
+            "ts": "2026-02-11T23:33:59.530356+00:00",
+            "event": "command_complete",
+            "job_id": "verify_5df76d6fc511",
+            "command": "python -c \"import time; print('probe-start'); time.sleep(4); print('probe-end')\"",
+            "exit_code": 0,
+            "duration": 4.198,
+            "completed": 2,
+            "total": 2,
+            "stdout_tail": "probe-start\nprobe-end"
+          },
+          {
+            "seq": 25,
+            "ts": "2026-02-11T23:33:59.532016+00:00",
+            "event": "progress",
+            "job_id": "verify_5df76d6fc511",
+            "completed": 2,
+            "total": 2,
+            "progress_pct": 100.0
+          },
+          {
+            "seq": 26,
+            "ts": "2026-02-11T23:33:59.532034+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_5df76d6fc511",
+            "elapsed_sec": 4.2,
+            "eta_sec": 0.0,
+            "state": "running"
+          },
+          {
+            "seq": 27,
+            "ts": "2026-02-11T23:33:59.532378+00:00",
+            "event": "stage_change",
+            "job_id": "verify_5df76d6fc511",
+            "stage": "cleanup"
+          },
+          {
+            "seq": 28,
+            "ts": "2026-02-11T23:33:59.533066+00:00",
+            "event": "job_completed",
+            "job_id": "verify_5df76d6fc511",
+            "status": "success",
+            "exit_code": 0
+          }
+        ],
+        "count": 28,
+        "total_available": 28,
+        "truncated": false,
+        "max_events": 200,
+        "since_seq": 0,
+        "summary": {
+          "latest_state": "completed",
+          "latest_stage": "completed",
+          "terminal_event_seen": true,
+          "event_type_counts": {
+            "heartbeat": 13,
+            "job_started": 1,
+            "stage_change": 5,
+            "command_start": 2,
+            "progress": 4,
+            "command_complete": 2,
+            "job_completed": 1
+          },
+          "command_stats": {
+            "started": 2,
+            "completed": 2,
+            "skipped": 0,
+            "errors": 0,
+            "cache_hits": 0
+          },
+          "seq_range": {
+            "first": 1,
+            "last": 28
+          }
+        }
+      }
+    }
+  ],
+  "project": "C:\\Users\\dains\\AppData\\Local\\Temp\\accel_mcp_direct_adkb8n1t",
+  "context_changed_files_source": "manifest_recent",
+  "verify_sync_status": "started",
+  "job_id": "verify_5df76d6fc511",
+  "observability": {
+    "saw_command_progress_pct": true,
+    "saw_command_complete_stdout_tail": true,
+    "summary_latest_state_before_cancel": "completed",
+    "final_summary_latest_state": "completed"
+  },
+  "cancel_result": {
+    "job_id": "verify_5df76d6fc511",
+    "status": "completed",
+    "cancelled": false,
+    "message": "Job already in terminal state"
+  },
+  "final_status_after_cancel": {
+    "job_id": "verify_5df76d6fc511",
+    "state": "completed",
+    "stage": "completed",
+    "progress": 100.0,
+    "elapsed_sec": 4.2,
+    "eta_sec": 0.0,
+    "current_command": "",
+    "total_commands": 2,
+    "completed_commands": 2
+  },
+  "ended_at": "2026-02-11T23:34:00.217689+00:00"
+}

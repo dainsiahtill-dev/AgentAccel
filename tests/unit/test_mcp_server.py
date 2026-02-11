@@ -330,6 +330,107 @@ def test_tool_context_allows_wide_scope_when_require_changed_files_disabled(tmp_
     assert isinstance(warnings, list) and len(warnings) >= 1
 
 
+def test_tool_context_default_allows_missing_changed_files(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_default_allow_missing_changed_files_project"
+    project_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {"runtime": {"accel_home": str(tmp_path / ".accel-home")}},
+    )
+    monkeypatch.setattr(mcp_server, "_discover_changed_files_from_git", lambda project_dir, limit=200: [])
+    monkeypatch.setattr(
+        mcp_server,
+        "compile_context_pack",
+        lambda **kwargs: {
+            "version": 1,
+            "task": str(kwargs.get("task", "")),
+            "generated_at": "2026-02-12T00:00:00+00:00",
+            "budget": {"max_chars": 6000, "max_snippets": 16, "top_n_files": 6},
+            "top_files": [],
+            "snippets": [],
+            "verify_plan": {"target_tests": [], "target_checks": []},
+            "meta": {"source_chars_est": 6000},
+        },
+    )
+
+    result = mcp_server._tool_context(
+        project=str(project_dir),
+        task="default mode should not hard fail",
+        changed_files=None,
+        budget="tiny",
+    )
+    assert result["status"] == "ok"
+    assert result["changed_files_source"] == "none"
+    warnings = result.get("warnings", [])
+    assert isinstance(warnings, list) and len(warnings) >= 1
+
+
+def test_tool_context_uses_manifest_recent_changed_files_fallback(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_manifest_fallback_project"
+    project_dir.mkdir(parents=True)
+    accel_home = tmp_path / ".accel-home"
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {
+            "runtime": {
+                "accel_home": str(accel_home),
+                "context_require_changed_files": True,
+            }
+        },
+    )
+    monkeypatch.setattr(mcp_server, "_discover_changed_files_from_git", lambda project_dir, limit=200: [])
+
+    index_dir = mcp_server.project_paths(accel_home, project_dir)["index"]
+    index_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "indexed_files": ["src/a.py", "src/b.py"],
+        "changed_files": ["src/b.py"],
+    }
+    (index_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    captured: dict[str, object] = {}
+
+    def fake_compile_context_pack(
+        project_dir,
+        config,
+        task,
+        changed_files=None,
+        hints=None,
+        previous_attempt_feedback=None,
+        budget_override=None,
+    ):
+        captured["changed_files"] = list(changed_files or [])
+        return {
+            "version": 1,
+            "task": str(task),
+            "generated_at": "2026-02-12T00:00:00+00:00",
+            "budget": {"max_chars": 6000, "max_snippets": 16, "top_n_files": 6},
+            "top_files": [{"path": "src/b.py", "score": 1.0, "reasons": ["changed_file"], "signals": []}],
+            "snippets": [{"path": "src/b.py", "content": "print('ok')", "start_line": 1, "end_line": 1}],
+            "verify_plan": {"target_tests": [], "target_checks": ["pytest -q"]},
+            "meta": {"source_chars_est": 8000},
+        }
+
+    monkeypatch.setattr(mcp_server, "compile_context_pack", fake_compile_context_pack)
+
+    result = mcp_server._tool_context(
+        project=str(project_dir),
+        task="use fallback manifest changed files",
+        changed_files=None,
+    )
+    assert result["status"] == "ok"
+    assert result["changed_files_source"] == "manifest_recent"
+    assert result["changed_files_used"] == ["src/b.py"]
+    assert captured["changed_files"] == ["src/b.py"]
+    warnings = result.get("warnings", [])
+    assert isinstance(warnings, list)
+    assert any("manifest_recent" in str(item) for item in warnings)
+
+
 def test_tool_verify_runs_with_evidence_mode(tmp_path: Path) -> None:
     project_dir = tmp_path / "verify_project"
     (project_dir / "src").mkdir(parents=True)
@@ -446,11 +547,137 @@ def test_verify_events_compact_summary_and_tail() -> None:
     assert bool(payload["truncated"]) is True
     summary = payload.get("summary", {})
     assert isinstance(summary, dict)
-    assert summary.get("latest_state") in {mcp_server.JobState.COMPLETED, "running"}
+    assert summary.get("latest_state") == mcp_server.JobState.COMPLETED
     assert bool(summary.get("terminal_event_seen")) is True
     event_type_counts = summary.get("event_type_counts", {})
     assert isinstance(event_type_counts, dict)
     assert int(event_type_counts.get("job_completed", 0)) >= 1
+
+
+def test_verify_events_summary_prefers_terminal_state_over_late_heartbeat() -> None:
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+    job = jm.create_job()
+    job.mark_running("running")
+    job.add_event("heartbeat", {"elapsed_sec": 1.0, "state": "running", "stage": "running"})
+    job.add_event("job_cancelled_finalized", {"reason": "user_request"})
+    job.mark_cancelled()
+    # Simulate late/out-of-order heartbeat carrying stale running state.
+    job.add_event("heartbeat", {"elapsed_sec": 2.0, "state": "running", "stage": "running"})
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    events_fn = tools["accel_verify_events"].fn
+    payload = events_fn(job_id=job.job_id, since_seq=0, max_events=50, include_summary=True)
+
+    summary = payload.get("summary", {})
+    assert isinstance(summary, dict)
+    assert summary.get("latest_state") == mcp_server.JobState.CANCELLED
+    assert bool(summary.get("terminal_event_seen")) is True
+
+
+def test_verify_events_include_command_progress_and_output_tail(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "events_progress_project"
+    project_dir.mkdir(parents=True)
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir, cli_overrides=None: {
+            "runtime": {"accel_home": str(tmp_path / ".accel-home")},
+            "verify": {},
+        },
+    )
+
+    def fake_run_verify_with_callback(project_dir, config, changed_files=None, callback=None):
+        assert callback is not None
+        cmd = "python -c \"print('ok')\""
+        callback.on_start("verify_fake", 1)
+        callback.on_stage_change("verify_fake", mcp_server.VerifyStage.RUNNING)
+        callback.on_command_start("verify_fake", cmd, 0, 1)
+        callback.on_heartbeat(
+            "verify_fake",
+            0.8,
+            9.2,
+            "running",
+            current_command=cmd,
+            command_elapsed_sec=0.8,
+            command_timeout_sec=10.0,
+            command_progress_pct=8.0,
+        )
+        callback.on_command_complete(
+            "verify_fake",
+            cmd,
+            0,
+            1.2,
+            completed=1,
+            total=1,
+            stdout_tail="line1\nline2",
+            stderr_tail="",
+        )
+        callback.on_progress("verify_fake", 1, 1, "")
+        callback.on_complete("verify_fake", "success", 0)
+        return {
+            "status": "success",
+            "exit_code": 0,
+            "nonce": "events_progress_nonce",
+            "log_path": str(tmp_path / "verify_events_progress.log"),
+            "jsonl_path": str(tmp_path / "verify_events_progress.jsonl"),
+            "commands": [cmd],
+            "results": [
+                {
+                    "command": cmd,
+                    "exit_code": 0,
+                    "duration_seconds": 1.2,
+                    "stdout": "line1\nline2",
+                    "stderr": "",
+                    "timed_out": False,
+                    "cached": False,
+                }
+            ],
+            "degraded": False,
+            "fail_fast": False,
+            "fail_fast_skipped_commands": [],
+            "cache_enabled": False,
+            "cache_hits": 0,
+            "cache_misses": 1,
+        }
+
+    monkeypatch.setattr(mcp_server, "run_verify_with_callback", fake_run_verify_with_callback)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    start_fn = tools["accel_verify_start"].fn
+    status_fn = tools["accel_verify_status"].fn
+    events_fn = tools["accel_verify_events"].fn
+
+    started = start_fn(project=str(project_dir))
+    job_id = str(started["job_id"])
+
+    final_status = {}
+    for _ in range(30):
+        final_status = status_fn(job_id=job_id)
+        if final_status.get("state") == mcp_server.JobState.COMPLETED:
+            break
+        time.sleep(0.05)
+    assert final_status.get("state") == mcp_server.JobState.COMPLETED
+
+    payload = events_fn(job_id=job_id, since_seq=0, max_events=200, include_summary=False)
+    events = payload.get("events", [])
+    assert isinstance(events, list) and len(events) > 0
+
+    heartbeat_events = [event for event in events if event.get("event") == "heartbeat"]
+    assert any("command_progress_pct" in event for event in heartbeat_events)
+
+    command_complete_events = [event for event in events if event.get("event") == "command_complete"]
+    assert len(command_complete_events) >= 1
+    command_complete = command_complete_events[-1]
+    assert command_complete.get("completed") == 1
+    assert command_complete.get("total") == 1
+    assert "line1" in str(command_complete.get("stdout_tail", ""))
 
 
 def test_verify_cancel_converges_to_cancelled(tmp_path: Path, monkeypatch) -> None:

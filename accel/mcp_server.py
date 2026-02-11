@@ -28,7 +28,7 @@ from .verify.job_manager import JobManager, JobState, VerifyJob
 
 JSONDict = dict[str, Any]
 SERVER_NAME = "agent-accel-mcp"
-SERVER_VERSION = "0.2.2"
+SERVER_VERSION = "0.2.3"
 TOOL_ERROR_EXECUTION_FAILED = "ACCEL_TOOL_EXECUTION_FAILED"
 
 # Debug logging setup
@@ -191,6 +191,15 @@ def _summarize_verify_events(events: list[dict[str, Any]], status: JSONDict) -> 
     latest_stage = str(status.get("stage", ""))
     latest_state = str(status.get("state", ""))
     terminal_events = {"job_completed", "job_failed", "job_cancelled_finalized"}
+    terminal_states = {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
+    terminal_state_from_event = ""
+    terminal_event_seq = 0
+    terminal_stage_from_event = ""
+    terminal_event_to_state = {
+        "job_completed": JobState.COMPLETED,
+        "job_failed": JobState.FAILED,
+        "job_cancelled_finalized": JobState.CANCELLED,
+    }
 
     for event in events:
         event_type = str(event.get("event", "")).strip()
@@ -209,6 +218,14 @@ def _summarize_verify_events(events: list[dict[str, Any]], status: JSONDict) -> 
             cache_hits += 1
         if event_type in terminal_events:
             terminal_event_seen = True
+            seq_for_terminal = _coerce_optional_int(event.get("seq")) or 0
+            mapped_state = terminal_event_to_state.get(event_type, "")
+            if seq_for_terminal >= terminal_event_seq and mapped_state:
+                terminal_event_seq = int(seq_for_terminal)
+                terminal_state_from_event = mapped_state
+                stage_value = str(event.get("stage", "")).strip()
+                if stage_value:
+                    terminal_stage_from_event = stage_value
 
         seq = _coerce_optional_int(event.get("seq"))
         if seq is not None and seq > 0:
@@ -222,6 +239,16 @@ def _summarize_verify_events(events: list[dict[str, Any]], status: JSONDict) -> 
         state = str(event.get("state", "")).strip()
         if state:
             latest_state = state
+
+    status_state = str(status.get("state", "")).strip().lower()
+    if status_state in terminal_states:
+        latest_state = status_state
+        latest_stage = str(status.get("stage", latest_stage)).strip() or latest_stage
+        terminal_event_seen = True
+    elif terminal_state_from_event:
+        latest_state = terminal_state_from_event
+        if terminal_stage_from_event:
+            latest_stage = terminal_stage_from_event
 
     return {
         "latest_state": latest_state or str(status.get("state", "")),
@@ -485,6 +512,61 @@ def _discover_changed_files_from_git(project_dir: Path, limit: int = 200) -> lis
         return list(discovered)
 
 
+def _discover_changed_files_from_index_fallback(
+    project_dir: Path,
+    *,
+    config: dict[str, Any],
+    task: str,
+    hints: list[str],
+    limit: int = 24,
+) -> tuple[list[str], str]:
+    accel_home_value = str(config.get("runtime", {}).get("accel_home", "")).strip()
+    if not accel_home_value:
+        return [], "no_accel_home"
+    accel_home = Path(accel_home_value).resolve()
+    index_dir = project_paths(accel_home, project_dir)["index"]
+    manifest_path = index_dir / "manifest.json"
+    if not manifest_path.exists():
+        return [], "manifest_missing"
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return [], "manifest_parse_failed"
+
+    indexed_files = [str(item).replace("\\", "/") for item in manifest.get("indexed_files", []) if str(item).strip()]
+    if not indexed_files:
+        return [], "manifest_index_empty"
+
+    indexed_set = set(indexed_files)
+    recent_changed = [
+        str(item).replace("\\", "/")
+        for item in manifest.get("changed_files", [])
+        if str(item).strip() and str(item).replace("\\", "/") in indexed_set
+    ]
+    if recent_changed:
+        deduped_recent = list(dict.fromkeys(recent_changed))[: max(1, int(limit))]
+        return deduped_recent, "manifest_recent"
+
+    tokens = normalize_task_tokens(task)
+    for hint in hints:
+        tokens.extend(normalize_task_tokens(str(hint)))
+    tokens = list(dict.fromkeys(tokens))
+    if tokens:
+        scored: list[tuple[int, str]] = []
+        for rel_path in indexed_files:
+            path_low = rel_path.lower()
+            score = sum(1 for token in tokens if token in path_low)
+            if score > 0:
+                scored.append((score, rel_path))
+        if scored:
+            scored.sort(key=lambda item: (-item[0], item[1]))
+            selected = [path for _, path in scored[: max(1, int(limit))]]
+            return selected, "planner_fallback"
+
+    return indexed_files[: max(1, min(int(limit), 8))], "index_head_fallback"
+
+
 def _auto_context_budget_preset(task: str, changed_files: list[str], hints: list[str]) -> tuple[str, str]:
     task_text = str(task or "").strip()
     task_low = task_text.lower()
@@ -599,14 +681,27 @@ def _tool_context(
     config = resolve_effective_config(project_dir)
     _debug_log("_tool_context: config resolved")
     runtime_cfg = config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {}
-    require_changed_files = bool(runtime_cfg.get("context_require_changed_files", True))
+    require_changed_files = bool(runtime_cfg.get("context_require_changed_files", False))
 
     changed_files_source = "user" if changed_files_list else "none"
+    changed_files_fallback_reason = ""
     if not changed_files_list:
         auto_changed = _discover_changed_files_from_git(project_dir)
         if auto_changed:
             changed_files_list = auto_changed
             changed_files_source = "git_auto"
+        else:
+            fallback_changed, fallback_reason = _discover_changed_files_from_index_fallback(
+                project_dir,
+                config=config,
+                task=task_text,
+                hints=hints_list,
+            )
+            if fallback_changed:
+                changed_files_list = fallback_changed
+                changed_files_source = fallback_reason
+            else:
+                changed_files_fallback_reason = fallback_reason
     _debug_log(
         "_tool_context: changed_files resolution "
         f"source={changed_files_source} count={len(changed_files_list)}"
@@ -693,6 +788,12 @@ def _tool_context(
     warnings: list[str] = []
     if changed_files_source == "none":
         warnings.append("changed_files not provided and no git delta detected; context scope may be wider than necessary")
+    elif changed_files_source in {"manifest_recent", "planner_fallback", "index_head_fallback"}:
+        warnings.append(
+            f"changed_files inferred via {changed_files_source}; provide explicit changed_files for tighter precision"
+        )
+    if changed_files_fallback_reason:
+        warnings.append(f"changed_files fallback detail: {changed_files_fallback_reason}")
 
     verify_plan = pack.get("verify_plan", {}) if isinstance(pack.get("verify_plan", {}), dict) else {}
     target_tests = verify_plan.get("target_tests", [])
@@ -982,6 +1083,9 @@ def create_server() -> FastMCP:
                         "state": state,
                         "stage": status.get("stage", "running"),
                         "progress": float(status.get("progress", 0.0)),
+                        "current_command": str(status.get("current_command", "")),
+                        "completed_commands": int(status.get("completed_commands", 0) or 0),
+                        "total_commands": int(status.get("total_commands", 0) or 0),
                     },
                 )
                 time.sleep(1.0)
@@ -1073,17 +1177,69 @@ def create_server() -> FastMCP:
             self._job.current_command = command
             self._job.add_event("command_start", {"command": command, "index": index, "total": total})
 
-        def on_command_complete(self, job_id: str, command: str, exit_code: int, duration: float) -> None:
-            self._job.add_event("command_complete", {"command": command, "exit_code": exit_code, "duration": round(duration, 3)})
+        def on_command_complete(
+            self,
+            job_id: str,
+            command: str,
+            exit_code: int,
+            duration: float,
+            *,
+            completed: int | None = None,
+            total: int | None = None,
+            stdout_tail: str = "",
+            stderr_tail: str = "",
+        ) -> None:
+            payload: JSONDict = {
+                "command": command,
+                "exit_code": int(exit_code),
+                "duration": round(float(duration), 3),
+            }
+            if completed is not None:
+                payload["completed"] = int(completed)
+            if total is not None:
+                payload["total"] = int(total)
+            stdout_tail_text = str(stdout_tail or "").strip()
+            stderr_tail_text = str(stderr_tail or "").strip()
+            if stdout_tail_text:
+                payload["stdout_tail"] = stdout_tail_text
+            if stderr_tail_text:
+                payload["stderr_tail"] = stderr_tail_text
+            self._job.add_event("command_complete", payload)
 
         def on_progress(self, job_id: str, completed: int, total: int, current_command: str) -> None:
             self._job.update_progress(completed, total, current_command)
             self._job.add_event("progress", {"completed": completed, "total": total, "progress_pct": round(self._job.progress, 1)})
 
-        def on_heartbeat(self, job_id: str, elapsed_sec: float, eta_sec: float | None, state: str) -> None:
+        def on_heartbeat(
+            self,
+            job_id: str,
+            elapsed_sec: float,
+            eta_sec: float | None,
+            state: str,
+            *,
+            current_command: str = "",
+            command_elapsed_sec: float | None = None,
+            command_timeout_sec: float | None = None,
+            command_progress_pct: float | None = None,
+        ) -> None:
             self._job.elapsed_sec = elapsed_sec
             self._job.eta_sec = eta_sec
-            self._job.add_event("heartbeat", {"elapsed_sec": round(elapsed_sec, 1), "eta_sec": round(eta_sec, 1) if eta_sec else None, "state": state})
+            if current_command:
+                self._job.current_command = current_command
+            heartbeat_payload: JSONDict = {
+                "elapsed_sec": round(float(elapsed_sec), 1),
+                "eta_sec": round(float(eta_sec), 1) if eta_sec is not None else None,
+                "state": state,
+            }
+            if current_command:
+                heartbeat_payload["current_command"] = current_command
+            if command_elapsed_sec is not None:
+                heartbeat_payload["command_elapsed_sec"] = round(float(command_elapsed_sec), 1)
+            if command_timeout_sec is not None:
+                heartbeat_payload["command_timeout_sec"] = round(float(command_timeout_sec), 1)
+            if command_progress_pct is not None:
+                heartbeat_payload["command_progress_pct"] = round(float(command_progress_pct), 2)
+            self._job.add_event("heartbeat", heartbeat_payload)
 
         def on_cache_hit(self, job_id: str, command: str) -> None:
             self._job.add_event("cache_hit", {"command": command})

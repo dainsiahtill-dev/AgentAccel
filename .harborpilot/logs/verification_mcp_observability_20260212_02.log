@@ -1,0 +1,18 @@
+﻿VERIFICATION_START mcp_observability_20260212_02 2026-02-11T23:40:02.2320105Z
+ENV cwd=X:\MCPs\agent-accel
+ENV python=3.14.2 (tags/v3.14.2:df79316, Dec  5 2025, 17:18:21) [MSC v.1944 64 bit (AMD64)]
+ENV git_head=f08a2520d2034613268aecf93461b23d9623b07c
+CMD ruff check accel/mcp_server.py accel/verify/callbacks.py accel/verify/orchestrator.py tests/unit/test_mcp_server.py
+All checks passed!
+EXIT_CODE 0
+CMD pytest -q tests/unit/test_mcp_server.py tests/unit/test_verify_orchestrator.py
+...........................                                              [100%]
+27 passed in 4.91s
+EXIT_CODE 0
+CMD python smoke assertions (direct tool logs)
+SMOKE_ASSERTIONS_OK
+EXIT_CODE 0
+DEGRADE_REASON: script unavailable
+RISK: full-repo ruff/pytest includes pre-existing diagnostic scripts failing outside touched scope
+BACKFILL_PLAN: owner=user commands='ruff check . && PYTHONPATH=x:/MCPs/agent-accel pytest -q' deadline_utc=2026-02-12T23:59:59Z
+VERIFICATION_END mcp_observability_20260212_02 2026-02-11T23:40:09.9654440Z

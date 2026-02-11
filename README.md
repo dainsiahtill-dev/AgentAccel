@@ -235,7 +235,7 @@ Generate a budgeted context pack for a task.
 **Auto defaults (when omitted):**
 - `budget`: adaptive policy (`tiny` for quick/small scope, `small` for daily usage, `medium` for complex scope)
 - `changed_files`: auto-discovered from git diff (worktree + staged) when available
-- if `changed_files` is still empty, `accel_context` fails fast by default (`runtime.context_require_changed_files=true`) to prevent accidental wide-scope context inflation
+- if `changed_files` is still empty, `accel_context` continues with warning by default; set `runtime.context_require_changed_files=true` to enforce fail-fast
 
 **Key response fields:**
 - `estimated_tokens`: tokenizer-based estimate for generated context payload (calibration applied)
@@ -245,7 +245,7 @@ Generate a budgeted context pack for a task.
 - `selected_tests_count`: number of tests selected in `verify_plan.target_tests`
 - `selected_checks_count`: number of checks selected in `verify_plan.target_checks`
 - `budget_source` / `budget_preset`: whether budget came from user input or auto policy
-- `changed_files_source`: `user` | `git_auto` | `none`
+- `changed_files_source`: `user` | `git_auto` | `manifest_recent` | `planner_fallback` | `index_head_fallback` | `none`
 - `token_estimator`: backend/model/encoding/calibration metadata used for estimation
 
 #### `accel_verify`
@@ -295,6 +295,8 @@ Start incremental verification with runtime override options.
 
 - `max_events`: clip to the latest N events (default 30, max 500)
 - `include_summary`: include aggregate counters and latest stage/state for model-friendly ingestion
+- heartbeat events may include command-level fields: `current_command`, `command_elapsed_sec`, `command_timeout_sec`, `command_progress_pct`
+- command completion events may include tails: `stdout_tail`, `stderr_tail`, plus `completed` / `total`
 
 Tokenizer estimation runtime knobs (via `accel.local.yaml` runtime or env):
 - `token_estimator_backend`: `auto` | `tiktoken` | `heuristic`
