@@ -1,0 +1,13 @@
+VERIFICATION_START mcpfix_20260210_01 2026-02-10T21:16:26.479680+00:00
+ENV branch=HEAD commit=d88130661b77760f2e7c1a2ef55018bfe449c63c python=3.14.2 cwd=X:/Git/Harborpilot/agent-accel
+CMD pytest -q
+EXIT 0
+SUMMARY 26 passed in 10.63s
+CMD python -m ruff check .
+EXIT 0
+SUMMARY All checks passed!
+CMD python -m mypy .
+EXIT 0
+SUMMARY Success: no issues found in 35 source files
+SUMMARY WARNING: '..\mypy.ini' parse warning emitted by parent config but command exit code is 0
+VERIFICATION_END mcpfix_20260210_01 2026-02-10T21:16:26.479699+00:00

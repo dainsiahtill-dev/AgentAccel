@@ -1,0 +1,12 @@
+{
+  "runtime": {
+    "max_workers": 12,
+    "accel_home": "C:/Users/<you>/AppData/Local/agent-accel",
+    "per_command_timeout_seconds": 1200,
+    "total_verify_timeout_seconds": 3600
+  },
+  "gpu": {
+    "enabled": false,
+    "policy": "off"
+  }
+}

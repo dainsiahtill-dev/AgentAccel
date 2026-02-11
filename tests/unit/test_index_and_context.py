@@ -1,0 +1,200 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from accel.config import init_project, resolve_effective_config
+from accel.indexers import build_or_update_indexes
+from accel.query.context_compiler import compile_context_pack
+from accel.storage.cache import project_paths
+from accel.storage.index_cache import load_index_rows
+
+
+def _write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def test_index_build_and_context_pack(tmp_path: Path, monkeypatch) -> None:
+    _write(
+        tmp_path / "src" / "main.py",
+        "def build_context(task: str) -> str:\n    return task.upper()\n",
+    )
+    _write(
+        tmp_path / "src" / "helper.ts",
+        "export function normalizeTask(input: string) { return input.trim(); }\n",
+    )
+    _write(
+        tmp_path / "tests" / "test_main.py",
+        "from src.main import build_context\n\ndef test_build_context():\n    assert build_context('a') == 'A'\n",
+    )
+
+    init_project(tmp_path)
+    monkeypatch.setenv("ACCEL_HOME", str(tmp_path / ".accel-home"))
+
+    cfg = resolve_effective_config(tmp_path)
+    manifest = build_or_update_indexes(project_dir=tmp_path, config=cfg, mode="build", full=True)
+    assert manifest["counts"]["files"] >= 2
+    assert manifest["counts"]["symbols"] >= 1
+
+    pack = compile_context_pack(
+        project_dir=tmp_path,
+        config=cfg,
+        task="fix build_context in main",
+        changed_files=["src/main.py"],
+    )
+    assert pack["top_files"]
+    assert any(item["path"] == "src/main.py" for item in pack["top_files"])
+    assert pack["snippets"]
+
+
+def test_index_update_uses_parallel_pool_and_delta_mmap(tmp_path: Path, monkeypatch) -> None:
+    _write(
+        tmp_path / "src" / "main.py",
+        "def alpha() -> str:\n    return 'alpha'\n",
+    )
+    _write(
+        tmp_path / "src" / "helper.py",
+        "def helper() -> str:\n    return 'helper'\n",
+    )
+    _write(
+        tmp_path / "src" / "util.ts",
+        "export function utilValue() { return 'util'; }\n",
+    )
+    _write(
+        tmp_path / "tests" / "test_main.py",
+        "from src.main import alpha\n\ndef test_alpha():\n    assert alpha() == 'alpha'\n",
+    )
+
+    init_project(tmp_path)
+    monkeypatch.setenv("ACCEL_HOME", str(tmp_path / ".accel-home"))
+
+    cfg = resolve_effective_config(
+        tmp_path,
+        cli_overrides={
+            "runtime": {
+                "index_workers": 96,
+                "index_delta_compact_every": 1000,
+                "index_parallel_backend": "process",
+            }
+        },
+    )
+
+    calls: dict[str, int] = {"max_workers": 0, "map_calls": 0}
+
+    class FakePool:
+        def __init__(self, max_workers: int) -> None:
+            calls["max_workers"] = int(max_workers)
+
+        def __enter__(self) -> "FakePool":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def map(self, func, iterable, chunksize: int = 1):
+            calls["map_calls"] += 1
+            return [func(item) for item in iterable]
+
+    monkeypatch.setattr("accel.indexers.ProcessPoolExecutor", FakePool)
+    monkeypatch.setattr("accel.indexers.os.cpu_count", lambda: 96)
+
+    manifest_build = build_or_update_indexes(project_dir=tmp_path, config=cfg, mode="build", full=True)
+    processed_files = int(manifest_build["performance"]["processed_files"])
+    assert processed_files > 1
+    assert calls["map_calls"] == 1
+    assert calls["max_workers"] == min(96, processed_files)
+    assert str(manifest_build["performance"]["parallel_backend"]) == "process"
+    assert bool(manifest_build["performance"]["parallelized"]) is True
+
+    _write(
+        tmp_path / "src" / "main.py",
+        "def beta() -> str:\n    return 'beta'\n",
+    )
+    manifest_update = build_or_update_indexes(project_dir=tmp_path, config=cfg, mode="update", full=False)
+    assert int(manifest_update["delta"]["pending_ops"]["symbols"]) >= 1
+    assert bool(manifest_update["delta"]["compacted"]) is False
+
+    index_dir = project_paths(Path(cfg["runtime"]["accel_home"]).resolve(), tmp_path)["index"]
+    symbol_rows = load_index_rows(index_dir=index_dir, kind="symbols", key_field="file")
+    main_symbols = {str(row.get("symbol", "")) for row in symbol_rows if str(row.get("file", "")) == "src/main.py"}
+    assert "beta" in main_symbols
+    assert "alpha" not in main_symbols
+
+    pack = compile_context_pack(
+        project_dir=tmp_path,
+        config=cfg,
+        task="update beta behavior",
+        changed_files=["src/main.py"],
+    )
+    assert any(item["path"] == "src/main.py" for item in pack["top_files"])
+
+
+def test_index_auto_backend_uses_thread_pool_on_windows(tmp_path: Path, monkeypatch) -> None:
+    _write(
+        tmp_path / "src" / "main.py",
+        "def alpha() -> str:\n    return 'alpha'\n",
+    )
+    _write(
+        tmp_path / "src" / "helper.py",
+        "def helper() -> str:\n    return 'helper'\n",
+    )
+    _write(
+        tmp_path / "src" / "util.ts",
+        "export function utilValue() { return 'util'; }\n",
+    )
+
+    init_project(tmp_path)
+    monkeypatch.setenv("ACCEL_HOME", str(tmp_path / ".accel-home"))
+
+    cfg = resolve_effective_config(
+        tmp_path,
+        cli_overrides={
+            "runtime": {
+                "index_workers": 48,
+                "index_parallel_backend": "auto",
+            }
+        },
+    )
+
+    calls: dict[str, int] = {"process_map_calls": 0, "thread_map_calls": 0, "max_workers": 0}
+
+    class FakeProcessPool:
+        def __init__(self, max_workers: int) -> None:
+            calls["max_workers"] = int(max_workers)
+
+        def __enter__(self) -> "FakeProcessPool":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def map(self, func, iterable, chunksize: int = 1):
+            calls["process_map_calls"] += 1
+            return [func(item) for item in iterable]
+
+    class FakeThreadPool:
+        def __init__(self, max_workers: int) -> None:
+            calls["max_workers"] = int(max_workers)
+
+        def __enter__(self) -> "FakeThreadPool":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def map(self, func, iterable):
+            calls["thread_map_calls"] += 1
+            return [func(item) for item in iterable]
+
+    monkeypatch.setattr("accel.indexers.ProcessPoolExecutor", FakeProcessPool)
+    monkeypatch.setattr("accel.indexers.ThreadPoolExecutor", FakeThreadPool)
+    monkeypatch.setattr("accel.indexers.os.name", "nt")
+    monkeypatch.setattr("accel.indexers.os.cpu_count", lambda: 48)
+
+    manifest_build = build_or_update_indexes(project_dir=tmp_path, config=cfg, mode="build", full=True)
+    processed_files = int(manifest_build["performance"]["processed_files"])
+    assert processed_files > 1
+    assert calls["thread_map_calls"] == 1
+    assert calls["process_map_calls"] == 0
+    assert calls["max_workers"] == min(48, processed_files)
+    assert str(manifest_build["performance"]["parallel_backend"]) == "thread"

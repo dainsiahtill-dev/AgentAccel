@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentAccel Context Pack",
+  "type": "object",
+  "required": ["version", "task", "generated_at", "budget", "top_files", "snippets", "verify_plan"],
+  "properties": {
+    "version": { "type": "integer", "minimum": 1 },
+    "task": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string" },
+    "budget": {
+      "type": "object",
+      "required": ["max_chars", "max_snippets", "top_n_files"],
+      "properties": {
+        "max_chars": { "type": "integer", "minimum": 1 },
+        "max_snippets": { "type": "integer", "minimum": 1 },
+        "top_n_files": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "top_files": { "type": "array" },
+    "snippets": { "type": "array" },
+    "verify_plan": { "type": "object" },
+    "previous_attempt_feedback": { "type": "object" },
+    "meta": { "type": "object" }
+  }
+}

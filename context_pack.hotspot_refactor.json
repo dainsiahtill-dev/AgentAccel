@@ -1,0 +1,550 @@
+{
+  "version": 1,
+  "task": "Identify one high-impact hotspot file for refactor in HarborPilot, prioritize high coupling and duplicated orchestration logic, and return focused files for minimal-risk modular extraction.",
+  "generated_at": "2026-02-10T21:21:40.652701+00:00",
+  "budget": {
+    "max_chars": 24000,
+    "max_snippets": 60,
+    "top_n_files": 12
+  },
+  "top_files": [
+    {
+      "path": "src/backend/scripts/loop-director.py",
+      "score": 0.847619,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 1.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.238095
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/app/routers/llm.py",
+      "score": 0.838095,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 1.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.190476
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/app/llm/providers/codex_cli_provider.py",
+      "score": 0.828571,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 1.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.142857
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/app/services/interactive_interview_streaming.py",
+      "score": 0.821429,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.952381
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.190476
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "tests/e2e/utils/file_utils.py",
+      "score": 0.819048,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 1.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.095238
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/app/llm/providers/gemini_api_provider.py",
+      "score": 0.809524,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 1.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.047619
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/app/llm/providers/gemini_cli_provider.py",
+      "score": 0.809524,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 1.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.047619
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/app/utils.py",
+      "score": 0.809524,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 1.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.047619
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/core/harborpilot_loop/context_engine.py",
+      "score": 0.809524,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 1.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.047619
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/scripts/loop-pm.py",
+      "score": 0.778571,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.857143
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.142857
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/app/llm/providers/minimax_provider.py",
+      "score": 0.77619,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.904762
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.047619
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/app/services/llm_tests/utils.py",
+      "score": 0.702381,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.666667
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.095238
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    }
+  ],
+  "snippets": [
+    {
+      "path": "src/backend/scripts/loop-director.py",
+      "start_line": 1,
+      "end_line": 51,
+      "symbol": "enforce_utf8",
+      "reason": "symbol_or_token_focus",
+      "content": "import argparse\nimport datetime\nimport json\nimport os\nimport sys\nimport time\nfrom typing import Any, Dict, List, Optional, Tuple\nfrom dataclasses import dataclass, replace\n\n\ndef enforce_utf8() -> None:\n    os.environ.setdefault(\"PYTHONUTF8\", \"1\")\n    os.environ.setdefault(\"PYTHONIOENCODING\", \"utf-8\")\n    os.environ.setdefault(\"LANG\", \"en_US.UTF-8\")\n    os.environ.setdefault(\"LC_ALL\", \"en_US.UTF-8\")\n    try:\n        sys.stdout.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n    try:\n        sys.stderr.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n\n\nenforce_utf8()\n\nSCRIPT_DIR = os.path.dirname(__file__)\nPROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, \"..\"))\nPROMPT_PROFILE_ENV = \"HARBORPILOT_PROMPT_PROFILE\"\nDEFAULT_READ_RADIUS = 80\nDEFAULT_TOOL_COMMANDS = [\n    \"python -m tools.main ruff_check -- .\",\n    \"python -m tools.main mypy -- .\",\n    \"python -m tools.main pytest -- -q\",\n]\nREQUIRED_MODULE_FILES = (\n    \"decision.py\",\n    \"io_utils.py\",\n    \"policy.py\",\n    \"ollama_utils.py\",\n    \"prompts.py\",\n    \"shared.py\",\n)\n\ndef find_module_dir(base_dir: str) -> str:\n    env_dir = os.environ.get(\"OLLAMA_LOOP_MODULE_DIR\", \"\").strip()\n    if env_dir:\n        return env_dir\n    candidates = [\n        os.path.join(base_dir, \"harborpilot-loop\"),"
+    },
+    {
+      "path": "src/backend/app/routers/llm.py",
+      "start_line": 10,
+      "end_line": 90,
+      "symbol": "get_state",
+      "reason": "symbol_or_token_focus",
+      "content": "\nfrom fastapi import APIRouter, Depends, HTTPException, Request\nfrom fastapi.responses import StreamingResponse\nfrom pydantic import BaseModel, Field, field_validator\n\nfrom ..config import Settings\nfrom ..state import AppState, Auth\nfrom ..utils import build_cache_root, resolve_artifact_path\nfrom ..services.llm_tests import run_llm_tests, load_llm_test_index, reconcile_llm_test_index\nfrom ..services.llm_tests import run_llm_tests_streaming\nfrom ..services.interactive_interview import (\n    run_interactive_interview_question,\n    save_interactive_interview_report,\n)\nfrom ..services.interactive_interview_streaming import (\n    run_interactive_interview_streaming,\n    cancel_interactive_interview_stream,\n)\nfrom ..llm import config as llm_config\nfrom ..llm.providers import (\n    ollama_health,\n    ollama_list_models,\n    openai_health,\n    openai_list_models,\n    anthropic_health,\n    anthropic_list_models,\n    # New enhanced providers\n    provider_manager,\n)\nfrom ..utils import save_persisted_settings\nfrom ..services.interactive_interview import (\n    load_interview_history_summary,\n)\nfrom .llm_provider_context import resolve_provider_request_context\nfrom .llm_test_context import resolve_llm_test_execution_context\n\n\nrouter = APIRouter()\n\n\ndef get_state(request: Request) -> AppState:\n    return request.app.state.app_state\n\n\ndef require_auth(request: Request):\n    auth: Auth = request.app.state.auth\n    if not auth.check(request.headers.get(\"authorization\", \"\")):\n        raise HTTPException(status_code=401, detail=\"unauthorized\")\n\n\nclass LlmTestPayload(BaseModel):\n    role: Optional[str] = None\n    provider_id: Optional[str] = None\n    model: Optional[str] = None\n    suites: Optional[list[str]] = None\n    test_level: str = \"quick\"\n    evaluation_mode: Optional[str] = None\n    api_key: Optional[str] = None\n    headers: Optional[Dict[str, str]] = None\n    env_overrides: Optional[Dict[str, str]] = None\n    prompt_override: Optional[str] = None\n    # Connectivity-only fields (Scheme B): allow bypassing config loading\n    provider_type: Optional[str] = None\n    base_url: Optional[str] = None\n    api_path: Optional[str] = None\n    timeout: Optional[int] = None\n\n\nclass ProviderActionPayload(BaseModel):\n    api_key: Optional[str] = None\n    headers: Optional[Dict[str, str]] = None\n\n\nclass InterviewAskPayload(BaseModel):\n    role: str\n    provider_id: str\n    model: str\n    question: str\n    context: Optional[list[Dict[str, Any]]] = None\n    expects_thinking: Optional[bool] = None\n    criteria: Optional[list[str]] = None"
+    },
+    {
+      "path": "src/backend/app/llm/providers/codex_cli_provider.py",
+      "start_line": 1,
+      "end_line": 74,
+      "symbol": "_normalize_command",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport json\nimport os\nimport re\nimport shutil\nimport subprocess\nimport time\nimport threading\nimport queue\nfrom typing import Any, Callable, Dict, List, Optional, Tuple\n\nfrom .base_provider import (\n    BaseProvider, ProviderInfo, HealthResult, ModelListResult,\n    InvokeResult, ValidationResult, ThinkingInfo, WorkingDirConfig\n)\nfrom ..types import estimate_usage, ModelInfo\nfrom ...utils import build_utf8_env\n\n# Try to import PTY support for real-time terminal output\ntry:\n    import pty\n    HAS_PTY = True\nexcept ImportError:\n    HAS_PTY = False\n\ntry:\n    import winpty\n    HAS_WINPTY = True\nexcept ImportError:\n    HAS_WINPTY = False\n\n\ndef _normalize_command(command: str) -> List[str]:\n    \"\"\"Normalize command for different platforms\"\"\"\n    ext = os.path.splitext(command)[1].lower()\n    if ext == \".ps1\":\n        return [\"powershell\", \"-NoProfile\", \"-ExecutionPolicy\", \"Bypass\", \"-File\", command]\n    if ext in (\".cmd\", \".bat\"):\n        return [\"cmd.exe\", \"/c\", command]\n    return [command]\n\n\ndef _truncate(text: str, limit: int) -> str:\n    \"\"\"Truncate text to specified limit with ellipsis\"\"\"\n    if not text:\n        return \"\"\n    if len(text) <= limit:\n        return text\n    return text[: max(0, limit - 3)] + \"...\"\n\n\ndef _resolve_command(command: str) -> Optional[str]:\n    \"\"\"Resolve command path\"\"\"\n    if not command:\n        return None\n    if os.path.isabs(command) or os.path.exists(command):\n        return command\n    return shutil.which(command)\n\n\ndef _supports_reasoning_effort(model: str) -> bool:\n    \"\"\"Heuristic check for models that accept reasoning.effort config.\"\"\"\n    if not model:\n        return False\n    lowered = model.strip().lower()\n    if lowered.startswith((\"gpt-\", \"o1\", \"o3\", \"o4\")):\n        return True\n    if \"codex\" in lowered:\n        return True\n    return False\n\n\ndef _build_codex_exec_args(model: str, config: Dict[str, Any]) -> List[str]:"
+    },
+    {
+      "path": "src/backend/app/services/interactive_interview_streaming.py",
+      "start_line": 13,
+      "end_line": 93,
+      "symbol": "_parse_timeout_int",
+      "reason": "symbol_or_token_focus",
+      "content": "import signal\nimport subprocess\nimport threading\nfrom typing import Any, Dict, List, Optional, Tuple\n\nfrom ..config import Settings\nfrom ..llm import config as llm_config\nfrom ..llm.types import estimate_usage\nfrom ..debug_trace import emit_debug_event, log_stream_token\nfrom ..llm.providers.codex_cli_provider import (\n    _build_codex_exec_args,\n    _resolve_command,\n    _normalize_command,\n    _parse_codex_json_output,\n    _render_args as _provider_render_args,\n)\nfrom ..utils import build_cache_root, build_utf8_env\nfrom .interactive_interview import (\n    _resolve_provider,\n    _is_codex_provider,\n    _looks_like_codex_model,\n    _extract_project_path,\n    _inject_project_dir,\n    _looks_like_deflection,\n    _validate_answer_quality,\n    _split_thinking_output,\n    build_interactive_interview_prompt,\n    _new_test_run_id,\n    _utc_now,\n)\nfrom .streaming_tag_parser import create_tag_parser\n\n_ACTIVE_PROCESS_LOCK = threading.Lock()\n_ACTIVE_CODEX_PROCESSES: Dict[str, subprocess.Popen] = {}\n_THINKING_TAGS = (\"thinking\", \"think\", \"reasoning\", \"analysis\")\n_ANSWER_TAGS = (\"answer\", \"final\", \"response\")\n_INTERVIEW_STREAM_TIMEOUT_ENV = \"HARBORPILOT_INTERVIEW_STREAM_TIMEOUT\"\n_INTERVIEW_STREAM_TIMEOUT_DEFAULT = 300\n\n\ndef _parse_timeout_int(value: Any) -> Optional[int]:\n    if value is None:\n        return None\n    if isinstance(value, bool):\n        return None\n    if isinstance(value, (int, float)):\n        return int(value)\n    text = str(value).strip()\n    if not text:\n        return None\n    try:\n        return int(text)\n    except Exception:\n        return None\n\n\ndef _resolve_interview_stream_timeout(provider_cfg: Dict[str, Any]) -> Dict[str, Any]:\n    \"\"\"Resolve effective timeout for interview streaming.\n\n    Behavior:\n    - `stream_timeout` (when set) wins.\n    - `timeout <= 0` keeps provider's no-timeout semantics.\n    - Otherwise enforce a minimum floor for deep interview streaming.\n    \"\"\"\n    floor_raw = os.environ.get(_INTERVIEW_STREAM_TIMEOUT_ENV, \"\").strip()\n    floor = _INTERVIEW_STREAM_TIMEOUT_DEFAULT\n    if floor_raw:\n        try:\n            parsed = int(floor_raw)\n            if parsed > 0:\n                floor = parsed\n        except Exception:\n            floor = _INTERVIEW_STREAM_TIMEOUT_DEFAULT\n\n    stream_timeout = _parse_timeout_int(provider_cfg.get(\"stream_timeout\"))\n    if stream_timeout is not None:\n        return {\n            \"timeout\": stream_timeout,\n            \"source\": \"stream_timeout\",\n            \"configured_timeout\": _parse_timeout_int(provider_cfg.get(\"timeout\")),\n            \"floor\": floor,"
+    },
+    {
+      "path": "tests/e2e/utils/file_utils.py",
+      "start_line": 1,
+      "end_line": 53,
+      "symbol": "FileUtils",
+      "reason": "symbol_or_token_focus",
+      "content": "\"\"\"\nFile utilities for HarborPilot E2E tests\n\"\"\"\n\nimport shutil\nimport json\nimport tempfile\nfrom pathlib import Path\nfrom typing import Dict, Any, List, Union\nfrom loguru import logger\n\n\nclass FileUtils:\n    \"\"\"Utility class for file operations\"\"\"\n    \n    @staticmethod\n    def ensure_directory(path: Union[str, Path]) -> Path:\n        \"\"\"\n        Ensure directory exists, create if it doesn't\n        \n        Args:\n            path: Directory path\n            \n        Returns:\n            Path object\n        \"\"\"\n        path_obj = Path(path)\n        path_obj.mkdir(parents=True, exist_ok=True)\n        return path_obj\n    \n    @staticmethod\n    def create_file(path: Union[str, Path], content: str = \"\", encoding: str = \"utf-8\") -> Path:\n        \"\"\"\n        Create file with content\n        \n        Args:\n            path: File path\n            content: File content\n            encoding: File encoding\n            \n        Returns:\n            Path object\n        \"\"\"\n        path_obj = Path(path)\n        FileUtils.ensure_directory(path_obj.parent)\n        \n        with open(path_obj, 'w', encoding=encoding) as f:\n            f.write(content)\n        \n        logger.debug(f\"Created file: {path_obj}\")\n        return path_obj\n    \n    @staticmethod"
+    },
+    {
+      "path": "src/backend/app/llm/providers/gemini_api_provider.py",
+      "start_line": 1,
+      "end_line": 55,
+      "symbol": "GeminiAPIProvider",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport time\nfrom typing import Any, Dict, List, Optional\nimport requests\nimport re\n\nfrom ..types import HealthResult, InvokeResult, ModelInfo, ModelListResult, Usage, estimate_usage\nfrom .base_provider import (\n    BaseProvider, ProviderInfo, ValidationResult, ThinkingInfo, \n    WorkingDirConfig\n)\n\n\nclass GeminiAPIProvider(BaseProvider):\n    \"\"\"Google Gemini API provider with thinking extraction\"\"\"\n    \n    @classmethod\n    def get_provider_info(cls) -> ProviderInfo:\n        return ProviderInfo(\n            name=\"Gemini API Provider\",\n            type=\"gemini_api\",\n            description=\"Google Gemini API provider\",\n            version=\"1.0.0\",\n            author=\"HarborPilot Team\",\n            documentation_url=\"https://ai.google.dev/\",\n            supported_features=[\n                \"thinking_extraction\",\n                \"large_context\",\n                \"model_listing\",\n                \"health_check\",\n                \"file_operations_via_interface\",\n                \"multimodal_support\"\n            ],\n            cost_class=\"METERED\",\n            provider_category=\"LLM\",\n            autonomous_file_access=False,\n            requires_file_interfaces=True,\n            model_listing_method=\"API\"\n        )\n    \n    @classmethod\n    def get_default_config(cls) -> Dict[str, Any]:\n        return {\n            \"base_url\": \"https://generativelanguage.googleapis.com\",\n            \"api_key\": \"\",\n            \"api_key_ref\": \"keychain:gemini\",\n            \"api_path\": \"/v1beta/models/{model}:generateContent\",\n            \"models_path\": \"/v1beta/models\",\n            \"timeout\": 60,\n            \"retries\": 3,\n            \"temperature\": 0.7,\n            \"max_tokens\": 8192,\n            \"thinking_extraction\": {\n                \"enabled\": True,"
+    },
+    {
+      "path": "src/backend/app/llm/providers/gemini_cli_provider.py",
+      "start_line": 1,
+      "end_line": 59,
+      "symbol": "GeminiCLIProvider",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport os\nimport shutil\nimport subprocess\nimport time\nimport json\nimport re\nfrom typing import Any, Dict, List, Optional, Tuple\n\nfrom ...utils import build_utf8_env\nfrom ..types import HealthResult, InvokeResult, ModelInfo, ModelListResult, estimate_usage\nfrom .base_provider import (\n    BaseProvider, ProviderInfo, ValidationResult, ThinkingInfo, \n    WorkingDirConfig\n)\n\n\nclass GeminiCLIProvider(BaseProvider):\n    \"\"\"Gemini CLI provider with thinking extraction\"\"\"\n    \n    @classmethod\n    def get_provider_info(cls) -> ProviderInfo:\n        return ProviderInfo(\n            name=\"Gemini CLI Provider\",\n            type=\"gemini_cli\",\n            description=\"Google Gemini command-line interface provider\",\n            version=\"1.0.0\",\n            author=\"HarborPilot Team\",\n            documentation_url=\"https://ai.google.dev/cli\",\n            supported_features=[\n                \"thinking_extraction\",\n                \"working_directory\",\n                \"health_check\",\n                \"streaming\",\n                \"autonomous_file_operations\",\n                \"api_key_auth\"\n            ],\n            cost_class=\"METERED\",\n            provider_category=\"AGENT\",\n            autonomous_file_access=True,\n            requires_file_interfaces=False,\n            model_listing_method=\"TUI\"\n        )\n    \n    @classmethod\n    def get_default_config(cls) -> Dict[str, Any]:\n        return {\n            \"command\": \"gemini\",\n            \"args\": [\"chat\", \"--model\", \"{model}\", \"--prompt\", \"{prompt}\"],\n            \"cli_mode\": \"headless\",\n            \"env\": {\n                \"GOOGLE_API_KEY\": \"\",\n                \"GOOGLE_GENAI_USE_VERTEXAI\": \"false\",\n                \"GOOGLE_GENAI_API_KEY\": \"\"\n            },\n            \"working_dir\": \"\",\n            \"timeout\": 60,\n            \"health_args\": [\"version\"],"
+    },
+    {
+      "path": "src/backend/app/utils.py",
+      "start_line": 1,
+      "end_line": 60,
+      "symbol": "enforce_utf8",
+      "reason": "symbol_or_token_focus",
+      "content": "import os\nimport sys\nimport json\nimport hashlib\nimport shutil\nfrom datetime import datetime, timezone\nfrom typing import List, Dict, Any, Optional, Tuple\nfrom fastapi import HTTPException\nfrom .config import (\n    Settings,\n    ARTIFACT_ROOT,\n    ARTIFACT_NAMESPACE,\n    LEGACY_ARTIFACT_ROOT,\n    LEGACY_ARTIFACT_NAMESPACE,\n    STATE_TO_RAMDISK_ENV,\n    LOOP_MODULE_DIR,\n    WORKSPACE_STATUS_REL\n)\n\ndef enforce_utf8() -> None:\n    os.environ.setdefault(\"PYTHONUTF8\", \"1\")\n    os.environ.setdefault(\"PYTHONIOENCODING\", \"utf-8\")\n    os.environ.setdefault(\"LANG\", \"en_US.UTF-8\")\n    os.environ.setdefault(\"LC_ALL\", \"en_US.UTF-8\")\n    try:\n        sys.stdout.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n    try:\n        sys.stderr.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n\ndef build_utf8_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:\n    env = os.environ.copy()\n    env.setdefault(\"PYTHONUTF8\", \"1\")\n    env.setdefault(\"PYTHONIOENCODING\", \"utf-8\")\n    env.setdefault(\"LANG\", \"en_US.UTF-8\")\n    env.setdefault(\"LC_ALL\", \"en_US.UTF-8\")\n    if extra:\n        env.update(extra)\n    return env\n\ndef ensure_loop_modules() -> None:\n    if os.path.isdir(LOOP_MODULE_DIR) and LOOP_MODULE_DIR not in sys.path:\n        sys.path.insert(0, LOOP_MODULE_DIR)\n\ndef normalize_ramdisk_root(value: str) -> str:\n    raw = (value or \"\").strip()\n    if not raw:\n        return \"\"\n    if not os.path.isabs(raw):\n        return \"\"\n    if len(raw) == 2 and raw[1] == \":\":\n        raw = raw + \"\\\\\"\n    raw = os.path.abspath(raw)\n    raw = raw.rstrip(\"\\\\/\")\n    if len(raw) == 2 and raw[1] == \":\":\n        raw = raw + \"\\\\\"\n    return raw"
+    },
+    {
+      "path": "src/backend/core/harborpilot_loop/context_engine.py",
+      "start_line": 1,
+      "end_line": 66,
+      "symbol": "_utc_now",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport hashlib\nimport json\nimport os\nfrom abc import ABC, abstractmethod\nfrom datetime import datetime, timezone\nfrom typing import Any, Dict, List, Optional, Tuple\nfrom uuid import uuid4\n\nfrom pydantic import BaseModel, Field\n\nfrom io_utils import (\n    build_cache_root,\n    emit_event,\n    read_file_safe,\n    resolve_artifact_path,\n    resolve_ramdisk_root,\n    resolve_run_dir,\n    write_text_atomic,\n)\nfrom anthropomorphic.memory_store import MemoryStore, _has_refs\nfrom repo_map import build_repo_map\n\n\ndef _utc_now() -> datetime:\n    return datetime.now(timezone.utc)\n\n\ndef _hash_text(text: str) -> str:\n    hasher = hashlib.sha1()\n    hasher.update((text or \"\").encode(\"utf-8\", errors=\"ignore\"))\n    return hasher.hexdigest()\n\n\ndef _estimate_tokens(text: str) -> int:\n    if not text:\n        return 0\n    return max(1, int(len(text) / 4))\n\n\ndef _safe_json(obj: Any) -> str:\n    try:\n        return json.dumps(obj, ensure_ascii=False)\n    except Exception:\n        return \"{}\"\n\n\ndef _read_tail_lines(path: str, max_lines: int = 200) -> List[str]:\n    if not path or not os.path.exists(path):\n        return []\n    try:\n        with open(path, \"rb\") as handle:\n            handle.seek(0, os.SEEK_END)\n            pos = handle.tell()\n            block = 4096\n            data = b\"\"\n            while pos > 0 and data.count(b\"\\n\") <= max_lines:\n                read_size = block if pos >= block else pos\n                pos -= read_size\n                handle.seek(pos)\n                data = handle.read(read_size) + data\n    except Exception:\n        return []\n    text = data.decode(\"utf-8\", errors=\"ignore\")\n    lines = text.splitlines()"
+    },
+    {
+      "path": "src/backend/scripts/loop-pm.py",
+      "start_line": 1,
+      "end_line": 73,
+      "symbol": "enforce_utf8",
+      "reason": "symbol_or_token_focus",
+      "content": "import argparse\nimport hashlib\nimport json\nimport os\nimport subprocess\nimport sys\nimport time\nfrom datetime import datetime\nfrom typing import Any, Dict, List, Optional, Tuple\n\ntry:\n    from director_result_matcher import (\n        match_director_result as _match_director_result,\n        match_director_result_any as _match_director_result_any,\n        match_director_result_mode as _match_director_result_mode,\n        normalize_match_mode as _normalize_match_mode,\n        result_timestamp_epoch as _result_timestamp_epoch,\n        wait_for_director_result as _wait_for_director_result,\n        wait_for_director_result_mode as _wait_for_director_result_mode,\n    )\nexcept ModuleNotFoundError:\n    from src.backend.scripts.director_result_matcher import (\n        match_director_result as _match_director_result,\n        match_director_result_any as _match_director_result_any,\n        match_director_result_mode as _match_director_result_mode,\n        normalize_match_mode as _normalize_match_mode,\n        result_timestamp_epoch as _result_timestamp_epoch,\n        wait_for_director_result as _wait_for_director_result,\n        wait_for_director_result_mode as _wait_for_director_result_mode,\n    )\n\n\ndef enforce_utf8() -> None:\n    os.environ.setdefault(\"PYTHONUTF8\", \"1\")\n    os.environ.setdefault(\"PYTHONIOENCODING\", \"utf-8\")\n    os.environ.setdefault(\"LANG\", \"en_US.UTF-8\")\n    os.environ.setdefault(\"LC_ALL\", \"en_US.UTF-8\")\n    try:\n        sys.stdout.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n    try:\n        sys.stderr.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n\n\nenforce_utf8()\n\n\ndef build_utf8_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:\n    env = os.environ.copy()\n    env.setdefault(\"PYTHONUTF8\", \"1\")\n    env.setdefault(\"PYTHONIOENCODING\", \"utf-8\")\n    env.setdefault(\"LANG\", \"en_US.UTF-8\")\n    env.setdefault(\"LC_ALL\", \"en_US.UTF-8\")\n    if extra:\n        env.update(extra)\n    return env\n\n\nSCRIPT_DIR = os.path.dirname(__file__)\nPROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, \"..\"))\nPROMPT_PROFILE_ENV = \"HARBORPILOT_PROMPT_PROFILE\"\nDEFAULT_DIRECTOR_SUBPROCESS_LOG = \".harborpilot/runtime/DIRECTOR_SUBPROCESS.log\"\nDEFAULT_DIRECTOR_STATUS = \".harborpilot/runtime/DIRECTOR_STATUS.json\"\nAGENTS_DRAFT_REL = \".harborpilot/runtime/AGENTS.generated.md\"\nAGENTS_FEEDBACK_REL = \".harborpilot/runtime/AGENTS.feedback.md\"\nREQUIRED_MODULE_FILES = (\n    \"decision.py\",\n    \"codex_utils.py\",\n    \"io_utils.py\",\n    \"policy.py\","
+    },
+    {
+      "path": "src/backend/app/llm/providers/minimax_provider.py",
+      "start_line": 1,
+      "end_line": 56,
+      "symbol": "MiniMaxProvider",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport asyncio\nimport json\nimport time\nfrom typing import Any, AsyncGenerator, Dict, List, Optional\n\nimport aiohttp\nimport requests\nimport re\n\nfrom ..types import HealthResult, InvokeResult, ModelInfo, ModelListResult, Usage, estimate_usage\nfrom .base_provider import BaseProvider, ProviderInfo, ValidationResult\n\n\nclass MiniMaxProvider(BaseProvider):\n    \"\"\"MiniMax API provider with thinking extraction\"\"\"\n\n    @classmethod\n    def get_provider_info(cls) -> ProviderInfo:\n        return ProviderInfo(\n            name=\"MiniMax Provider\",\n            type=\"minimax\",\n            description=\"MiniMax API provider for M2 model\",\n            version=\"1.0.0\",\n            author=\"HarborPilot Team\",\n            documentation_url=\"https://platform.minimaxi.com/docs/api-reference/text-chat\",\n            supported_features=[\n                \"thinking_extraction\",\n                \"model_listing\",\n                \"health_check\",\n                \"chinese_support\",\n                \"context_window\",\n                \"streaming\"\n            ],\n            cost_class=\"METERED\",\n            provider_category=\"LLM\",\n            autonomous_file_access=False,\n            requires_file_interfaces=False,\n            model_listing_method=\"API\"\n        )\n\n    @classmethod\n    def get_default_config(cls) -> Dict[str, Any]:\n        return {\n            \"type\": \"minimax\",\n            \"name\": \"MiniMax\",\n            \"base_url\": \"https://api.minimaxi.com/v1\",\n            \"api_path\": \"/text/chatcompletion_v2\",\n            \"timeout\": 60,\n            \"retries\": 3,\n            \"temperature\": 0.7,\n            \"max_tokens\": 2048\n        }\n\n    @classmethod"
+    },
+    {
+      "path": "src/backend/app/services/llm_tests/utils.py",
+      "start_line": 1,
+      "end_line": 54,
+      "symbol": "_dedupe",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport json\nimport math\nimport os\nimport re\nfrom typing import TYPE_CHECKING, Any, Dict, List, Tuple\n\nif TYPE_CHECKING:\n    from ...config import Settings\n\n\n\ndef _dedupe(items: List[str]) -> List[str]:\n    seen = set()\n    output: List[str] = []\n    for item in items:\n        if item in seen:\n            continue\n        seen.add(item)\n        output.append(item)\n    return output\n\n\ndef _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:\n    if not vec_a or not vec_b:\n        return 0.0\n    size = min(len(vec_a), len(vec_b))\n    if size == 0:\n        return 0.0\n    dot = 0.0\n    norm_a = 0.0\n    norm_b = 0.0\n    for idx in range(size):\n        a = float(vec_a[idx])\n        b = float(vec_b[idx])\n        dot += a * b\n        norm_a += a * a\n        norm_b += b * b\n    if norm_a == 0.0 or norm_b == 0.0:\n        return 0.0\n    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b)) if norm_a > 0 and norm_b > 0 else 0.0\n\n\ndef _get_embedding_vector(text: str, embedding_cache: Dict[Tuple[str, str], List[float]]) -> List[float]:\n\n    try:\n        from embedding_utils import get_embedding\n    except Exception:\n        return []\n\n    trimmed = _truncate(text, 2000)\n    if not trimmed:\n        return []"
+    }
+  ],
+  "verify_plan": {
+    "target_tests": [
+      "agent-accel/tests/integration/test_cli_e2e.py",
+      "src/backend/tests/test_codex_cli_utils.py",
+      "src/backend/tests/test_llm_provider_request_context.py",
+      "src/backend/tests/test_repo_map_provider.py",
+      "tests/test_codex_utils.py",
+      "src/frontend/src/app/types/__tests__/api-types.test.ts",
+      "src/backend/tests/test_minimax_streaming.py",
+      "src/backend/tests/test_llm_phase0_regression.py",
+      "src/backend/tests/test_llm_test_context.py",
+      "src/backend/tests/test_llm_test_index_reconcile.py",
+      "src/backend/tests/test_interactive_interview_streaming_fallback.py",
+      "src/backend/tests/test_kimi_streaming.py",
+      "src/backend/tests/test_streaming_fix.py",
+      "src/backend/tests/test_streaming_tag_parser.py",
+      "tests/test_decision_utils.py",
+      "tests/test_director_exec_utils.py",
+      "tests/test_io_utils_core.py",
+      "tests/test_io_utils_jsonl.py",
+      "tests/test_loop_pm_utils.py",
+      "tests/test_ollama_utils.py"
+    ],
+    "target_checks": [
+      "pytest -q",
+      "mypy .",
+      "npm run typecheck"
+    ]
+  },
+  "meta": {
+    "task_tokens": [
+      "identify",
+      "one",
+      "high",
+      "impact",
+      "hotspot",
+      "file",
+      "refactor",
+      "in",
+      "harborpilot",
+      "prioritize",
+      "coupling",
+      "duplicated",
+      "orchestration",
+      "logic",
+      "return",
+      "focused",
+      "files",
+      "minimal",
+      "risk",
+      "modular",
+      "extraction"
+    ],
+    "changed_files": [],
+    "drift_reason": ""
+  }
+}

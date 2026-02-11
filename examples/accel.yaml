@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "project_id": "demo_project",
+  "language_profiles": ["python", "typescript"],
+  "index": {
+    "include": ["src/**", "accel/**", "tests/**"],
+    "exclude": ["node_modules/**", ".git/**", "dist/**"],
+    "max_file_mb": 2
+  },
+  "context": {
+    "top_n_files": 12,
+    "snippet_radius": 40,
+    "max_chars": 24000,
+    "max_snippets": 60
+  },
+  "verify": {
+    "python": ["pytest -q", "ruff check .", "mypy ."],
+    "node": ["npm test --silent", "npm run lint", "npm run typecheck"]
+  }
+}

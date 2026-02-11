@@ -1,0 +1,541 @@
+{
+  "version": 1,
+  "task": "Refactor hotspot src/backend/app/routers/llm.py by extracting request/response models and helpers with no behavior change",
+  "generated_at": "2026-02-10T18:48:06.729215+00:00",
+  "budget": {
+    "max_chars": 24000,
+    "max_snippets": 60,
+    "top_n_files": 12
+  },
+  "top_files": [
+    {
+      "path": "src/backend/app/routers/llm.py",
+      "score": 0.977451,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance",
+        "changed_file"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 1.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.470588
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.666667
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.15
+        }
+      ]
+    },
+    {
+      "path": "src/frontend/src/app/App.tsx",
+      "score": 0.866667,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 1.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 1.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.333333
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/tests/test_llm_phase0_regression.py",
+      "score": 0.8,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 1.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 1.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/scripts/loop-pm.py",
+      "score": 0.785294,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.823529
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.235294
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/core/harborpilot_loop/io_utils.py",
+      "score": 0.779412,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.941176
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/app/utils.py",
+      "score": 0.738235,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.823529
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/core/harborpilot_loop/context_engine.py",
+      "score": 0.729412,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.764706
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.058824
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "agent-accel/accel/verify/orchestrator.py",
+      "score": 0.666667,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 1.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.333333
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/app/llm/config.py",
+      "score": 0.646078,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.941176
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.333333
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/frontend/src/app/components/ui/context-menu.tsx",
+      "score": 0.623529,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 1.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 0.294118
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/core/harborpilot_loop/director_exec.py",
+      "score": 0.614706,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.470588
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "src/backend/scripts/loop-director.py",
+      "score": 0.608824,
+      "reasons": [
+        "symbol_match",
+        "reference_proximity",
+        "dependency_impact",
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.352941
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 1.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.176471
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 1.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    }
+  ],
+  "snippets": [
+    {
+      "path": "src/backend/app/routers/llm.py",
+      "start_line": 8,
+      "end_line": 88,
+      "symbol": "get_state",
+      "reason": "symbol_or_token_focus",
+      "content": "from typing import Any, Dict, Optional\nfrom uuid import uuid4\n\nfrom fastapi import APIRouter, Depends, HTTPException, Request\nfrom fastapi.responses import StreamingResponse\nfrom pydantic import BaseModel, Field, field_validator\n\nfrom ..config import Settings\nfrom ..state import AppState, Auth\nfrom ..utils import build_cache_root, resolve_artifact_path\nfrom ..services.llm_tests import run_llm_tests, load_llm_test_index, reconcile_llm_test_index\nfrom ..services.llm_tests import run_llm_tests_streaming\nfrom ..services.interactive_interview import (\n    run_interactive_interview_question,\n    save_interactive_interview_report,\n)\nfrom ..services.interactive_interview_streaming import (\n    run_interactive_interview_streaming,\n    cancel_interactive_interview_stream,\n)\nfrom ..llm import config as llm_config\nfrom ..llm.providers import (\n    ollama_health,\n    ollama_list_models,\n    openai_health,\n    openai_list_models,\n    anthropic_health,\n    anthropic_list_models,\n    # New enhanced providers\n    provider_manager,\n)\nfrom ..utils import save_persisted_settings\nfrom ..services.interactive_interview import (\n    load_interview_history_summary,\n)\n\n\nrouter = APIRouter()\n\n\ndef get_state(request: Request) -> AppState:\n    return request.app.state.app_state\n\n\ndef require_auth(request: Request):\n    auth: Auth = request.app.state.auth\n    if not auth.check(request.headers.get(\"authorization\", \"\")):\n        raise HTTPException(status_code=401, detail=\"unauthorized\")\n\n\nclass LlmTestPayload(BaseModel):\n    role: Optional[str] = None\n    provider_id: Optional[str] = None\n    model: Optional[str] = None\n    suites: Optional[list[str]] = None\n    test_level: str = \"quick\"\n    evaluation_mode: Optional[str] = None\n    api_key: Optional[str] = None\n    headers: Optional[Dict[str, str]] = None\n    env_overrides: Optional[Dict[str, str]] = None\n    prompt_override: Optional[str] = None\n    # Connectivity-only fields (Scheme B): allow bypassing config loading\n    provider_type: Optional[str] = None\n    base_url: Optional[str] = None\n    api_path: Optional[str] = None\n    timeout: Optional[int] = None\n\n\nclass ProviderActionPayload(BaseModel):\n    api_key: Optional[str] = None\n    headers: Optional[Dict[str, str]] = None\n\n\nclass InterviewAskPayload(BaseModel):\n    role: str\n    provider_id: str\n    model: str\n    question: str\n    context: Optional[list[Dict[str, Any]]] = None\n    expects_thinking: Optional[bool] = None\n    criteria: Optional[list[str]] = None"
+    },
+    {
+      "path": "src/frontend/src/app/App.tsx",
+      "start_line": 157,
+      "end_line": 237,
+      "symbol": "appendLiveContent",
+      "reason": "symbol_or_token_focus",
+      "content": "  feedback_mtime?: string | null;\n  draft_failed?: boolean | null;\n}\n\ninterface RuntimeIssue {\n  code: string;\n  title: string;\n  detail: string;\n}\n\ninterface FilePayload {\n  content: string;\n  mtime: string;\n}\n\nconst LIVE_CHANNELS = [\n  'status',\n  'dialogue',\n  'pm_report',\n  'pm_log',\n  'pm_subprocess',\n  'director_console',\n  'planner',\n  'ollama',\n  'qa',\n  'runlog',\n] as const;\n\nconst CHANNEL_TO_PATH: Record<string, string> = {\n  dialogue: '.harborpilot/runtime/DIALOGUE.jsonl',\n  pm_report: '.harborpilot/runtime/PM_REPORT.md',\n  pm_log: '.harborpilot/runtime/PM_LOG.jsonl',\n  pm_subprocess: '.harborpilot/runtime/PM_SUBPROCESS.log',\n  director_console: '.harborpilot/runtime/DIRECTOR_SUBPROCESS.log',\n  planner: '.harborpilot/runtime/PLANNER_RESPONSE.md',\n  ollama: '.harborpilot/runtime/OLLAMA_RESPONSE.md',\n  qa: '.harborpilot/runtime/QA_RESPONSE.md',\n  runlog: '.harborpilot/runtime/RUNLOG.md',\n};\n\nfunction appendLiveContent(prev: string, incoming: string, maxLines = 2000) {\n  const combined = prev ? `${prev}\\n${incoming}` : incoming;\n  const lines = combined.split('\\n');\n  if (lines.length <= maxLines) {\n    return combined;\n  }\n  return lines.slice(-maxLines).join('\\n');\n}\n\nfunction normalizeDialogueEvent(raw: Record<string, unknown>): DialogueEvent | null {\n  if (!raw) return null;\n  const eventId = String(raw.event_id ?? '').trim();\n  const rawSpeakerValue = raw.speaker ?? 'System';\n  const rawSpeaker = typeof rawSpeakerValue === 'string' ? rawSpeakerValue : String(rawSpeakerValue);\n  const speaker = ['PM', 'Director', 'QA', 'Reviewer', 'System'].includes(rawSpeaker)\n    ? (rawSpeaker as DialogueEvent['speaker'])\n    : 'System';\n  const content = String(raw.text ?? raw.summary ?? raw.content ?? '').trim();\n  let timestamp = String(raw.timestamp ?? raw.ts ?? raw.time ?? '').trim();\n  if (timestamp.includes('T')) {\n    timestamp = timestamp.split('T')[1].replace('Z', '');\n  }\n  const seq = typeof raw.seq === 'number' ? raw.seq : undefined;\n  const type = typeof raw.type === 'string' ? raw.type : undefined;\n  const refs =\n    raw.refs && typeof raw.refs === 'object'\n      ? (raw.refs as DialogueEvent['refs'])\n      : undefined;\n  return {\n    seq,\n    eventId: eventId || undefined,\n    speaker,\n    type,\n    content: content || '(empty)',\n    timestamp,\n    refs,\n  };\n}\n\nfunction summarizeActionError(detail: string, maxLen = 160) {\n  const trimmed = detail.trim();"
+    },
+    {
+      "path": "src/backend/tests/test_llm_phase0_regression.py",
+      "start_line": 1,
+      "end_line": 63,
+      "symbol": "isolate_harborpilot_root",
+      "reason": "symbol_or_token_focus",
+      "content": "\"\"\"Phase 0 Regression Tests for LLM Configuration Unification\n\nTests for:\n1. Default config unique provider keys (minimax fix)\n2. LLMStatus contains last_updated field\n3. LLMConfig atomic write and UTF-8 roundtrip\n\"\"\"\n\nimport os\nimport sys\nimport json\nfrom datetime import datetime\nfrom unittest.mock import MagicMock, patch\n\nimport pytest\n\nBACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), \"..\"))\nif BACKEND_DIR not in sys.path:\n    sys.path.insert(0, BACKEND_DIR)\n\n\n@pytest.fixture(autouse=True)\ndef isolate_harborpilot_root(tmp_path, monkeypatch):\n    app_root = tmp_path / \"harborpilot_root\"\n    app_root.mkdir(parents=True, exist_ok=True)\n    monkeypatch.setenv(\"HARBORPILOT_ROOT\", str(app_root))\n    return app_root\n\n\nclass TestLLMDefaultConfigUniqueProviderKeys:\n    \"\"\"Test that default LLM config has unique provider keys.\"\"\"\n\n    def test_default_config_no_duplicate_provider_keys(self):\n        \"\"\"Ensure no duplicate provider IDs exist in default config.\"\"\"\n        from app.llm.config import build_default_config\n\n        config = build_default_config()\n        providers = config.get(\"providers\", {})\n\n        provider_ids = list(providers.keys())\n        duplicate_ids = [pid for pid in provider_ids if provider_ids.count(pid) > 1]\n\n        assert len(duplicate_ids) == 0, \\\n            f\"Found duplicate provider IDs in default config: {duplicate_ids}\"\n\n    def test_minimax_provider_appears_only_once(self):\n        \"\"\"Ensure minimax provider is defined exactly once with correct type.\"\"\"\n        from app.llm.config import build_default_config\n\n        config = build_default_config()\n        providers = config.get(\"providers\", {})\n\n        minimax_count = providers.count(\"minimax\") if hasattr(providers, \"count\") else \\\n            sum(1 for k in providers.keys() if k == \"minimax\")\n\n        assert minimax_count == 1, \\\n            f\"Expected exactly one 'minimax' provider, found {minimax_count}\"\n\n        if \"minimax\" in providers:\n            minimax_config = providers[\"minimax\"]\n            assert minimax_config.get(\"type\") == \"minimax\", \\\n                f\"Expected minimax type 'minimax', got '{minimax_config.get('type')}'\"\n"
+    },
+    {
+      "path": "src/backend/scripts/loop-pm.py",
+      "start_line": 1,
+      "end_line": 73,
+      "symbol": "enforce_utf8",
+      "reason": "symbol_or_token_focus",
+      "content": "import argparse\nimport hashlib\nimport json\nimport os\nimport subprocess\nimport sys\nimport time\nfrom datetime import datetime\nfrom typing import Any, Dict, List, Optional, Tuple\n\ntry:\n    from director_result_matcher import (\n        match_director_result as _match_director_result,\n        match_director_result_any as _match_director_result_any,\n        match_director_result_mode as _match_director_result_mode,\n        normalize_match_mode as _normalize_match_mode,\n        result_timestamp_epoch as _result_timestamp_epoch,\n        wait_for_director_result as _wait_for_director_result,\n        wait_for_director_result_mode as _wait_for_director_result_mode,\n    )\nexcept ModuleNotFoundError:\n    from src.backend.scripts.director_result_matcher import (\n        match_director_result as _match_director_result,\n        match_director_result_any as _match_director_result_any,\n        match_director_result_mode as _match_director_result_mode,\n        normalize_match_mode as _normalize_match_mode,\n        result_timestamp_epoch as _result_timestamp_epoch,\n        wait_for_director_result as _wait_for_director_result,\n        wait_for_director_result_mode as _wait_for_director_result_mode,\n    )\n\n\ndef enforce_utf8() -> None:\n    os.environ.setdefault(\"PYTHONUTF8\", \"1\")\n    os.environ.setdefault(\"PYTHONIOENCODING\", \"utf-8\")\n    os.environ.setdefault(\"LANG\", \"en_US.UTF-8\")\n    os.environ.setdefault(\"LC_ALL\", \"en_US.UTF-8\")\n    try:\n        sys.stdout.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n    try:\n        sys.stderr.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n\n\nenforce_utf8()\n\n\ndef build_utf8_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:\n    env = os.environ.copy()\n    env.setdefault(\"PYTHONUTF8\", \"1\")\n    env.setdefault(\"PYTHONIOENCODING\", \"utf-8\")\n    env.setdefault(\"LANG\", \"en_US.UTF-8\")\n    env.setdefault(\"LC_ALL\", \"en_US.UTF-8\")\n    if extra:\n        env.update(extra)\n    return env\n\n\nSCRIPT_DIR = os.path.dirname(__file__)\nPROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, \"..\"))\nPROMPT_PROFILE_ENV = \"HARBORPILOT_PROMPT_PROFILE\"\nDEFAULT_DIRECTOR_SUBPROCESS_LOG = \".harborpilot/runtime/DIRECTOR_SUBPROCESS.log\"\nDEFAULT_DIRECTOR_STATUS = \".harborpilot/runtime/DIRECTOR_STATUS.json\"\nAGENTS_DRAFT_REL = \".harborpilot/runtime/AGENTS.generated.md\"\nAGENTS_FEEDBACK_REL = \".harborpilot/runtime/AGENTS.feedback.md\"\nREQUIRED_MODULE_FILES = (\n    \"decision.py\",\n    \"codex_utils.py\",\n    \"io_utils.py\",\n    \"policy.py\","
+    },
+    {
+      "path": "src/backend/core/harborpilot_loop/io_utils.py",
+      "start_line": 1,
+      "end_line": 64,
+      "symbol": "enforce_utf8",
+      "reason": "symbol_or_token_focus",
+      "content": "import hashlib\nimport json\nimport os\nimport re\nimport shutil\nimport subprocess\nimport sys\nimport time\nimport uuid\nfrom datetime import datetime, timezone\nfrom threading import Lock\nfrom typing import Any, Dict, List, Optional\n\n_JSONL_LOCK_STALE_SEC = float(os.environ.get(\"HARBORPILOT_JSONL_LOCK_STALE_SEC\", \"120\") or 120)\n_RAMDISK_ENV = \"HARBORPILOT_RAMDISK_ROOT\"\n_STATE_TO_RAMDISK_ENV = \"HARBORPILOT_STATE_TO_RAMDISK\"\n_IO_FSYNC_ENV = \"HARBORPILOT_IO_FSYNC_MODE\"\nARTIFACT_ROOT = \".harborpilot\"\nLEGACY_ARTIFACT_ROOT = \"state\"\nARTIFACT_NAMESPACE = \"runtime\"\nLEGACY_ARTIFACT_NAMESPACE = \"ollama\"\n\n\ndef enforce_utf8() -> None:\n    os.environ.setdefault(\"PYTHONUTF8\", \"1\")\n    os.environ.setdefault(\"PYTHONIOENCODING\", \"utf-8\")\n    os.environ.setdefault(\"LANG\", \"en_US.UTF-8\")\n    os.environ.setdefault(\"LC_ALL\", \"en_US.UTF-8\")\n    try:\n        sys.stdout.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n    try:\n        sys.stderr.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n\n\ndef build_utf8_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:\n    env = os.environ.copy()\n    env.setdefault(\"PYTHONUTF8\", \"1\")\n    env.setdefault(\"PYTHONIOENCODING\", \"utf-8\")\n    env.setdefault(\"LANG\", \"en_US.UTF-8\")\n    env.setdefault(\"LC_ALL\", \"en_US.UTF-8\")\n    if extra:\n        env.update(extra)\n    return env\n\n\nenforce_utf8()\n\n\ndef find_workspace_root(start: str) -> str:\n    current = os.path.abspath(start)\n    while True:\n        if os.path.isdir(os.path.join(current, \"docs\")):\n            return current\n        parent = os.path.dirname(current)\n        if parent == current:\n            break\n        current = parent\n    return \"\"\n\n"
+    },
+    {
+      "path": "src/backend/app/utils.py",
+      "start_line": 1,
+      "end_line": 60,
+      "symbol": "enforce_utf8",
+      "reason": "symbol_or_token_focus",
+      "content": "import os\nimport sys\nimport json\nimport hashlib\nimport shutil\nfrom datetime import datetime, timezone\nfrom typing import List, Dict, Any, Optional, Tuple\nfrom fastapi import HTTPException\nfrom .config import (\n    Settings,\n    ARTIFACT_ROOT,\n    ARTIFACT_NAMESPACE,\n    LEGACY_ARTIFACT_ROOT,\n    LEGACY_ARTIFACT_NAMESPACE,\n    STATE_TO_RAMDISK_ENV,\n    LOOP_MODULE_DIR,\n    WORKSPACE_STATUS_REL\n)\n\ndef enforce_utf8() -> None:\n    os.environ.setdefault(\"PYTHONUTF8\", \"1\")\n    os.environ.setdefault(\"PYTHONIOENCODING\", \"utf-8\")\n    os.environ.setdefault(\"LANG\", \"en_US.UTF-8\")\n    os.environ.setdefault(\"LC_ALL\", \"en_US.UTF-8\")\n    try:\n        sys.stdout.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n    try:\n        sys.stderr.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n\ndef build_utf8_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:\n    env = os.environ.copy()\n    env.setdefault(\"PYTHONUTF8\", \"1\")\n    env.setdefault(\"PYTHONIOENCODING\", \"utf-8\")\n    env.setdefault(\"LANG\", \"en_US.UTF-8\")\n    env.setdefault(\"LC_ALL\", \"en_US.UTF-8\")\n    if extra:\n        env.update(extra)\n    return env\n\ndef ensure_loop_modules() -> None:\n    if os.path.isdir(LOOP_MODULE_DIR) and LOOP_MODULE_DIR not in sys.path:\n        sys.path.insert(0, LOOP_MODULE_DIR)\n\ndef normalize_ramdisk_root(value: str) -> str:\n    raw = (value or \"\").strip()\n    if not raw:\n        return \"\"\n    if not os.path.isabs(raw):\n        return \"\"\n    if len(raw) == 2 and raw[1] == \":\":\n        raw = raw + \"\\\\\"\n    raw = os.path.abspath(raw)\n    raw = raw.rstrip(\"\\\\/\")\n    if len(raw) == 2 and raw[1] == \":\":\n        raw = raw + \"\\\\\"\n    return raw"
+    },
+    {
+      "path": "src/backend/core/harborpilot_loop/context_engine.py",
+      "start_line": 1,
+      "end_line": 66,
+      "symbol": "_utc_now",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport hashlib\nimport json\nimport os\nfrom abc import ABC, abstractmethod\nfrom datetime import datetime, timezone\nfrom typing import Any, Dict, List, Optional, Tuple\nfrom uuid import uuid4\n\nfrom pydantic import BaseModel, Field\n\nfrom io_utils import (\n    build_cache_root,\n    emit_event,\n    read_file_safe,\n    resolve_artifact_path,\n    resolve_ramdisk_root,\n    resolve_run_dir,\n    write_text_atomic,\n)\nfrom anthropomorphic.memory_store import MemoryStore, _has_refs\nfrom repo_map import build_repo_map\n\n\ndef _utc_now() -> datetime:\n    return datetime.now(timezone.utc)\n\n\ndef _hash_text(text: str) -> str:\n    hasher = hashlib.sha1()\n    hasher.update((text or \"\").encode(\"utf-8\", errors=\"ignore\"))\n    return hasher.hexdigest()\n\n\ndef _estimate_tokens(text: str) -> int:\n    if not text:\n        return 0\n    return max(1, int(len(text) / 4))\n\n\ndef _safe_json(obj: Any) -> str:\n    try:\n        return json.dumps(obj, ensure_ascii=False)\n    except Exception:\n        return \"{}\"\n\n\ndef _read_tail_lines(path: str, max_lines: int = 200) -> List[str]:\n    if not path or not os.path.exists(path):\n        return []\n    try:\n        with open(path, \"rb\") as handle:\n            handle.seek(0, os.SEEK_END)\n            pos = handle.tell()\n            block = 4096\n            data = b\"\"\n            while pos > 0 and data.count(b\"\\n\") <= max_lines:\n                read_size = block if pos >= block else pos\n                pos -= read_size\n                handle.seek(pos)\n                data = handle.read(read_size) + data\n    except Exception:\n        return []\n    text = data.decode(\"utf-8\", errors=\"ignore\")\n    lines = text.splitlines()"
+    },
+    {
+      "path": "agent-accel/accel/verify/orchestrator.py",
+      "start_line": 1,
+      "end_line": 60,
+      "symbol": "_utc_now",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport hashlib\nimport json\nimport os\nimport shlex\nimport shutil\nimport tempfile\nfrom concurrent.futures import ThreadPoolExecutor, as_completed\nfrom datetime import datetime, timedelta, timezone\nfrom pathlib import Path\nfrom typing import Any\nfrom uuid import uuid4\n\nfrom .runners import run_command\nfrom .sharding import select_verify_commands\nfrom ..storage.cache import ensure_project_dirs, project_paths\n\n\ndef _utc_now() -> str:\n    return datetime.now(timezone.utc).isoformat()\n\n\ndef _command_binary(command: str) -> str:\n    parts = shlex.split(command, posix=os.name != \"nt\")\n    return parts[0] if parts else \"\"\n\n\ndef _append_line(path: Path, line: str) -> None:\n    with path.open(\"a\", encoding=\"utf-8\") as handle:\n        handle.write(line + \"\\n\")\n\n\ndef _append_jsonl(path: Path, payload: dict[str, Any]) -> None:\n    with path.open(\"a\", encoding=\"utf-8\") as handle:\n        handle.write(json.dumps(payload, ensure_ascii=False) + \"\\n\")\n\n\ndef _normalize_positive_int(value: Any, default_value: int) -> int:\n    try:\n        parsed = int(value)\n    except (TypeError, ValueError):\n        return max(1, int(default_value))\n    return max(1, parsed)\n\n\ndef _normalize_bool(value: Any, default_value: bool = False) -> bool:\n    if isinstance(value, bool):\n        return value\n    if value is None:\n        return default_value\n    text = str(value).strip().lower()\n    return text in {\"1\", \"true\", \"yes\", \"on\"}\n\n\ndef _resolve_verify_workers(runtime_cfg: dict[str, Any]) -> int:\n    fallback = _normalize_positive_int(runtime_cfg.get(\"max_workers\", 8), 8)\n    return _normalize_positive_int(runtime_cfg.get(\"verify_workers\", fallback), fallback)\n\n"
+    },
+    {
+      "path": "src/backend/app/llm/config.py",
+      "start_line": 2,
+      "end_line": 82,
+      "symbol": "build_default_config",
+      "reason": "symbol_or_token_focus",
+      "content": "\nimport json\nimport os\nfrom typing import Any, Dict, Optional\n\nfrom ..config import Settings\nfrom ..utils import resolve_artifact_path, build_cache_root, get_harborpilot_root\n\n\nDEFAULT_ROLE_REQUIREMENTS = {\n    \"pm\": {\n        \"requires_thinking\": True,\n        \"min_confidence\": 0.7,\n        \"error_message\": \"PM 岗位需要具备深度思考能力的模型\",\n    },\n    \"director\": {\n        \"requires_thinking\": True,\n        \"min_confidence\": 0.7,\n        \"error_message\": \"Director 岗位需要具备推理能力的模型\",\n    },\n    \"qa\": {\n        \"requires_thinking\": False,\n        \"min_confidence\": 0.5,\n        \"error_message\": \"QA 岗位建议使用具备思考能力的模型\",\n    },\n    \"docs\": {\n        \"requires_thinking\": False,\n        \"min_confidence\": 0.5,\n        \"error_message\": \"Docs 岗位建议使用具备思考能力的模型\",\n    },\n}\n\nDEFAULT_POLICIES = {\n    # Docs role is for documentation generation, not PM/Director/QA runtime loop gating.\n    \"required_ready_roles\": [\"pm\", \"director\", \"qa\"],\n    \"test_required_suites\": [\"connectivity\", \"response\", \"qualification\"],\n    \"role_requirements\": DEFAULT_ROLE_REQUIREMENTS,\n}\n\n\ndef build_default_config(settings: Optional[Settings] = None) -> Dict[str, Any]:\n    pm_backend = (settings.pm_backend if settings else \"codex\") or \"codex\"\n    pm_provider_id = \"codex_cli\" if pm_backend.strip().lower() == \"codex\" else \"ollama\"\n    pm_model = (settings.pm_model if settings else None) or (settings.model if settings else None) or \"\"\n    director_model = (settings.director_model if settings else None) or (settings.model if settings else None) or \"\"\n    docs_provider = (settings.docs_init_provider if settings else \"ollama\") or \"ollama\"\n    docs_provider_id = \"openai_compat\"\n    if docs_provider.strip().lower() == \"ollama\":\n        docs_provider_id = \"ollama\"\n    elif docs_provider.strip().lower() == \"codex\":\n        docs_provider_id = \"codex_cli\"\n    docs_model = (settings.docs_init_model if settings else None) or pm_model\n    openai_base_url = (settings.docs_init_base_url if settings else \"\") or \"\"\n\n    providers: Dict[str, Any] = {\n        \"codex_cli\": {\n            \"type\": \"codex_cli\",\n            \"name\": \"Codex CLI\",\n            \"command\": \"codex\",\n            \"args\": [],\n            \"cli_mode\": \"headless\",\n            \"codex_exec\": {\n                \"cd\": \"\",\n                \"color\": \"never\",\n                \"approvals\": \"\",\n                \"sandbox\": \"danger-full-access\",\n                \"skip_git_repo_check\": True,\n                \"json\": True,\n                \"experimental_json\": False,\n                \"full_auto\": False,\n                \"yolo\": False,\n                \"oss\": False,\n                \"output_schema\": \"\",\n                \"output_last_message\": \"\",\n                \"profile\": \"\",\n                \"add_dirs\": [],\n                \"config\": [],\n                \"images\": [],\n                \"prompt_from_stdin\": False,\n            },\n            \"list_args\": [],"
+    },
+    {
+      "path": "src/frontend/src/app/components/ui/context-menu.tsx",
+      "start_line": 1,
+      "end_line": 49,
+      "symbol": "ContextMenu",
+      "reason": "symbol_or_token_focus",
+      "content": "\"use client\";\n\nimport * as React from \"react\";\nimport * as ContextMenuPrimitive from \"@radix-ui/react-context-menu\";\nimport { CheckIcon, ChevronRightIcon, CircleIcon } from \"lucide-react\";\n\nimport { cn } from \"./utils\";\n\nfunction ContextMenu({\n  ...props\n}: React.ComponentProps<typeof ContextMenuPrimitive.Root>) {\n  return <ContextMenuPrimitive.Root data-slot=\"context-menu\" {...props} />;\n}\n\nfunction ContextMenuTrigger({\n  ...props\n}: React.ComponentProps<typeof ContextMenuPrimitive.Trigger>) {\n  return (\n    <ContextMenuPrimitive.Trigger data-slot=\"context-menu-trigger\" {...props} />\n  );\n}\n\nfunction ContextMenuGroup({\n  ...props\n}: React.ComponentProps<typeof ContextMenuPrimitive.Group>) {\n  return (\n    <ContextMenuPrimitive.Group data-slot=\"context-menu-group\" {...props} />\n  );\n}\n\nfunction ContextMenuPortal({\n  ...props\n}: React.ComponentProps<typeof ContextMenuPrimitive.Portal>) {\n  return (\n    <ContextMenuPrimitive.Portal data-slot=\"context-menu-portal\" {...props} />\n  );\n}\n\nfunction ContextMenuSub({\n  ...props\n}: React.ComponentProps<typeof ContextMenuPrimitive.Sub>) {\n  return <ContextMenuPrimitive.Sub data-slot=\"context-menu-sub\" {...props} />;\n}\n\nfunction ContextMenuRadioGroup({\n  ...props\n}: React.ComponentProps<typeof ContextMenuPrimitive.RadioGroup>) {\n  return (\n    <ContextMenuPrimitive.RadioGroup"
+    },
+    {
+      "path": "src/backend/core/harborpilot_loop/director_exec.py",
+      "start_line": 1,
+      "end_line": 68,
+      "symbol": "_enforce_utf8",
+      "reason": "symbol_or_token_focus",
+      "content": "import difflib\nimport json\nimport os\nimport shlex\nimport subprocess\nimport sys\nimport time\nfrom typing import Any, Dict, List, Optional\n\nfrom io_utils import emit_event, ensure_parent_dir, write_text_atomic\nfrom prompts import (\n    apply_file_blocks,\n    build_file_context,\n    build_ollama_prompt,\n    build_qa_prompt,\n    build_reviewer_prompt,\n    parse_file_blocks,\n)\nfrom shared import FILE_BLOCK_RE, normalize_path, strip_ansi\nfrom ollama_utils import invoke_ollama\nfrom usage import UsageContext\n\n\nPROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), \"..\", \"..\"))\nAPP_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), \"..\", \"..\", \"..\", \"..\"))\n\n\ndef _enforce_utf8() -> None:\n    os.environ.setdefault(\"PYTHONUTF8\", \"1\")\n    os.environ.setdefault(\"PYTHONIOENCODING\", \"utf-8\")\n    os.environ.setdefault(\"LANG\", \"en_US.UTF-8\")\n    os.environ.setdefault(\"LC_ALL\", \"en_US.UTF-8\")\n    try:\n        sys.stdout.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n    try:\n        sys.stderr.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n\n\ndef _build_utf8_env() -> Dict[str, str]:\n    env = os.environ.copy()\n    env.setdefault(\"PYTHONUTF8\", \"1\")\n    env.setdefault(\"PYTHONIOENCODING\", \"utf-8\")\n    env.setdefault(\"LANG\", \"en_US.UTF-8\")\n    env.setdefault(\"LC_ALL\", \"en_US.UTF-8\")\n    return env\n\n\n_enforce_utf8()\n\n\ndef _build_refs(\n    state: Any,\n    phase: str,\n    files: Optional[List[str]] = None,\n    evidence_path: Optional[str] = None,\n    trajectory_path: Optional[str] = None,\n) -> Dict[str, Any]:\n    refs = {\n        \"task_id\": getattr(state, \"current_task_id\", \"\") or None,\n        \"task_fingerprint\": getattr(state, \"current_task_fingerprint\", \"\") or None,\n        \"run_id\": getattr(state, \"current_run_id\", \"\") or None,\n        \"pm_iteration\": getattr(state, \"current_pm_iteration\", None),\n        \"director_iteration\": getattr(state, \"current_director_iteration\", None),\n        \"phase\": phase,"
+    },
+    {
+      "path": "src/backend/scripts/loop-director.py",
+      "start_line": 1,
+      "end_line": 51,
+      "symbol": "enforce_utf8",
+      "reason": "symbol_or_token_focus",
+      "content": "import argparse\nimport datetime\nimport json\nimport os\nimport sys\nimport time\nfrom typing import Any, Dict, List, Optional, Tuple\nfrom dataclasses import dataclass, replace\n\n\ndef enforce_utf8() -> None:\n    os.environ.setdefault(\"PYTHONUTF8\", \"1\")\n    os.environ.setdefault(\"PYTHONIOENCODING\", \"utf-8\")\n    os.environ.setdefault(\"LANG\", \"en_US.UTF-8\")\n    os.environ.setdefault(\"LC_ALL\", \"en_US.UTF-8\")\n    try:\n        sys.stdout.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n    try:\n        sys.stderr.reconfigure(encoding=\"utf-8\")\n    except Exception:\n        pass\n\n\nenforce_utf8()\n\nSCRIPT_DIR = os.path.dirname(__file__)\nPROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, \"..\"))\nPROMPT_PROFILE_ENV = \"HARBORPILOT_PROMPT_PROFILE\"\nDEFAULT_READ_RADIUS = 80\nDEFAULT_TOOL_COMMANDS = [\n    \"python -m tools.main ruff_check -- .\",\n    \"python -m tools.main mypy -- .\",\n    \"python -m tools.main pytest -- -q\",\n]\nREQUIRED_MODULE_FILES = (\n    \"decision.py\",\n    \"io_utils.py\",\n    \"policy.py\",\n    \"ollama_utils.py\",\n    \"prompts.py\",\n    \"shared.py\",\n)\n\ndef find_module_dir(base_dir: str) -> str:\n    env_dir = os.environ.get(\"OLLAMA_LOOP_MODULE_DIR\", \"\").strip()\n    if env_dir:\n        return env_dir\n    candidates = [\n        os.path.join(base_dir, \"harborpilot-loop\"),"
+    }
+  ],
+  "verify_plan": {
+    "target_tests": [
+      "agent-accel/tests/unit/test_verify_orchestrator.py",
+      "agent-accel/tests/unit/test_config.py",
+      "src/backend/tests/test_llm_phase0_regression.py",
+      "src/backend/tests/test_llm_test_index_reconcile.py",
+      "src/backend/tests/test_codex_cli_utils.py",
+      "tests/test_codex_utils.py",
+      "tests/test_decision_utils.py",
+      "tests/test_director_exec_utils.py",
+      "tests/test_io_utils_core.py",
+      "tests/test_io_utils_jsonl.py",
+      "tests/test_loop_pm_utils.py",
+      "tests/test_ollama_utils.py",
+      "tests/test_shared_utils.py",
+      "agent-accel/tests/unit/test_index_and_context.py",
+      "src/backend/tests/test_context_engine.py",
+      "tests/test_plan_act_context.py",
+      "src/backend/tests/test_director_logic.py",
+      "tests/functional/test_director_flow.py",
+      "tests/test_director_evidence_trajectory.py",
+      "tests/test_director_policy_runtime.py"
+    ],
+    "target_checks": [
+      "pytest -q",
+      "mypy ."
+    ]
+  },
+  "meta": {
+    "task_tokens": [
+      "refactor",
+      "hotspot",
+      "src",
+      "backend",
+      "app",
+      "routers",
+      "llm",
+      "py",
+      "by",
+      "extracting",
+      "request",
+      "response",
+      "models",
+      "helpers",
+      "no",
+      "behavior",
+      "change"
+    ],
+    "changed_files": [
+      "src/backend/app/routers/llm.py"
+    ],
+    "drift_reason": ""
+  }
+}

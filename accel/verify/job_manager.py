@@ -1,0 +1,189 @@
+from __future__ import annotations
+
+import json
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
+
+
+class JobState:
+    PENDING = "pending"
+    RUNNING = "running"
+    CANCELLING = "cancelling"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+    _VALUES = [PENDING, RUNNING, CANCELLING, COMPLETED, FAILED, CANCELLED]
+
+    @classmethod
+    def is_valid(cls, value: str) -> bool:
+        return value in cls._VALUES
+
+
+@dataclass
+class VerifyJob:
+    job_id: str
+    state: str = JobState.PENDING
+    stage: str = "init"
+    progress: float = 0.0
+    total_commands: int = 0
+    completed_commands: int = 0
+    current_command: str = ""
+    elapsed_sec: float = 0.0
+    eta_sec: float | None = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    error: str | None = None
+    result: dict[str, Any] | None = None
+    _events: deque[dict] = field(default_factory=deque, repr=False)
+    _event_seq: int = field(default=0, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def to_status(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "job_id": self.job_id,
+                "state": self.state,
+                "stage": self.stage,
+                "progress": round(self.progress, 2),
+                "elapsed_sec": round(self.elapsed_sec, 1),
+                "eta_sec": round(self.eta_sec, 1) if self.eta_sec is not None else None,
+                "current_command": self.current_command,
+                "total_commands": self.total_commands,
+                "completed_commands": self.completed_commands,
+            }
+
+    def add_event(self, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            self._event_seq += 1
+            event = {
+                "seq": self._event_seq,
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "event": event_type,
+                "job_id": self.job_id,
+                **payload,
+            }
+            self._events.append(event)
+            return event
+
+    def get_events(self, since_seq: int = 0) -> list[dict[str, Any]]:
+        with self._lock:
+            if since_seq <= 0:
+                return list(self._events)
+            return [e for e in self._events if e.get("seq", 0) > since_seq]
+
+    def update_progress(self, completed: int, total: int, current_command: str = "") -> None:
+        with self._lock:
+            self.completed_commands = completed
+            self.total_commands = total
+            self.current_command = current_command
+            if total > 0:
+                self.progress = (completed / total) * 100.0
+            if completed > 0 and self.start_time:
+                elapsed = time.perf_counter() - self.start_time.timestamp()
+                avg_time = elapsed / completed
+                remaining = total - completed
+                self.eta_sec = avg_time * remaining
+                self.elapsed_sec = elapsed
+
+    def mark_running(self, stage: str = "running") -> None:
+        with self._lock:
+            self.state = JobState.RUNNING
+            self.stage = stage
+            if self.start_time is None:
+                self.start_time = datetime.now(timezone.utc)
+                self.elapsed_sec = 0.0
+
+    def mark_completed(self, status: str, exit_code: int, result: dict[str, Any] | None = None) -> None:
+        with self._lock:
+            self.state = JobState.COMPLETED
+            self.stage = "completed"
+            self.end_time = datetime.now(timezone.utc)
+            self.result = result
+            self.progress = 100.0
+            if self.start_time:
+                self.elapsed_sec = (self.end_time - self.start_time).total_seconds()
+
+    def mark_failed(self, error: str) -> None:
+        with self._lock:
+            self.state = JobState.FAILED
+            self.stage = "failed"
+            self.error = error
+            self.end_time = datetime.now(timezone.utc)
+            if self.start_time:
+                self.elapsed_sec = (self.end_time - self.start_time).total_seconds()
+
+    def mark_cancelled(self) -> None:
+        with self._lock:
+            self.state = JobState.CANCELLED
+            self.stage = "cancelled"
+            self.end_time = datetime.now(timezone.utc)
+            if self.start_time:
+                self.elapsed_sec = (self.end_time - self.start_time).total_seconds()
+
+
+class JobManager:
+    MAX_JOBS = 100
+    _instance: "JobManager | None" = None
+    _lock = threading.Lock()
+
+    def __new__(cls) -> "JobManager":
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self) -> None:
+        if self._initialized:
+            return
+        self._jobs: dict[str, VerifyJob] = {}
+        self._lock = threading.Lock()
+        self._initialized = True
+
+    def create_job(self) -> VerifyJob:
+        job_id = f"verify_{uuid4().hex[:12]}"
+        job = VerifyJob(job_id=job_id)
+        with self._lock:
+            if len(self._jobs) >= self.MAX_JOBS:
+                oldest_key = next(iter(self._jobs))
+                del self._jobs[oldest_key]
+            self._jobs[job_id] = job
+        return job
+
+    def get_job(self, job_id: str) -> VerifyJob | None:
+        with self._lock:
+            return self._jobs.get(job_id)
+
+    def get_all_jobs(self) -> list[VerifyJob]:
+        with self._lock:
+            return list(self._jobs.values())
+
+    def cancel_job(self, job_id: str) -> bool:
+        job = self.get_job(job_id)
+        if job is None:
+            return False
+        if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+            return False
+        job.state = JobState.CANCELLING
+        return True
+
+    def cleanup_completed(self, max_age_seconds: float = 3600) -> int:
+        now = datetime.now(timezone.utc)
+        cleaned = 0
+        with self._lock:
+            to_remove: list[str] = []
+            for job_id, job in self._jobs.items():
+                if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+                    if job.end_time and (now - job.end_time).total_seconds() > max_age_seconds:
+                        to_remove.append(job_id)
+            for job_id in to_remove:
+                del self._jobs[job_id]
+                cleaned += 1
+        return cleaned

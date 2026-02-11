@@ -1,0 +1,482 @@
+{
+  "version": 1,
+  "task": "smoke_test_context_pack",
+  "generated_at": "2026-02-10T12:21:57.413885+00:00",
+  "budget": {
+    "max_chars": 24000,
+    "max_snippets": 60,
+    "top_n_files": 12
+  },
+  "top_files": [
+    {
+      "path": "accel/cli.py",
+      "score": 0.216667,
+      "reasons": [
+        "test_relevance",
+        "changed_file"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 0.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.333333
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.15
+        }
+      ]
+    },
+    {
+      "path": "accel/query/context_compiler.py",
+      "score": 0.216667,
+      "reasons": [
+        "test_relevance",
+        "changed_file"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 0.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.333333
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.15
+        }
+      ]
+    },
+    {
+      "path": "accel/config.py",
+      "score": 0.066667,
+      "reasons": [
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 0.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.333333
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "accel/verify/sharding.py",
+      "score": 0.066667,
+      "reasons": [
+        "test_relevance"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 0.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.333333
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "accel/__init__.py",
+      "score": 0.0,
+      "reasons": [
+        "baseline"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 0.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "accel/hooks/__init__.py",
+      "score": 0.0,
+      "reasons": [
+        "baseline"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 0.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "accel/hooks/post_hook.py",
+      "score": 0.0,
+      "reasons": [
+        "baseline"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 0.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "accel/hooks/pre_hook.py",
+      "score": 0.0,
+      "reasons": [
+        "baseline"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 0.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "accel/indexers/__init__.py",
+      "score": 0.0,
+      "reasons": [
+        "baseline"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 0.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "accel/indexers/deps.py",
+      "score": 0.0,
+      "reasons": [
+        "baseline"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 0.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "accel/indexers/references.py",
+      "score": 0.0,
+      "reasons": [
+        "baseline"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 0.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    },
+    {
+      "path": "accel/indexers/symbols.py",
+      "score": 0.0,
+      "reasons": [
+        "baseline"
+      ],
+      "signals": [
+        {
+          "signal_name": "symbol_match",
+          "score": 0.0
+        },
+        {
+          "signal_name": "reference_proximity",
+          "score": 0.0
+        },
+        {
+          "signal_name": "dependency_impact",
+          "score": 0.0
+        },
+        {
+          "signal_name": "test_relevance",
+          "score": 0.0
+        },
+        {
+          "signal_name": "changed_boost",
+          "score": 0.0
+        }
+      ]
+    }
+  ],
+  "snippets": [
+    {
+      "path": "accel/cli.py",
+      "start_line": 1,
+      "end_line": 62,
+      "symbol": "_utc_now",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport argparse\nimport json\nimport os\nimport platform\nimport shutil\nimport subprocess\nimport sys\nfrom datetime import datetime, timezone\nfrom pathlib import Path\nfrom typing import Any\nfrom uuid import uuid4\n\nfrom .config import init_project, resolve_effective_config\nfrom .indexers import build_or_update_indexes\nfrom .query.context_compiler import compile_context_pack, write_context_pack\nfrom .storage.cache import ensure_project_dirs, project_paths\nfrom .verify.orchestrator import run_verify\n\n\ndef _utc_now() -> str:\n    return datetime.now(timezone.utc).isoformat()\n\n\ndef _normalize_path(path: Path) -> Path:\n    return Path(os.path.abspath(str(path)))\n\n\ndef _detect_cuda() -> dict[str, Any]:\n    nvidia_smi = shutil.which(\"nvidia-smi\")\n    if not nvidia_smi:\n        return {\"available\": False, \"reason\": \"nvidia-smi not found\", \"raw\": \"\"}\n    try:\n        proc = subprocess.run(\n            [nvidia_smi, \"--query-gpu=name,driver_version,memory.total\", \"--format=csv,noheader\"],\n            capture_output=True,\n            text=True,\n            encoding=\"utf-8\",\n            errors=\"replace\",\n            timeout=10,\n        )\n        if proc.returncode != 0:\n            return {\n                \"available\": False,\n                \"reason\": proc.stderr.strip() or f\"exit={proc.returncode}\",\n                \"raw\": proc.stdout.strip(),\n            }\n        gpus = [line.strip() for line in proc.stdout.splitlines() if line.strip()]\n        return {\"available\": bool(gpus), \"reason\": \"\", \"raw\": gpus}\n    except Exception as exc:  # pragma: no cover - defensive path\n        return {\"available\": False, \"reason\": str(exc), \"raw\": \"\"}\n\n\ndef _print_output(payload: dict[str, Any], output: str) -> None:\n    if output == \"json\":\n        print(json.dumps(payload, ensure_ascii=False, indent=2))\n    else:\n        for key, value in payload.items():\n            print(f\"{key}: {value}\")\n\n"
+    },
+    {
+      "path": "accel/query/context_compiler.py",
+      "start_line": 1,
+      "end_line": 54,
+      "symbol": "_load_jsonl",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport json\nfrom datetime import datetime, timezone\nfrom pathlib import Path\nfrom typing import Any\n\nfrom .planner import build_candidate_files, normalize_task_tokens\nfrom .ranker import score_file\nfrom .snippet_extractor import extract_snippet\nfrom ..storage.cache import project_paths\n\n\ndef _load_jsonl(path: Path) -> list[dict[str, Any]]:\n    if not path.exists():\n        return []\n    rows: list[dict[str, Any]] = []\n    for line in path.read_text(encoding=\"utf-8\").splitlines():\n        line = line.strip()\n        if not line:\n            continue\n        try:\n            rows.append(json.loads(line))\n        except json.JSONDecodeError:\n            continue\n    return rows\n\n\ndef _group_by_file(rows: list[dict[str, Any]], key: str) -> dict[str, list[dict[str, Any]]]:\n    grouped: dict[str, list[dict[str, Any]]] = {}\n    for row in rows:\n        file_value = str(row.get(key, \"\"))\n        if not file_value:\n            continue\n        grouped.setdefault(file_value, []).append(row)\n    return grouped\n\n\ndef _build_verify_plan(\n    top_files: list[dict[str, Any]],\n    test_ownership_rows: list[dict[str, Any]],\n    changed_files: list[str],\n) -> dict[str, list[str]]:\n    selected_files = {item[\"path\"] for item in top_files}\n    target_tests: list[str] = []\n    seen_tests: set[str] = set()\n    for row in test_ownership_rows:\n        owns = str(row.get(\"owns_file\", \"\"))\n        test_file = str(row.get(\"test_file\", \"\"))\n        if owns in selected_files and test_file and test_file not in seen_tests:\n            seen_tests.add(test_file)\n            target_tests.append(test_file)\n\n    changed = [item.lower() for item in changed_files]"
+    },
+    {
+      "path": "accel/config.py",
+      "start_line": 1,
+      "end_line": 81,
+      "symbol": "default_accel_home",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport json\nimport os\nfrom pathlib import Path\nfrom typing import Any\n\n\nDEFAULT_PROJECT_CONFIG: dict[str, Any] = {\n    \"version\": 1,\n    \"project_id\": \"demo_project\",\n    \"language_profiles\": [\"python\", \"typescript\"],\n    \"index\": {\n        \"include\": [\"src/**\", \"accel/**\", \"tests/**\"],\n        \"exclude\": [\"node_modules/**\", \".git/**\", \"dist/**\"],\n        \"max_file_mb\": 2,\n    },\n    \"context\": {\n        \"top_n_files\": 12,\n        \"snippet_radius\": 40,\n        \"max_chars\": 24000,\n        \"max_snippets\": 60,\n    },\n    \"verify\": {\n        \"python\": [\"pytest -q\", \"ruff check .\", \"mypy .\"],\n        \"node\": [\"npm test --silent\", \"npm run lint\", \"npm run typecheck\"],\n    },\n}\n\nDEFAULT_LOCAL_CONFIG: dict[str, Any] = {\n    \"runtime\": {\n        \"max_workers\": 12,\n        \"accel_home\": \"\",\n        \"per_command_timeout_seconds\": 1200,\n        \"total_verify_timeout_seconds\": 3600,\n    },\n    \"gpu\": {\"enabled\": False, \"policy\": \"off\"},\n}\n\n\ndef default_accel_home() -> Path:\n    local_app_data = os.environ.get(\"LOCALAPPDATA\")\n    if local_app_data:\n        return Path(local_app_data) / \"agent-accel\"\n    return Path.home() / \".cache\" / \"agent-accel\"\n\n\ndef _normalize_path(path: Path) -> Path:\n    # Path.resolve() on some Windows/Python setups may produce duplicated segments.\n    return Path(os.path.abspath(str(path)))\n\n\ndef _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:\n    merged: dict[str, Any] = dict(base)\n    for key, value in override.items():\n        if isinstance(value, dict) and isinstance(merged.get(key), dict):\n            merged[key] = _deep_merge(merged[key], value)\n        else:\n            merged[key] = value\n    return merged\n\n\ndef _load_config_file(path: Path) -> dict[str, Any]:\n    if not path.exists():\n        return {}\n    text = path.read_text(encoding=\"utf-8\").strip()\n    if not text:\n        return {}\n    try:\n        data = json.loads(text)\n    except json.JSONDecodeError:\n        try:\n            import yaml  # type: ignore[import-untyped]\n\n            loaded = yaml.safe_load(text)\n            if loaded is None:\n                return {}\n            if not isinstance(loaded, dict):\n                raise ValueError(f\"Config root must be an object: {path}\")\n            return loaded\n        except Exception as exc:  # pragma: no cover - fallback guard"
+    },
+    {
+      "path": "accel/verify/sharding.py",
+      "start_line": 1,
+      "end_line": 24,
+      "symbol": "select_verify_commands",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nfrom typing import Any\n\n\ndef select_verify_commands(\n    config: dict[str, Any],\n    changed_files: list[str] | None = None,\n) -> list[str]:\n    changed_files = [item.lower() for item in (changed_files or [])]\n    verify_cfg = config.get(\"verify\", {})\n    python_cmds = list(verify_cfg.get(\"python\", []))\n    node_cmds = list(verify_cfg.get(\"node\", []))\n\n    has_py = any(item.endswith(\".py\") for item in changed_files)\n    has_js = any(item.endswith((\".ts\", \".tsx\", \".js\", \".jsx\")) for item in changed_files)\n    run_all = len(changed_files) == 0\n\n    commands: list[str] = []\n    if run_all or has_py:\n        commands.extend(python_cmds)\n    if run_all or has_js:\n        commands.extend(node_cmds)\n    return commands"
+    },
+    {
+      "path": "accel/__init__.py",
+      "start_line": 1,
+      "end_line": 2,
+      "symbol": "",
+      "reason": "symbol_or_token_focus",
+      "content": "__all__ = [\"__version__\"]\n__version__ = \"0.1.0\""
+    },
+    {
+      "path": "accel/hooks/__init__.py",
+      "start_line": 1,
+      "end_line": 1,
+      "symbol": "",
+      "reason": "symbol_or_token_focus",
+      "content": "__all__ = []"
+    },
+    {
+      "path": "accel/hooks/post_hook.py",
+      "start_line": 1,
+      "end_line": 31,
+      "symbol": "main",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport argparse\nimport json\nimport os\nfrom pathlib import Path\n\nfrom ..config import resolve_effective_config\nfrom ..verify.orchestrator import run_verify\n\n\ndef main() -> None:\n    parser = argparse.ArgumentParser(description=\"AgentAccel post-hook: run incremental verification\")\n    parser.add_argument(\"--project\", default=\".\", help=\"Project root path\")\n    parser.add_argument(\n        \"--changed-files\",\n        nargs=\"*\",\n        default=[],\n        help=\"Changed files for incremental verify\",\n    )\n    args = parser.parse_args()\n\n    project_dir = Path(os.path.abspath(str(args.project)))\n    cfg = resolve_effective_config(project_dir)\n    result = run_verify(project_dir=project_dir, config=cfg, changed_files=args.changed_files)\n    print(json.dumps(result, ensure_ascii=False))\n    raise SystemExit(int(result[\"exit_code\"]))\n\n\nif __name__ == \"__main__\":\n    main()"
+    },
+    {
+      "path": "accel/hooks/pre_hook.py",
+      "start_line": 1,
+      "end_line": 41,
+      "symbol": "main",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport argparse\nimport json\nimport os\nfrom pathlib import Path\n\nfrom ..config import resolve_effective_config\nfrom ..query.context_compiler import compile_context_pack, write_context_pack\n\n\ndef main() -> None:\n    parser = argparse.ArgumentParser(description=\"AgentAccel pre-hook: build context_pack.json\")\n    parser.add_argument(\"--project\", default=\".\", help=\"Project root path\")\n    parser.add_argument(\"--task\", required=True, help=\"Natural language task\")\n    parser.add_argument(\"--out\", default=\"context_pack.json\", help=\"Output file\")\n    parser.add_argument(\n        \"--changed-files\",\n        nargs=\"*\",\n        default=[],\n        help=\"Optional changed files\",\n    )\n    parser.add_argument(\"--hints\", nargs=\"*\", default=[], help=\"Optional path/symbol hints\")\n    args = parser.parse_args()\n\n    project_dir = Path(os.path.abspath(str(args.project)))\n    cfg = resolve_effective_config(project_dir)\n    pack = compile_context_pack(\n        project_dir=project_dir,\n        config=cfg,\n        task=args.task,\n        changed_files=args.changed_files,\n        hints=args.hints,\n    )\n    out_path = Path(os.path.abspath(str(args.out)))\n    write_context_pack(out_path, pack)\n    print(json.dumps({\"status\": \"ok\", \"out\": str(out_path)}, ensure_ascii=False))\n\n\nif __name__ == \"__main__\":\n    main()"
+    },
+    {
+      "path": "accel/indexers/__init__.py",
+      "start_line": 1,
+      "end_line": 67,
+      "symbol": "_utc_now",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport fnmatch\nimport hashlib\nimport json\nfrom datetime import datetime, timezone\nfrom pathlib import Path\nfrom typing import Any\n\nfrom .deps import extract_dependencies\nfrom .references import extract_references\nfrom .symbols import extract_symbols\nfrom .tests_ownership import build_test_ownership\nfrom ..storage.cache import ensure_project_dirs, project_paths, write_json, write_jsonl\nfrom ..storage.state_db import FileState, compute_hash, delete_paths, load_state, upsert_state\n\n\nSUPPORTED_EXTENSIONS = {\n    \".py\": \"python\",\n    \".ts\": \"typescript\",\n    \".tsx\": \"typescript\",\n    \".js\": \"javascript\",\n    \".jsx\": \"javascript\",\n}\n\n\ndef _utc_now() -> str:\n    return datetime.now(timezone.utc).isoformat()\n\n\ndef _normalize_rel_path(path: Path) -> str:\n    return path.as_posix()\n\n\ndef detect_language(file_path: Path) -> str:\n    return SUPPORTED_EXTENSIONS.get(file_path.suffix.lower(), \"\")\n\n\ndef _match_any(rel_path: str, patterns: list[str]) -> bool:\n    return any(fnmatch.fnmatch(rel_path, pattern) for pattern in patterns)\n\n\ndef collect_source_files(project_dir: Path, config: dict[str, Any]) -> list[Path]:\n    index_cfg = config.get(\"index\", {})\n    includes = list(index_cfg.get(\"include\", [\"**/*\"]))\n    excludes = list(index_cfg.get(\"exclude\", []))\n    max_file_mb = int(index_cfg.get(\"max_file_mb\", 2))\n    max_size = max_file_mb * 1024 * 1024\n\n    files: list[Path] = []\n    for path in project_dir.rglob(\"*\"):\n        if not path.is_file():\n            continue\n        if detect_language(path) == \"\":\n            continue\n        rel_path = _normalize_rel_path(path.relative_to(project_dir))\n        if includes and not _match_any(rel_path, includes):\n            continue\n        if excludes and _match_any(rel_path, excludes):\n            continue\n        if path.stat().st_size > max_size:\n            continue\n        files.append(path)\n    return sorted(files, key=lambda item: _normalize_rel_path(item.relative_to(project_dir)))\n\n\ndef _unit_path(index_units_dir: Path, rel_path: str) -> Path:"
+    },
+    {
+      "path": "accel/indexers/deps.py",
+      "start_line": 1,
+      "end_line": 55,
+      "symbol": "_py_dependencies",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport ast\nimport re\nfrom pathlib import Path\nfrom typing import Any\n\n\nIMPORT_FROM_RE = re.compile(\n    r\"\"\"^\\s*import\\s+.+?\\s+from\\s+[\"']([^\"']+)[\"']\"\"\", re.MULTILINE\n)\nREQUIRE_RE = re.compile(r\"\"\"require\\(\\s*[\"']([^\"']+)[\"']\\s*\\)\"\"\")\n\n\ndef _py_dependencies(text: str, rel_path: str) -> list[dict[str, Any]]:\n    rows: list[dict[str, Any]] = []\n    try:\n        tree = ast.parse(text, filename=rel_path)\n    except SyntaxError:\n        return rows\n\n    for node in ast.walk(tree):\n        if isinstance(node, ast.Import):\n            for alias in node.names:\n                rows.append(\n                    {\n                        \"edge_from\": rel_path,\n                        \"edge_to\": alias.name,\n                        \"edge_type\": \"import\",\n                        \"weight\": 1.0,\n                    }\n                )\n        elif isinstance(node, ast.ImportFrom):\n            module = node.module or \"\"\n            rows.append(\n                {\n                    \"edge_from\": rel_path,\n                    \"edge_to\": module,\n                    \"edge_type\": \"from_import\",\n                    \"weight\": 1.0,\n                }\n            )\n    return rows\n\n\ndef _ts_js_dependencies(text: str, rel_path: str) -> list[dict[str, Any]]:\n    rows: list[dict[str, Any]] = []\n    for match in IMPORT_FROM_RE.finditer(text):\n        rows.append(\n            {\n                \"edge_from\": rel_path,\n                \"edge_to\": match.group(1),\n                \"edge_type\": \"import\",\n                \"weight\": 1.0,\n            }"
+    },
+    {
+      "path": "accel/indexers/references.py",
+      "start_line": 1,
+      "end_line": 52,
+      "symbol": "_py_call_references",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport ast\nimport re\nfrom pathlib import Path\nfrom typing import Any\n\n\nCALL_RE = re.compile(r\"\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\(\")\n\n\ndef _py_call_references(text: str, rel_path: str) -> list[dict[str, Any]]:\n    rows: list[dict[str, Any]] = []\n    try:\n        tree = ast.parse(text, filename=rel_path)\n    except SyntaxError:\n        return rows\n\n    for node in ast.walk(tree):\n        if isinstance(node, ast.Call):\n            target = \"\"\n            if isinstance(node.func, ast.Name):\n                target = node.func.id\n            elif isinstance(node.func, ast.Attribute):\n                target = node.func.attr\n            if not target:\n                continue\n            rows.append(\n                {\n                    \"source_symbol\": rel_path,\n                    \"target_symbol\": target,\n                    \"relation\": \"call\",\n                    \"file\": rel_path,\n                    \"line\": int(getattr(node, \"lineno\", 1)),\n                    \"source\": \"semantic\",\n                    \"confidence\": 0.8,\n                }\n            )\n    return rows\n\n\ndef _ts_js_references(text: str, rel_path: str) -> list[dict[str, Any]]:\n    rows: list[dict[str, Any]] = []\n    lines = text.splitlines()\n    for line_no, line in enumerate(lines, start=1):\n        for match in CALL_RE.finditer(line):\n            symbol = match.group(1)\n            if symbol in {\"if\", \"for\", \"while\", \"switch\", \"catch\", \"function\", \"return\"}:\n                continue\n            rows.append(\n                {\n                    \"source_symbol\": rel_path,"
+    },
+    {
+      "path": "accel/indexers/symbols.py",
+      "start_line": 1,
+      "end_line": 49,
+      "symbol": "_py_symbols_from_ast",
+      "reason": "symbol_or_token_focus",
+      "content": "from __future__ import annotations\n\nimport ast\nimport re\nfrom pathlib import Path\nfrom typing import Any\n\n\ndef _py_symbols_from_ast(tree: ast.AST, rel_path: str) -> list[dict[str, Any]]:\n    rows: list[dict[str, Any]] = []\n\n    def visit(node: ast.AST, scope: list[str]) -> None:\n        for child in ast.iter_child_nodes(node):\n            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):\n                q_name = \".\".join(scope + [child.name])\n                rows.append(\n                    {\n                        \"symbol\": child.name,\n                        \"kind\": \"function\",\n                        \"lang\": \"python\",\n                        \"file\": rel_path,\n                        \"line_start\": int(child.lineno),\n                        \"line_end\": int(getattr(child, \"end_lineno\", child.lineno)),\n                        \"qualified_name\": q_name,\n                    }\n                )\n                visit(child, scope + [child.name])\n            elif isinstance(child, ast.ClassDef):\n                q_name = \".\".join(scope + [child.name])\n                rows.append(\n                    {\n                        \"symbol\": child.name,\n                        \"kind\": \"class\",\n                        \"lang\": \"python\",\n                        \"file\": rel_path,\n                        \"line_start\": int(child.lineno),\n                        \"line_end\": int(getattr(child, \"end_lineno\", child.lineno)),\n                        \"qualified_name\": q_name,\n                    }\n                )\n                visit(child, scope + [child.name])\n            else:\n                visit(child, scope)\n\n    visit(tree, [])\n    return rows\n\n\nTS_SYMBOL_PATTERNS: list[tuple[str, re.Pattern[str]]] = ["
+    }
+  ],
+  "verify_plan": {
+    "target_tests": [
+      "tests/integration/test_cli_e2e.py",
+      "tests/unit/test_config.py",
+      "tests/unit/test_index_and_context.py",
+      "tests/unit/test_verify_sharding.py"
+    ],
+    "target_checks": [
+      "pytest -q",
+      "mypy ."
+    ]
+  },
+  "meta": {
+    "task_tokens": [
+      "smoke_test_context_pack"
+    ],
+    "changed_files": [
+      "accel/cli.py",
+      "accel/query/context_compiler.py"
+    ],
+    "drift_reason": ""
+  }
+}

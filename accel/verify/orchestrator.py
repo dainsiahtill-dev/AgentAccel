@@ -1,0 +1,901 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shlex
+import shutil
+import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+from .runners import run_command
+from .sharding import select_verify_commands
+from ..storage.cache import ensure_project_dirs, project_paths
+from .callbacks import VerifyProgressCallback, VerifyStage, NoOpCallback
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _command_binary(command: str) -> str:
+    parts = shlex.split(command, posix=os.name != "nt")
+    return parts[0] if parts else ""
+
+
+def _append_line(path: Path, line: str) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+
+
+def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _normalize_positive_int(value: Any, default_value: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return max(1, int(default_value))
+    return max(1, parsed)
+
+
+def _normalize_bool(value: Any, default_value: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default_value
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "on"}
+
+
+def _resolve_verify_workers(runtime_cfg: dict[str, Any]) -> int:
+    fallback = _normalize_positive_int(runtime_cfg.get("max_workers", 8), 8)
+    return _normalize_positive_int(runtime_cfg.get("verify_workers", fallback), fallback)
+
+
+def _run_with_timeout_detection(
+    command: str, 
+    project_dir: Path, 
+    timeout_seconds: int,
+    log_path: Path,
+    jsonl_path: Path
+) -> dict[str, Any]:
+    """Run command with enhanced timeout detection and logging."""
+    start_time = time.perf_counter()
+    try:
+        result = run_command(command, project_dir, timeout_seconds)
+        elapsed = time.perf_counter() - start_time
+        _append_line(log_path, f"COMMAND_COMPLETE {command} DURATION={elapsed:.3f}s")
+        return result
+    except Exception as exc:
+        elapsed = time.perf_counter() - start_time
+        _append_line(log_path, f"COMMAND_ERROR {command} DURATION={elapsed:.3f}s ERROR={exc!r}")
+        _append_jsonl(jsonl_path, {
+            "event": "command_error",
+            "command": command,
+            "duration_seconds": elapsed,
+            "error": str(exc),
+            "ts": _utc_now(),
+        })
+        # Return a failure result instead of raising
+        return {
+            "command": command,
+            "exit_code": 1,
+            "duration_seconds": elapsed,
+            "stdout": "",
+            "stderr": f"agent-accel error: {exc}",
+            "timed_out": False,
+        }
+
+
+def _normalize_changed_path(project_dir: Path, changed_file: str) -> tuple[str, Path]:
+    raw = changed_file.replace("\\", "/").strip()
+    candidate = Path(raw)
+    abs_path = candidate if candidate.is_absolute() else (project_dir / candidate)
+    abs_resolved = abs_path.resolve()
+    project_resolved = project_dir.resolve()
+    try:
+        rel = abs_resolved.relative_to(project_resolved).as_posix()
+        return rel, abs_resolved
+    except ValueError:
+        return raw, abs_resolved
+
+
+def _build_changed_files_fingerprint(
+    project_dir: Path,
+    changed_files: list[str] | None,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for changed_file in (changed_files or []):
+        key, abs_path = _normalize_changed_path(project_dir, str(changed_file))
+        row: dict[str, Any] = {"path": key}
+        if abs_path.exists():
+            stat = abs_path.stat()
+            row["exists"] = True
+            row["size"] = int(stat.st_size)
+            row["mtime_ns"] = int(stat.st_mtime_ns)
+            row["is_dir"] = bool(abs_path.is_dir())
+        else:
+            row["exists"] = False
+        rows.append(row)
+    rows.sort(key=lambda item: str(item.get("path", "")))
+    return rows
+
+
+def _cache_file_path(paths: dict[str, Path]) -> Path:
+    return paths["verify"] / "command_cache.json"
+
+
+def _cache_key(
+    command: str,
+    project_dir: Path,
+    changed_fingerprint: list[dict[str, Any]],
+) -> str:
+    payload = {
+        "version": 1,
+        "command": command,
+        "project_dir": str(project_dir.resolve()),
+        "changed_files": changed_fingerprint,
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _load_cache_entries(cache_path: Path) -> dict[str, dict[str, Any]]:
+    if not cache_path.exists():
+        return {}
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    entries_raw = payload.get("entries", {})
+    if not isinstance(entries_raw, dict):
+        return {}
+    entries: dict[str, dict[str, Any]] = {}
+    for key, value in entries_raw.items():
+        if isinstance(key, str) and isinstance(value, dict):
+            entries[key] = value
+    return entries
+
+
+def _prune_cache_entries(
+    entries: dict[str, dict[str, Any]],
+    ttl_seconds: int,
+    max_entries: int,
+) -> tuple[dict[str, dict[str, Any]], bool]:
+    now = datetime.now(timezone.utc)
+    ttl = timedelta(seconds=max(1, ttl_seconds))
+    max_count = max(1, max_entries)
+
+    valid: list[tuple[str, datetime, dict[str, Any]]] = []
+    for key, entry in entries.items():
+        saved_at = _parse_utc(entry.get("saved_utc"))
+        if saved_at is None:
+            continue
+        if now - saved_at > ttl:
+            continue
+        valid.append((key, saved_at, entry))
+
+    valid.sort(key=lambda item: item[1], reverse=True)
+    trimmed = valid[:max_count]
+    pruned = {key: entry for key, _, entry in trimmed}
+    was_pruned = len(pruned) != len(entries)
+    return pruned, was_pruned
+
+
+def _write_cache_entries_atomic(cache_path: Path, entries: dict[str, dict[str, Any]]) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "updated_utc": _utc_now(),
+        "entries": entries,
+    }
+    tmp_file = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        delete=False,
+        dir=str(cache_path.parent),
+        prefix=f".{cache_path.name}.",
+        suffix=".tmp",
+        newline="\n",
+    )
+    tmp_path = Path(tmp_file.name)
+    try:
+        with tmp_file:
+            tmp_file.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        os.replace(tmp_path, cache_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def _is_failure(result: dict[str, Any]) -> bool:
+    return int(result.get("exit_code", 1)) != 0
+
+
+def _normalize_live_result(result: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(result)
+    normalized["command"] = str(result.get("command", ""))
+    normalized["exit_code"] = int(result.get("exit_code", 1))
+    normalized["duration_seconds"] = float(result.get("duration_seconds", 0.0))
+    normalized["stdout"] = str(result.get("stdout", ""))
+    normalized["stderr"] = str(result.get("stderr", ""))
+    normalized["timed_out"] = bool(result.get("timed_out", False))
+    normalized["cached"] = False
+    return normalized
+
+
+def _normalize_cached_result(command: str, entry: dict[str, Any]) -> dict[str, Any]:
+    stored = entry.get("result", {})
+    if not isinstance(stored, dict):
+        stored = {}
+    return {
+        "command": command,
+        "exit_code": int(stored.get("exit_code", 1)),
+        "duration_seconds": float(stored.get("duration_seconds", 0.0)),
+        "stdout": str(stored.get("stdout", "")),
+        "stderr": str(stored.get("stderr", "")),
+        "timed_out": bool(stored.get("timed_out", False)),
+        "cached": True,
+    }
+
+
+def _store_success_result(
+    entries: dict[str, dict[str, Any]],
+    key: str,
+    command: str,
+    result: dict[str, Any],
+) -> bool:
+    if _is_failure(result) or bool(result.get("timed_out", False)):
+        return False
+    entries[key] = {
+        "saved_utc": _utc_now(),
+        "command": command,
+        "result": {
+            "exit_code": int(result.get("exit_code", 0)),
+            "duration_seconds": float(result.get("duration_seconds", 0.0)),
+            "stdout": str(result.get("stdout", "")),
+            "stderr": str(result.get("stderr", "")),
+            "timed_out": bool(result.get("timed_out", False)),
+        },
+    }
+    return True
+
+
+def _log_command_result(log_path: Path, jsonl_path: Path, result: dict[str, Any]) -> None:
+    _append_line(log_path, f"CMD {result['command']}")
+    _append_line(log_path, f"EXIT {result['exit_code']} DURATION {result['duration_seconds']}s")
+    if result["stdout"]:
+        _append_line(log_path, f"STDOUT {str(result['stdout']).strip()[:2000]}")
+    if result["stderr"]:
+        _append_line(log_path, f"STDERR {str(result['stderr']).strip()[:2000]}")
+    _append_jsonl(
+        jsonl_path,
+        {
+            "event": "command_result",
+            "ts": _utc_now(),
+            "command": result["command"],
+            "exit_code": result["exit_code"],
+            "duration_seconds": result["duration_seconds"],
+            "timed_out": result["timed_out"],
+            "cached": bool(result.get("cached", False)),
+        },
+    )
+
+
+def run_verify(
+    project_dir: Path,
+    config: dict[str, Any],
+    changed_files: list[str] | None = None,
+) -> dict[str, Any]:
+    accel_home = Path(config["runtime"]["accel_home"]).resolve()
+    paths = project_paths(accel_home, project_dir)
+    ensure_project_dirs(paths)
+
+    runtime_cfg = config.get("runtime", {})
+    verify_workers = _resolve_verify_workers(runtime_cfg)
+    per_command_timeout = int(runtime_cfg.get("per_command_timeout_seconds", 1200))
+    verify_fail_fast = _normalize_bool(runtime_cfg.get("verify_fail_fast", False), False)
+    verify_cache_enabled_cfg = _normalize_bool(runtime_cfg.get("verify_cache_enabled", True), True)
+    verify_cache_ttl_seconds = _normalize_positive_int(runtime_cfg.get("verify_cache_ttl_seconds", 900), 900)
+    verify_cache_max_entries = _normalize_positive_int(runtime_cfg.get("verify_cache_max_entries", 400), 400)
+
+    nonce = uuid4().hex[:12]
+    log_path = paths["verify"] / f"verify_{nonce}.log"
+    jsonl_path = paths["verify"] / f"verify_{nonce}.jsonl"
+    commands = select_verify_commands(config=config, changed_files=changed_files)
+
+    _append_line(log_path, f"VERIFICATION_START {nonce} {_utc_now()}")
+    _append_line(log_path, f"ENV cwd={project_dir} python={shutil.which('python') or ''}")
+    _append_jsonl(jsonl_path, {"event": "verification_start", "nonce": nonce, "ts": _utc_now()})
+
+    changed_fingerprint = _build_changed_files_fingerprint(project_dir=project_dir, changed_files=changed_files)
+    cache_enabled = bool(verify_cache_enabled_cfg and changed_fingerprint)
+    cache_path = _cache_file_path(paths)
+    cache_entries: dict[str, dict[str, Any]] = {}
+    cache_dirty = False
+    cache_hits = 0
+    cache_misses = 0
+    if cache_enabled:
+        loaded_entries = _load_cache_entries(cache_path)
+        cache_entries, was_pruned = _prune_cache_entries(
+            loaded_entries,
+            ttl_seconds=verify_cache_ttl_seconds,
+            max_entries=verify_cache_max_entries,
+        )
+        cache_dirty = was_pruned
+    elif verify_cache_enabled_cfg:
+        _append_line(log_path, "CACHE_DISABLED no changed_files fingerprint")
+
+    degraded = False
+    degrade_reasons: list[str] = []
+    runnable_commands: list[str] = []
+    for command in commands:
+        binary = _command_binary(command)
+        if binary and shutil.which(binary) is None:
+            degraded = True
+            reason = f"missing command binary: {binary}"
+            degrade_reasons.append(reason)
+            _append_line(log_path, f"SKIP {command} ({reason})")
+            _append_jsonl(
+                jsonl_path,
+                {"event": "command_skipped", "command": command, "reason": reason, "ts": _utc_now()},
+            )
+            continue
+        runnable_commands.append(command)
+
+    results: list[dict[str, Any]] = []
+    fail_fast_skipped_commands: list[str] = []
+
+    if verify_fail_fast:
+        for index, command in enumerate(runnable_commands):
+            cache_key: str | None = None
+            if cache_enabled:
+                cache_key = _cache_key(
+                    command=command,
+                    project_dir=project_dir,
+                    changed_fingerprint=changed_fingerprint,
+                )
+                cached_entry = cache_entries.get(cache_key)
+                if cached_entry is not None:
+                    cache_hits += 1
+                    cached_result = _normalize_cached_result(command=command, entry=cached_entry)
+                    results.append(cached_result)
+                    _append_line(log_path, f"CACHE_HIT {command}")
+                    _append_jsonl(
+                        jsonl_path,
+                        {"event": "command_cache_hit", "command": command, "ts": _utc_now()},
+                    )
+                    _log_command_result(log_path, jsonl_path, cached_result)
+                    if _is_failure(cached_result):
+                        fail_fast_skipped_commands = runnable_commands[index + 1 :]
+                        break
+                    continue
+                cache_misses += 1
+
+            live_result = _normalize_live_result(run_command(command, project_dir, per_command_timeout))
+            results.append(live_result)
+            _log_command_result(log_path, jsonl_path, live_result)
+            if cache_enabled and cache_key:
+                if _store_success_result(cache_entries, cache_key, command, live_result):
+                    cache_dirty = True
+            if _is_failure(live_result):
+                fail_fast_skipped_commands = runnable_commands[index + 1 :]
+                break
+    else:
+        runnable_with_keys: list[tuple[str, str | None]] = []
+        for command in runnable_commands:
+            cache_key = None
+            if cache_enabled:
+                cache_key = _cache_key(
+                    command=command,
+                    project_dir=project_dir,
+                    changed_fingerprint=changed_fingerprint,
+                )
+                cached_entry = cache_entries.get(cache_key)
+                if cached_entry is not None:
+                    cache_hits += 1
+                    cached_result = _normalize_cached_result(command=command, entry=cached_entry)
+                    results.append(cached_result)
+                    _append_line(log_path, f"CACHE_HIT {command}")
+                    _append_jsonl(
+                        jsonl_path,
+                        {"event": "command_cache_hit", "command": command, "ts": _utc_now()},
+                    )
+                    _log_command_result(log_path, jsonl_path, cached_result)
+                    continue
+                cache_misses += 1
+            runnable_with_keys.append((command, cache_key))
+
+        if runnable_with_keys:
+            # Add overall timeout detection for the entire parallel execution
+            overall_start = time.perf_counter()
+            max_overall_timeout = per_command_timeout * len(runnable_with_keys) * 2  # generous buffer
+            
+            try:
+                with ThreadPoolExecutor(max_workers=min(verify_workers, len(runnable_with_keys))) as pool:
+                    future_map = {
+                        pool.submit(_run_with_timeout_detection, command, project_dir, per_command_timeout, log_path, jsonl_path): (command, cache_key)
+                        for command, cache_key in runnable_with_keys
+                    }
+                    
+                    for future in as_completed(future_map, timeout=max_overall_timeout):
+                        command, cache_key = future_map[future]
+                        try:
+                            live_result = _normalize_live_result(future.result(timeout=per_command_timeout))
+                            results.append(live_result)
+                            _log_command_result(log_path, jsonl_path, live_result)
+                            if cache_enabled and cache_key:
+                                if _store_success_result(cache_entries, cache_key, command, live_result):
+                                    cache_dirty = True
+                        except TimeoutError:
+                            # Handle individual future timeout
+                            elapsed = time.perf_counter() - overall_start
+                            timeout_result = {
+                                "command": command,
+                                "exit_code": 124,
+                                "duration_seconds": elapsed,
+                                "stdout": "",
+                                "stderr": f"agent-accel: ThreadPool future timeout after {per_command_timeout}s",
+                                "timed_out": True,
+                            }
+                            results.append(timeout_result)
+                            _log_command_result(log_path, jsonl_path, timeout_result)
+                            _append_line(log_path, f"FUTURE_TIMEOUT {command}")
+                        except Exception as exc:
+                            # Handle other future errors
+                            elapsed = time.perf_counter() - overall_start
+                            error_result = {
+                                "command": command,
+                                "exit_code": 1,
+                                "duration_seconds": elapsed,
+                                "stdout": "",
+                                "stderr": f"agent-accel: ThreadPool future error: {exc}",
+                                "timed_out": False,
+                            }
+                            results.append(error_result)
+                            _log_command_result(log_path, jsonl_path, error_result)
+                            _append_line(log_path, f"FUTURE_ERROR {command} ERROR={exc!r}")
+                            
+            except TimeoutError:
+                # Handle overall ThreadPool timeout
+                elapsed = time.perf_counter() - overall_start
+                _append_line(log_path, f"THREADPOOL_TIMEOUT overall_timeout={max_overall_timeout}s elapsed={elapsed:.3f}s")
+                # Add failure results for any remaining commands
+                for command, cache_key in runnable_with_keys:
+                    if not any(r["command"] == command for r in results):
+                        timeout_result = {
+                            "command": command,
+                            "exit_code": 124,
+                            "duration_seconds": elapsed,
+                            "stdout": "",
+                            "stderr": f"agent-accel: ThreadPool overall timeout after {max_overall_timeout}s",
+                            "timed_out": True,
+                        }
+                        results.append(timeout_result)
+                        _log_command_result(log_path, jsonl_path, timeout_result)
+            except Exception as exc:
+                # Handle ThreadPool creation/execution errors
+                elapsed = time.perf_counter() - overall_start
+                _append_line(log_path, f"THREADPOOL_ERROR ERROR={exc!r}")
+                # Fallback to sequential execution
+                _append_line(log_path, "FALLBACK_SEQUENTIAL_EXECUTION")
+                for command, cache_key in runnable_with_keys:
+                    if not any(r["command"] == command for r in results):
+                        live_result = _normalize_live_result(_run_with_timeout_detection(command, project_dir, per_command_timeout, log_path, jsonl_path))
+                        results.append(live_result)
+                        _log_command_result(log_path, jsonl_path, live_result)
+                        if cache_enabled and cache_key:
+                            if _store_success_result(cache_entries, cache_key, command, live_result):
+                                cache_dirty = True
+
+    if fail_fast_skipped_commands:
+        for command in fail_fast_skipped_commands:
+            _append_line(log_path, f"SKIP {command} (fail-fast)")
+            _append_jsonl(
+                jsonl_path,
+                {"event": "command_skipped", "command": command, "reason": "fail_fast", "ts": _utc_now()},
+            )
+
+    if cache_enabled and cache_dirty:
+        cache_entries, _ = _prune_cache_entries(
+            cache_entries,
+            ttl_seconds=verify_cache_ttl_seconds,
+            max_entries=verify_cache_max_entries,
+        )
+        _write_cache_entries_atomic(cache_path, cache_entries)
+        _append_line(log_path, f"CACHE_WRITE entries={len(cache_entries)}")
+
+    results.sort(key=lambda row: row["command"])
+    has_failure = any(_is_failure(item) for item in results)
+    if has_failure:
+        exit_code = 3
+        status = "failed"
+    elif degraded:
+        exit_code = 2
+        status = "degraded"
+    else:
+        exit_code = 0
+        status = "success"
+
+    if degraded:
+        reason_text = "; ".join(degrade_reasons) if degrade_reasons else "degraded execution"
+        _append_line(log_path, f"DEGRADE_REASON: {reason_text}")
+        _append_line(log_path, "RISK: some checks were skipped because required tools are unavailable")
+        _append_line(
+            log_path,
+            "BACKFILL_PLAN: owner=user commands=\"install missing tools and rerun accel verify\" deadline_utc=2026-02-11T00:00:00Z",
+        )
+
+    _append_line(log_path, f"VERIFICATION_END {nonce} {_utc_now()}")
+    _append_jsonl(
+        jsonl_path,
+        {
+            "event": "verification_end",
+            "nonce": nonce,
+            "status": status,
+            "exit_code": exit_code,
+            "ts": _utc_now(),
+        },
+    )
+
+    return {
+        "status": status,
+        "exit_code": exit_code,
+        "nonce": nonce,
+        "log_path": str(log_path),
+        "jsonl_path": str(jsonl_path),
+        "commands": commands,
+        "results": results,
+        "degraded": degraded,
+        "fail_fast": verify_fail_fast,
+        "fail_fast_skipped_commands": fail_fast_skipped_commands,
+        "cache_enabled": cache_enabled,
+        "cache_hits": cache_hits,
+        "cache_misses": cache_misses,
+    }
+
+
+def run_verify_with_callback(
+    project_dir: Path,
+    config: dict[str, Any],
+    changed_files: list[str] | None = None,
+    callback: VerifyProgressCallback | None = None,
+) -> dict[str, Any]:
+    if callback is None:
+        callback = NoOpCallback()
+
+    accel_home = Path(config["runtime"]["accel_home"]).resolve()
+    paths = project_paths(accel_home, project_dir)
+    ensure_project_dirs(paths)
+
+    runtime_cfg = config.get("runtime", {})
+    verify_workers = _resolve_verify_workers(runtime_cfg)
+    per_command_timeout = int(runtime_cfg.get("per_command_timeout_seconds", 1200))
+    verify_fail_fast = _normalize_bool(runtime_cfg.get("verify_fail_fast", False), False)
+    verify_cache_enabled_cfg = _normalize_bool(runtime_cfg.get("verify_cache_enabled", True), True)
+    verify_cache_ttl_seconds = _normalize_positive_int(runtime_cfg.get("verify_cache_ttl_seconds", 900), 900)
+    verify_cache_max_entries = _normalize_positive_int(runtime_cfg.get("verify_cache_max_entries", 400), 400)
+
+    nonce = uuid4().hex[:12]
+    log_path = paths["verify"] / f"verify_{nonce}.log"
+    jsonl_path = paths["verify"] / f"verify_{nonce}.jsonl"
+    commands = select_verify_commands(config=config, changed_files=changed_files)
+
+    callback.on_start("verify_" + nonce, len(commands))
+
+    _append_line(log_path, f"VERIFICATION_START {nonce} {_utc_now()}")
+    _append_line(log_path, f"ENV cwd={project_dir} python={shutil.which('python') or ''}")
+    _append_jsonl(jsonl_path, {"event": "verification_start", "nonce": nonce, "ts": _utc_now()})
+
+    changed_fingerprint = _build_changed_files_fingerprint(project_dir=project_dir, changed_files=changed_files)
+    cache_enabled = bool(verify_cache_enabled_cfg and changed_fingerprint)
+    cache_path = _cache_file_path(paths)
+    cache_entries: dict[str, dict[str, Any]] = {}
+    cache_dirty = False
+    cache_hits = 0
+    cache_misses = 0
+
+    callback.on_stage_change("verify_" + nonce, VerifyStage.LOAD_CACHE)
+
+    if cache_enabled:
+        loaded_entries = _load_cache_entries(cache_path)
+        cache_entries, was_pruned = _prune_cache_entries(
+            loaded_entries,
+            ttl_seconds=verify_cache_ttl_seconds,
+            max_entries=verify_cache_max_entries,
+        )
+        cache_dirty = was_pruned
+    elif verify_cache_enabled_cfg:
+        _append_line(log_path, "CACHE_DISABLED no changed_files fingerprint")
+
+    callback.on_stage_change("verify_" + nonce, VerifyStage.SELECT_CMDS)
+
+    degraded = False
+    degrade_reasons: list[str] = []
+    runnable_commands: list[str] = []
+    for command in commands:
+        binary = _command_binary(command)
+        if binary and shutil.which(binary) is None:
+            degraded = True
+            reason = f"missing command binary: {binary}"
+            degrade_reasons.append(reason)
+            _append_line(log_path, f"SKIP {command} ({reason})")
+            _append_jsonl(
+                jsonl_path,
+                {"event": "command_skipped", "command": command, "reason": reason, "ts": _utc_now()},
+            )
+            callback.on_skip("verify_" + nonce, command, reason)
+            continue
+        runnable_commands.append(command)
+
+    results: list[dict[str, Any]] = []
+    fail_fast_skipped_commands: list[str] = []
+
+    callback.on_stage_change("verify_" + nonce, VerifyStage.RUNNING)
+
+    if verify_fail_fast:
+        for index, command in enumerate(runnable_commands):
+            callback.on_command_start("verify_" + nonce, command, index, len(runnable_commands))
+            callback.on_progress("verify_" + nonce, index, len(runnable_commands), command)
+
+            cache_key: str | None = None
+            if cache_enabled:
+                cache_key = _cache_key(
+                    command=command,
+                    project_dir=project_dir,
+                    changed_fingerprint=changed_fingerprint,
+                )
+                cached_entry = cache_entries.get(cache_key)
+                if cached_entry is not None:
+                    cache_hits += 1
+                    cached_result = _normalize_cached_result(command=command, entry=cached_entry)
+                    results.append(cached_result)
+                    _append_line(log_path, f"CACHE_HIT {command}")
+                    _append_jsonl(
+                        jsonl_path,
+                        {"event": "command_cache_hit", "command": command, "ts": _utc_now()},
+                    )
+                    _log_command_result(log_path, jsonl_path, cached_result)
+                    callback.on_cache_hit("verify_" + nonce, command)
+                    callback.on_command_complete("verify_" + nonce, command, cached_result.get("exit_code", 0), cached_result.get("duration_seconds", 0.0))
+                    callback.on_progress("verify_" + nonce, index + 1, len(runnable_commands), "")
+                    if _is_failure(cached_result):
+                        fail_fast_skipped_commands = runnable_commands[index + 1 :]
+                        break
+                    continue
+                cache_misses += 1
+
+            live_result = _normalize_live_result(run_command(command, project_dir, per_command_timeout))
+            callback.on_command_complete("verify_" + nonce, command, live_result.get("exit_code", 1), live_result.get("duration_seconds", 0.0))
+            results.append(live_result)
+            _log_command_result(log_path, jsonl_path, live_result)
+            if cache_enabled and cache_key:
+                if _store_success_result(cache_entries, cache_key, command, live_result):
+                    cache_dirty = True
+            callback.on_progress("verify_" + nonce, index + 1, len(runnable_commands), "")
+            if _is_failure(live_result):
+                fail_fast_skipped_commands = runnable_commands[index + 1 :]
+                break
+    else:
+        runnable_with_keys: list[tuple[str, str | None]] = []
+        for command in runnable_commands:
+            cache_key = None
+            if cache_enabled:
+                cache_key = _cache_key(
+                    command=command,
+                    project_dir=project_dir,
+                    changed_fingerprint=changed_fingerprint,
+                )
+                cached_entry = cache_entries.get(cache_key)
+                if cached_entry is not None:
+                    cache_hits += 1
+                    cached_result = _normalize_cached_result(command=command, entry=cached_entry)
+                    results.append(cached_result)
+                    _append_line(log_path, f"CACHE_HIT {command}")
+                    _append_jsonl(
+                        jsonl_path,
+                        {"event": "command_cache_hit", "command": command, "ts": _utc_now()},
+                    )
+                    _log_command_result(log_path, jsonl_path, cached_result)
+                    callback.on_cache_hit("verify_" + nonce, command)
+                    continue
+                cache_misses += 1
+            runnable_with_keys.append((command, cache_key))
+
+        if runnable_with_keys:
+            overall_start = time.perf_counter()
+            max_overall_timeout = per_command_timeout * len(runnable_with_keys) * 2
+
+            callback.on_stage_change("verify_" + nonce, VerifyStage.PARALLEL)
+
+            try:
+                with ThreadPoolExecutor(max_workers=min(verify_workers, len(runnable_with_keys))) as pool:
+                    future_map = {
+                        pool.submit(_run_with_timeout_detection, command, project_dir, per_command_timeout, log_path, jsonl_path): (command, cache_key)
+                        for command, cache_key in runnable_with_keys
+                    }
+
+                    completed_count = 0
+                    for future in as_completed(future_map, timeout=max_overall_timeout):
+                        command, cache_key = future_map[future]
+                        callback.on_command_start("verify_" + nonce, command, completed_count, len(runnable_with_keys))
+
+                        try:
+                            live_result = _normalize_live_result(future.result(timeout=per_command_timeout))
+                            callback.on_command_complete("verify_" + nonce, command, live_result.get("exit_code", 1), live_result.get("duration_seconds", 0.0))
+                            results.append(live_result)
+                            _log_command_result(log_path, jsonl_path, live_result)
+                            if cache_enabled and cache_key:
+                                if _store_success_result(cache_entries, cache_key, command, live_result):
+                                    cache_dirty = True
+                        except TimeoutError:
+                            elapsed = time.perf_counter() - overall_start
+                            timeout_result = {
+                                "command": command,
+                                "exit_code": 124,
+                                "duration_seconds": elapsed,
+                                "stdout": "",
+                                "stderr": f"agent-accel: ThreadPool future timeout after {per_command_timeout}s",
+                                "timed_out": True,
+                            }
+                            callback.on_error("verify_" + nonce, command, "timeout")
+                            results.append(timeout_result)
+                            _log_command_result(log_path, jsonl_path, timeout_result)
+                            _append_line(log_path, f"FUTURE_TIMEOUT {command}")
+                        except Exception as exc:
+                            elapsed = time.perf_counter() - overall_start
+                            error_result = {
+                                "command": command,
+                                "exit_code": 1,
+                                "duration_seconds": elapsed,
+                                "stdout": "",
+                                "stderr": f"agent-accel: ThreadPool future error: {exc}",
+                                "timed_out": False,
+                            }
+                            callback.on_error("verify_" + nonce, command, str(exc))
+                            results.append(error_result)
+                            _log_command_result(log_path, jsonl_path, error_result)
+                            _append_line(log_path, f"FUTURE_ERROR {command} ERROR={exc!r}")
+
+                        completed_count += 1
+                        callback.on_progress("verify_" + nonce, completed_count, len(runnable_with_keys), "")
+
+                        elapsed = time.perf_counter() - overall_start
+                        eta = None
+                        if completed_count > 0:
+                            avg_time = elapsed / completed_count
+                            remaining = len(runnable_with_keys) - completed_count
+                            eta = avg_time * remaining
+                        callback.on_heartbeat("verify_" + nonce, elapsed, eta, "running")
+
+            except TimeoutError:
+                elapsed = time.perf_counter() - overall_start
+                _append_line(log_path, f"THREADPOOL_TIMEOUT overall_timeout={max_overall_timeout}s elapsed={elapsed:.3f}s")
+                for command, cache_key in runnable_with_keys:
+                    if not any(r["command"] == command for r in results):
+                        timeout_result = {
+                            "command": command,
+                            "exit_code": 124,
+                            "duration_seconds": elapsed,
+                            "stdout": "",
+                            "stderr": f"agent-accel: ThreadPool overall timeout after {max_overall_timeout}s",
+                            "timed_out": True,
+                        }
+                        results.append(timeout_result)
+                        _log_command_result(log_path, jsonl_path, timeout_result)
+            except Exception as exc:
+                elapsed = time.perf_counter() - overall_start
+                _append_line(log_path, f"THREADPOOL_ERROR ERROR={exc!r}")
+                _append_line(log_path, "FALLBACK_SEQUENTIAL_EXECUTION")
+                callback.on_stage_change("verify_" + nonce, VerifyStage.SEQUENTIAL)
+
+                for i, (command, cache_key) in enumerate(runnable_with_keys):
+                    if not any(r["command"] == command for r in results):
+                        callback.on_command_start("verify_" + nonce, command, i, len(runnable_with_keys))
+                        live_result = _normalize_live_result(_run_with_timeout_detection(command, project_dir, per_command_timeout, log_path, jsonl_path))
+                        callback.on_command_complete("verify_" + nonce, command, live_result.get("exit_code", 1), live_result.get("duration_seconds", 0.0))
+                        results.append(live_result)
+                        _log_command_result(log_path, jsonl_path, live_result)
+                        if cache_enabled and cache_key:
+                            if _store_success_result(cache_entries, cache_key, command, live_result):
+                                cache_dirty = True
+                        callback.on_progress("verify_" + nonce, i + 1, len(runnable_with_keys), "")
+
+    if fail_fast_skipped_commands:
+        for command in fail_fast_skipped_commands:
+            _append_line(log_path, f"SKIP {command} (fail-fast)")
+            _append_jsonl(
+                jsonl_path,
+                {"event": "command_skipped", "command": command, "reason": "fail_fast", "ts": _utc_now()},
+            )
+            callback.on_skip("verify_" + nonce, command, "fail_fast")
+
+    callback.on_stage_change("verify_" + nonce, VerifyStage.CLEANUP)
+
+    if cache_enabled and cache_dirty:
+        cache_entries, _ = _prune_cache_entries(
+            cache_entries,
+            ttl_seconds=verify_cache_ttl_seconds,
+            max_entries=verify_cache_max_entries,
+        )
+        _write_cache_entries_atomic(cache_path, cache_entries)
+        _append_line(log_path, f"CACHE_WRITE entries={len(cache_entries)}")
+
+    results.sort(key=lambda row: row["command"])
+    has_failure = any(_is_failure(item) for item in results)
+    if has_failure:
+        exit_code = 3
+        status = "failed"
+    elif degraded:
+        exit_code = 2
+        status = "degraded"
+    else:
+        exit_code = 0
+        status = "success"
+
+    if degraded:
+        reason_text = "; ".join(degrade_reasons) if degrade_reasons else "degraded execution"
+        _append_line(log_path, f"DEGRADE_REASON: {reason_text}")
+        _append_line(log_path, "RISK: some checks were skipped because required tools are unavailable")
+        _append_line(
+            log_path,
+            "BACKFILL_PLAN: owner=user commands=\"install missing tools and rerun accel verify\" deadline_utc=2026-02-11T00:00:00Z",
+        )
+
+    _append_line(log_path, f"VERIFICATION_END {nonce} {_utc_now()}")
+    _append_jsonl(
+        jsonl_path,
+        {
+            "event": "verification_end",
+            "nonce": nonce,
+            "status": status,
+            "exit_code": exit_code,
+            "ts": _utc_now(),
+        },
+    )
+
+    callback.on_complete("verify_" + nonce, status, exit_code)
+
+    return {
+        "status": status,
+        "exit_code": exit_code,
+        "nonce": nonce,
+        "log_path": str(log_path),
+        "jsonl_path": str(jsonl_path),
+        "commands": commands,
+        "results": results,
+        "degraded": degraded,
+        "fail_fast": verify_fail_fast,
+        "fail_fast_skipped_commands": fail_fast_skipped_commands,
+        "cache_enabled": cache_enabled,
+        "cache_hits": cache_hits,
+        "cache_misses": cache_misses,
+    }
