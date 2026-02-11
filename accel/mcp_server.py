@@ -24,7 +24,7 @@ from .verify.job_manager import JobManager, JobState, VerifyJob
 
 JSONDict = dict[str, Any]
 SERVER_NAME = "agent-accel-mcp"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.2.1"
 TOOL_ERROR_EXECUTION_FAILED = "ACCEL_TOOL_EXECUTION_FAILED"
 
 # Debug logging setup
@@ -32,13 +32,15 @@ _debug_enabled = os.environ.get("ACCEL_MCP_DEBUG", "").lower() in {"1", "true", 
 _debug_logger: logging.Logger | None = None
 
 # Global server timeout protection
-_server_start_time = 0
+_server_start_time = 0.0
 _server_max_runtime = int(os.environ.get("ACCEL_MCP_MAX_RUNTIME", "3600"))  # 1 hour default
 _shutdown_requested = False
 
 # Keep sync verify bounded so a single call cannot monopolize MCP request handling.
 _sync_verify_wait_seconds = int(os.environ.get("ACCEL_MCP_SYNC_VERIFY_WAIT_SECONDS", "45"))
 _sync_verify_poll_seconds = float(os.environ.get("ACCEL_MCP_SYNC_VERIFY_POLL_SECONDS", "0.2"))
+_FALSE_LITERALS = {"", "0", "false", "no", "off", "none", "null", "undefined", "pydanticundefined"}
+_TRUE_LITERALS = {"1", "true", "yes", "on"}
 
 def _signal_handler(signum: int, frame) -> None:
     """Handle shutdown signals gracefully."""
@@ -106,6 +108,40 @@ def _effective_sync_verify_poll_seconds() -> float:
     return max(0.05, float(_sync_verify_poll_seconds))
 
 
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in _FALSE_LITERALS:
+            return False
+        if token in _TRUE_LITERALS:
+            return True
+        return default
+    return default
+
+
+def _coerce_optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in _FALSE_LITERALS:
+            return False
+        if token in _TRUE_LITERALS:
+            return True
+        return None
+    return None
+
+
 def _wait_for_verify_job_result(
     job_id: str,
     *,
@@ -167,6 +203,7 @@ def _sync_verify_timeout_payload(job_id: str, wait_seconds: float) -> JSONDict:
             f"accel_verify exceeded synchronous wait window ({wait_seconds:.1f}s); "
             "use accel_verify_status/accel_verify_events to continue polling."
         ),
+        "poll_interval_sec": 1.0,
         "state": status.get("state", "running"),
         "stage": status.get("stage", "running"),
         "progress": status.get("progress", 0.0),
@@ -212,13 +249,87 @@ def _resolve_path(project_dir: Path, path_value: Any) -> Path | None:
     return Path(os.path.abspath(str(path)))
 
 
-def _to_string_list(value: list[str] | None) -> list[str]:
-    if not value:
+_BUDGET_PRESETS: dict[str, dict[str, int]] = {
+    "tiny": {"max_chars": 6000, "max_snippets": 16, "top_n_files": 6, "snippet_radius": 20},
+    "small": {"max_chars": 12000, "max_snippets": 30, "top_n_files": 8, "snippet_radius": 24},
+    "medium": {"max_chars": 24000, "max_snippets": 60, "top_n_files": 12, "snippet_radius": 30},
+    "large": {"max_chars": 36000, "max_snippets": 90, "top_n_files": 16, "snippet_radius": 40},
+    "xlarge": {"max_chars": 50000, "max_snippets": 120, "top_n_files": 20, "snippet_radius": 50},
+}
+_BUDGET_PRESET_ALIASES: dict[str, str] = {
+    "s": "small",
+    "sm": "small",
+    "m": "medium",
+    "med": "medium",
+    "balanced": "medium",
+    "l": "large",
+    "lg": "large",
+    "xl": "xlarge",
+    "default": "medium",
+}
+
+
+def _to_string_list(value: list[str] | str | None) -> list[str]:
+    if value is None:
         return []
-    return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    text = str(value).strip()
+    if not text:
+        return []
+
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        except Exception:
+            pass
+
+    normalized = text.replace("\r\n", ",").replace("\n", ",").replace(";", ",")
+    return [part.strip() for part in normalized.split(",") if part.strip()]
 
 
-def _to_budget_override(value: dict[str, int] | None) -> dict[str, int]:
+def _to_budget_override(value: dict[str, int] | str | None) -> dict[str, int]:
+    if value is None:
+        return {}
+
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if not token:
+            return {}
+
+        canonical = _BUDGET_PRESET_ALIASES.get(token, token)
+        if canonical in _BUDGET_PRESETS:
+            return dict(_BUDGET_PRESETS[canonical])
+
+        if token.startswith("{") and token.endswith("}"):
+            try:
+                parsed = json.loads(token)
+                if isinstance(parsed, dict):
+                    return _to_budget_override(parsed)
+            except Exception as exc:
+                raise ValueError(f"invalid budget json: {exc}") from exc
+
+        if "=" in token:
+            parsed_pairs: dict[str, int] = {}
+            for part in token.replace(";", ",").split(","):
+                segment = part.strip()
+                if not segment:
+                    continue
+                key, sep, raw = segment.partition("=")
+                if not sep:
+                    continue
+                parsed_pairs[key.strip()] = int(raw.strip())
+            if parsed_pairs:
+                return _to_budget_override(parsed_pairs)
+
+        preset_names = ", ".join(sorted(_BUDGET_PRESETS.keys()))
+        raise ValueError(
+            f"unsupported budget preset '{value}'. supported presets: {preset_names}, or pass a budget object."
+        )
+
     if not isinstance(value, dict):
         return {}
     out: dict[str, int] = {}
@@ -260,14 +371,17 @@ def _tool_context(
     *,
     project: str = ".",
     task: str,
-    changed_files: list[str] | None = None,
-    hints: list[str] | None = None,
+    changed_files: list[str] | str | None = None,
+    hints: list[str] | str | None = None,
     feedback_path: str | None = None,
     out: str | None = None,
-    include_pack: bool = False,
-    budget: dict[str, int] | None = None,
+    include_pack: bool | str = False,
+    budget: dict[str, int] | str | None = None,
 ) -> JSONDict:
-    _debug_log(f"accel_context called: project={project}, task='{task[:50]}...', changed_files={len(changed_files or [])}")
+    changed_files_list = _to_string_list(changed_files)
+    hints_list = _to_string_list(hints)
+    include_pack_flag = _coerce_bool(include_pack, False)
+    _debug_log(f"accel_context called: project={project}, task='{task[:50]}...', changed_files={len(changed_files_list)}")
     project_dir = _normalize_project_dir(project)
     task_text = str(task).strip()
     if not task_text:
@@ -284,8 +398,8 @@ def _tool_context(
         project_dir=project_dir,
         config=config,
         task=task_text,
-        changed_files=_to_string_list(changed_files),
-        hints=_to_string_list(hints),
+        changed_files=changed_files_list,
+        hints=hints_list,
         previous_attempt_feedback=feedback_payload,
         budget_override=_to_budget_override(budget),
     )
@@ -306,7 +420,7 @@ def _tool_context(
         "snippets": len(pack.get("snippets", [])),
         "verify_plan": pack.get("verify_plan", {}),
     }
-    if include_pack:
+    if include_pack_flag:
         payload["pack"] = pack
     
     _debug_log(f"accel_context completed: {len(pack.get('top_files', []))} files, {len(pack.get('snippets', []))} snippets")
@@ -329,21 +443,11 @@ def _tool_verify(
     # Normalize changed_files: handle comma-separated string
     if isinstance(changed_files, str):
         changed_files = [f.strip() for f in changed_files.split(",") if f.strip()]
-    
-    # Normalize boolean parameters: handle string representations
-    def _to_bool(value: bool | str | None, default: bool = False) -> bool:
-        if value is None:
-            return default
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.lower() not in {"false", "0", "no", "off", ""}
-        return bool(value)
-    
-    evidence_run = _to_bool(evidence_run, False)
-    fast_loop = _to_bool(fast_loop, False)
-    verify_fail_fast = _to_bool(verify_fail_fast, None)  # type: ignore
-    verify_cache_enabled = _to_bool(verify_cache_enabled, None)  # type: ignore
+
+    evidence_run = _coerce_bool(evidence_run, False)
+    fast_loop = _coerce_bool(fast_loop, False)
+    verify_fail_fast = _coerce_optional_bool(verify_fail_fast)
+    verify_cache_enabled = _coerce_optional_bool(verify_cache_enabled)
     
     _debug_log(f"accel_verify called: project={project}, changed_files={len(changed_files or [])}, evidence_run={evidence_run}")
     project_dir = _normalize_project_dir(project)
@@ -424,12 +528,12 @@ def create_server() -> FastMCP:
     def accel_context(
         task: str,
         project: str = ".",
-        changed_files: list[str] | None = None,
-        hints: list[str] | None = None,
+        changed_files: list[str] | str | None = None,
+        hints: list[str] | str | None = None,
         feedback_path: str | None = None,
         out: str | None = None,
-        include_pack: bool = False,
-        budget: dict[str, int] | None = None,
+        include_pack: bool | str = False,
+        budget: dict[str, int] | str | None = None,
     ) -> JSONDict:
         try:
             return _with_timeout(_tool_context, timeout_seconds=300)(
@@ -462,19 +566,10 @@ def create_server() -> FastMCP:
         if isinstance(changed_files, str):
             changed_files = [f.strip() for f in changed_files.split(",") if f.strip()]
 
-        def _to_bool(value: bool | str | None, default: bool = False) -> bool:
-            if value is None:
-                return default
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, str):
-                return value.lower() not in {"false", "0", "no", "off", ""}
-            return bool(value)
-
-        evidence_run_normalized = _to_bool(evidence_run, False)
-        fast_loop_normalized = _to_bool(fast_loop, False)
-        verify_fail_fast_normalized = _to_bool(verify_fail_fast, None)
-        verify_cache_enabled_normalized = _to_bool(verify_cache_enabled, None)
+        evidence_run_normalized = _coerce_bool(evidence_run, False)
+        fast_loop_normalized = _coerce_bool(fast_loop, False)
+        verify_fail_fast_normalized = _coerce_optional_bool(verify_fail_fast)
+        verify_cache_enabled_normalized = _coerce_optional_bool(verify_cache_enabled)
 
         _debug_log(f"_start_verify_job called: project={project}, changed_files={len(changed_files or [])}")
         project_dir = _normalize_project_dir(project)
@@ -520,8 +615,19 @@ def create_server() -> FastMCP:
                     changed_files=changed_files,
                     callback=callback,
                 )
+                # Do not overwrite a user-cancelled terminal state with completion.
+                if j.state in (JobState.CANCELLING, JobState.CANCELLED):
+                    if j.state != JobState.CANCELLED:
+                        j.mark_cancelled()
+                    j.add_event("job_cancelled_finalized", {"reason": "worker_observed_cancel"})
+                    return
                 j.mark_completed(result.get("status", "unknown"), result.get("exit_code", 1), result)
             except Exception as exc:
+                if j.state in (JobState.CANCELLING, JobState.CANCELLED):
+                    if j.state != JobState.CANCELLED:
+                        j.mark_cancelled()
+                    j.add_event("job_cancelled_finalized", {"reason": "worker_exception_after_cancel"})
+                    return
                 j.mark_failed(str(exc))
                 j.add_event("job_failed", {"error": str(exc)})
 
@@ -533,6 +639,30 @@ def create_server() -> FastMCP:
             daemon=True,
         )
         thread.start()
+
+        def _heartbeat_thread(job_id: str) -> None:
+            while True:
+                current = jm.get_job(job_id)
+                if current is None:
+                    return
+                status = current.to_status()
+                state = str(status.get("state", ""))
+                if state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}:
+                    return
+                current.add_event(
+                    "heartbeat",
+                    {
+                        "elapsed_sec": float(status.get("elapsed_sec", 0.0)),
+                        "eta_sec": status.get("eta_sec"),
+                        "state": state,
+                        "stage": status.get("stage", "running"),
+                        "progress": float(status.get("progress", 0.0)),
+                    },
+                )
+                time.sleep(1.0)
+
+        hb = threading.Thread(target=_heartbeat_thread, args=(job.job_id,), daemon=True)
+        hb.start()
         return job
 
     @server.tool(
@@ -554,7 +684,7 @@ def create_server() -> FastMCP:
         sync_wait_seconds: int | None = None,
     ) -> JSONDict:
         try:
-            wait_flag = str(wait_for_completion).strip().lower() not in {"", "0", "false", "no", "off"}
+            wait_flag = _coerce_bool(wait_for_completion, False)
             job = _start_verify_job(
                 project=project,
                 changed_files=changed_files,
@@ -574,8 +704,10 @@ def create_server() -> FastMCP:
                 return {
                     "status": "started",
                     "exit_code": 0,
+                    "timed_out": False,
                     "job_id": job_id,
                     "message": "Verification started asynchronously. Use accel_verify_status/events for live progress.",
+                    "poll_interval_sec": 1.0,
                     "state": status_payload.get("state", "pending"),
                     "stage": status_payload.get("stage", "init"),
                     "progress": status_payload.get("progress", 0.0),
@@ -720,8 +852,11 @@ def create_server() -> FastMCP:
             if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
                 return {"job_id": job_id, "status": job.state, "cancelled": False, "message": "Job already in terminal state"}
             jm.cancel_job(job_id)
-            job.add_event("job_cancelled", {"reason": "user_request"})
-            return {"job_id": job_id, "status": JobState.CANCELLING, "cancelled": True, "message": "Cancellation requested"}
+            job.add_event("job_cancel_requested", {"reason": "user_request"})
+            # Finalize state immediately so status polling converges deterministically.
+            job.mark_cancelled()
+            job.add_event("job_cancelled_finalized", {"reason": "user_request"})
+            return {"job_id": job_id, "status": JobState.CANCELLED, "cancelled": True, "message": "Cancellation requested and finalized"}
         except Exception as exc:
             _debug_log(f"accel_verify_cancel failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
@@ -737,6 +872,8 @@ def create_server() -> FastMCP:
             "version": SERVER_VERSION,
             "transport": "stdio",
             "framework": "fastmcp",
+            "pid": os.getpid(),
+            "module_path": str(Path(__file__).resolve()),
         }
         return json.dumps(payload, ensure_ascii=False)
 

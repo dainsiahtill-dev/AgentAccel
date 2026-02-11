@@ -215,13 +215,26 @@ Generate a budgeted context pack for a task.
 |-----------|------|---------|-------------|
 | `project` | string | `"."` | Project directory path |
 | `task` | string | required | Task description |
-| `changed_files` | string[] \| string | `null` | Changed files (array or comma-separated) |
-| `hints` | string[] | `null` | Additional context hints |
-| `include_pack` | boolean | `false` | Include full pack in response |
+| `changed_files` | string[] \| string | `null` | Changed files (array, JSON-array string, or comma-separated) |
+| `hints` | string[] \| string | `null` | Additional context hints (array, JSON-array string, or comma-separated) |
+| `include_pack` | boolean \| string | `false` | Include full pack in response (`true/false` or boolean-like string) |
+| `budget` | object \| string | `null` | Budget override object or preset (`tiny`/`small`/`medium`/`large`/`xlarge`) |
+
+`budget` string presets are aliases for common token envelopes. Example:
+
+```json
+{
+  "project": ".",
+  "task": "Trace flaky verification issue",
+  "changed_files": "accel/mcp_server.py,tests/unit/test_mcp_server.py",
+  "hints": "[\"focus:cancellation\", \"risk:state-machine\"]",
+  "budget": "small"
+}
+```
 
 #### `accel_verify`
 
-Run incremental verification with runtime override options.
+Start incremental verification with runtime override options.
 
 ```json
 {
@@ -245,6 +258,13 @@ Run incremental verification with runtime override options.
 | `verify_fail_fast` | boolean \| string | `null` | Stop on first failure |
 | `verify_workers` | integer | `null` | Number of parallel workers |
 | `per_command_timeout_seconds` | integer | `null` | Timeout per command |
+
+**Response behavior:**
+- Returns quickly with `status=started` and `job_id` to avoid MCP 60s call timeouts.
+- For live progress, poll:
+  - `accel_verify_status(job_id)`
+  - `accel_verify_events(job_id, since_seq)`
+- For compatibility, a bounded synchronous wait mode is still available internally.
 
 ### Running MCP Server
 
