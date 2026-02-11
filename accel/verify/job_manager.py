@@ -73,6 +73,34 @@ class VerifyJob:
             self._events.append(event)
             return event
 
+    def is_terminal(self) -> bool:
+        with self._lock:
+            return self.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED)
+
+    def add_live_event(self, event_type: str, payload: dict[str, Any]) -> bool:
+        with self._lock:
+            if self.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+                return False
+
+            live_payload = dict(payload)
+            if event_type == "heartbeat":
+                live_payload["state"] = self.state
+                live_payload.setdefault("stage", self.stage)
+                live_payload.setdefault("current_command", self.current_command)
+                live_payload.setdefault("completed_commands", self.completed_commands)
+                live_payload.setdefault("total_commands", self.total_commands)
+
+            self._event_seq += 1
+            event = {
+                "seq": self._event_seq,
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "event": event_type,
+                "job_id": self.job_id,
+                **live_payload,
+            }
+            self._events.append(event)
+            return True
+
     def get_events(self, since_seq: int = 0) -> list[dict[str, Any]]:
         with self._lock:
             if since_seq <= 0:

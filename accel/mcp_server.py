@@ -28,7 +28,7 @@ from .verify.job_manager import JobManager, JobState, VerifyJob
 
 JSONDict = dict[str, Any]
 SERVER_NAME = "agent-accel-mcp"
-SERVER_VERSION = "0.2.3"
+SERVER_VERSION = "0.2.4"
 TOOL_ERROR_EXECUTION_FAILED = "ACCEL_TOOL_EXECUTION_FAILED"
 
 # Debug logging setup
@@ -1075,7 +1075,7 @@ def create_server() -> FastMCP:
                 state = str(status.get("state", ""))
                 if state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}:
                     return
-                current.add_event(
+                appended = current.add_live_event(
                     "heartbeat",
                     {
                         "elapsed_sec": float(status.get("elapsed_sec", 0.0)),
@@ -1088,6 +1088,8 @@ def create_server() -> FastMCP:
                         "total_commands": int(status.get("total_commands", 0) or 0),
                     },
                 )
+                if not appended:
+                    return
                 time.sleep(1.0)
 
         hb = threading.Thread(target=_heartbeat_thread, args=(job.job_id,), daemon=True)
@@ -1166,16 +1168,22 @@ def create_server() -> FastMCP:
             self._job = job
 
         def on_start(self, job_id: str, total_commands: int) -> None:
+            if self._job.is_terminal():
+                return
             self._job.update_progress(0, total_commands, "")
-            self._job.add_event("job_started", {"total_commands": total_commands})
+            self._job.add_live_event("job_started", {"total_commands": total_commands})
 
         def on_stage_change(self, job_id: str, stage: VerifyStage) -> None:
+            if self._job.is_terminal():
+                return
             self._job.stage = stage.name.lower()
-            self._job.add_event("stage_change", {"stage": stage.name.lower()})
+            self._job.add_live_event("stage_change", {"stage": stage.name.lower()})
 
         def on_command_start(self, job_id: str, command: str, index: int, total: int) -> None:
+            if self._job.is_terminal():
+                return
             self._job.current_command = command
-            self._job.add_event("command_start", {"command": command, "index": index, "total": total})
+            self._job.add_live_event("command_start", {"command": command, "index": index, "total": total})
 
         def on_command_complete(
             self,
@@ -1189,6 +1197,8 @@ def create_server() -> FastMCP:
             stdout_tail: str = "",
             stderr_tail: str = "",
         ) -> None:
+            if self._job.is_terminal():
+                return
             payload: JSONDict = {
                 "command": command,
                 "exit_code": int(exit_code),
@@ -1204,11 +1214,16 @@ def create_server() -> FastMCP:
                 payload["stdout_tail"] = stdout_tail_text
             if stderr_tail_text:
                 payload["stderr_tail"] = stderr_tail_text
-            self._job.add_event("command_complete", payload)
+            self._job.add_live_event("command_complete", payload)
 
         def on_progress(self, job_id: str, completed: int, total: int, current_command: str) -> None:
+            if self._job.is_terminal():
+                return
             self._job.update_progress(completed, total, current_command)
-            self._job.add_event("progress", {"completed": completed, "total": total, "progress_pct": round(self._job.progress, 1)})
+            self._job.add_live_event(
+                "progress",
+                {"completed": completed, "total": total, "progress_pct": round(self._job.progress, 1)},
+            )
 
         def on_heartbeat(
             self,
@@ -1222,6 +1237,8 @@ def create_server() -> FastMCP:
             command_timeout_sec: float | None = None,
             command_progress_pct: float | None = None,
         ) -> None:
+            if self._job.is_terminal():
+                return
             self._job.elapsed_sec = elapsed_sec
             self._job.eta_sec = eta_sec
             if current_command:
@@ -1239,19 +1256,27 @@ def create_server() -> FastMCP:
                 heartbeat_payload["command_timeout_sec"] = round(float(command_timeout_sec), 1)
             if command_progress_pct is not None:
                 heartbeat_payload["command_progress_pct"] = round(float(command_progress_pct), 2)
-            self._job.add_event("heartbeat", heartbeat_payload)
+            self._job.add_live_event("heartbeat", heartbeat_payload)
 
         def on_cache_hit(self, job_id: str, command: str) -> None:
-            self._job.add_event("cache_hit", {"command": command})
+            if self._job.is_terminal():
+                return
+            self._job.add_live_event("cache_hit", {"command": command})
 
         def on_skip(self, job_id: str, command: str, reason: str) -> None:
-            self._job.add_event("command_skipped", {"command": command, "reason": reason})
+            if self._job.is_terminal():
+                return
+            self._job.add_live_event("command_skipped", {"command": command, "reason": reason})
 
         def on_error(self, job_id: str, command: str | None, error: str) -> None:
-            self._job.add_event("error", {"command": command, "error": error})
+            if self._job.is_terminal():
+                return
+            self._job.add_live_event("error", {"command": command, "error": error})
 
         def on_complete(self, job_id: str, status: str, exit_code: int) -> None:
-            self._job.add_event("job_completed", {"status": status, "exit_code": exit_code})
+            if self._job.is_terminal():
+                return
+            self._job.add_live_event("job_completed", {"status": status, "exit_code": exit_code})
 
     @server.tool(
         name="accel_verify_start",

@@ -1,0 +1,18 @@
+﻿VERIFICATION_START mcp_cancel_consistency_20260212_01 2026-02-11T23:50:00.9301433Z
+ENV cwd=X:\MCPs\agent-accel
+ENV python=3.14.2 (tags/v3.14.2:df79316, Dec  5 2025, 17:18:21) [MSC v.1944 64 bit (AMD64)]
+ENV git_head=1c3ce8aee81e4742be29cda7eeec704c6e02a63d
+CMD ruff check accel/verify/job_manager.py accel/mcp_server.py tests/unit/test_mcp_server.py
+All checks passed!
+EXIT_CODE 0
+CMD pytest -q tests/unit/test_mcp_server.py
+.....................                                                    [100%]
+21 passed in 4.97s
+EXIT_CODE 0
+CMD python direct cancel consistency assertion
+CANCEL_CONSISTENCY_ASSERTIONS_OK
+EXIT_CODE 0
+DEGRADE_REASON: script unavailable
+RISK: full-repo gate not rerun; baseline non-scope scripts may fail independently
+BACKFILL_PLAN: owner=user commands='ruff check . && PYTHONPATH=x:/MCPs/agent-accel pytest -q' deadline_utc=2026-02-12T23:59:59Z
+VERIFICATION_END mcp_cancel_consistency_20260212_01 2026-02-11T23:50:08.5234963Z

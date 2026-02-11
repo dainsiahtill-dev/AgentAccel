@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -730,6 +731,135 @@ def test_verify_cancel_converges_to_cancelled(tmp_path: Path, monkeypatch) -> No
 
     status = status_fn(job_id=job_id)
     assert status["state"] == mcp_server.JobState.CANCELLED
+
+
+def test_verify_cancel_blocks_late_running_heartbeat_events(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "cancel_consistency_project"
+    project_dir.mkdir(parents=True)
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir, cli_overrides=None: {
+            "runtime": {"accel_home": str(tmp_path / ".accel-home")},
+            "verify": {},
+        },
+    )
+
+    started_evt = threading.Event()
+    continue_evt = threading.Event()
+
+    def fake_run_verify_with_callback(project_dir, config, changed_files=None, callback=None):
+        assert callback is not None
+        cmd = "python -c \"import time; time.sleep(1)\""
+        callback.on_start("verify_fake", 1)
+        callback.on_stage_change("verify_fake", mcp_server.VerifyStage.RUNNING)
+        callback.on_command_start("verify_fake", cmd, 0, 1)
+        started_evt.set()
+
+        # Wait for cancel request, then emit a stale running heartbeat sequence
+        # to verify callback-side terminal guards suppress it.
+        continue_evt.wait(timeout=2.0)
+        callback.on_heartbeat(
+            "verify_fake",
+            1.2,
+            9.8,
+            "running",
+            current_command=cmd,
+            command_elapsed_sec=1.2,
+            command_timeout_sec=10.0,
+            command_progress_pct=12.0,
+        )
+        callback.on_progress("verify_fake", 1, 1, "")
+        callback.on_command_complete(
+            "verify_fake",
+            cmd,
+            0,
+            1.2,
+            completed=1,
+            total=1,
+            stdout_tail="late output",
+            stderr_tail="",
+        )
+        callback.on_complete("verify_fake", "success", 0)
+        return {
+            "status": "success",
+            "exit_code": 0,
+            "nonce": "cancel_consistency_nonce",
+            "log_path": str(tmp_path / "verify_cancel_consistency.log"),
+            "jsonl_path": str(tmp_path / "verify_cancel_consistency.jsonl"),
+            "commands": [cmd],
+            "results": [],
+            "degraded": False,
+            "fail_fast": False,
+            "fail_fast_skipped_commands": [],
+            "cache_enabled": False,
+            "cache_hits": 0,
+            "cache_misses": 1,
+        }
+
+    monkeypatch.setattr(mcp_server, "run_verify_with_callback", fake_run_verify_with_callback)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    start_fn = tools["accel_verify_start"].fn
+    cancel_fn = tools["accel_verify_cancel"].fn
+    status_fn = tools["accel_verify_status"].fn
+    events_fn = tools["accel_verify_events"].fn
+
+    started = start_fn(project=str(project_dir))
+    job_id = str(started["job_id"])
+    assert started_evt.wait(timeout=1.0)
+
+    cancel_payload = cancel_fn(job_id=job_id)
+    assert cancel_payload["status"] == mcp_server.JobState.CANCELLED
+    assert bool(cancel_payload["cancelled"]) is True
+
+    # Release worker thread to emit post-cancel callback notifications.
+    continue_evt.set()
+
+    for _ in range(30):
+        status = status_fn(job_id=job_id)
+        if status.get("state") == mcp_server.JobState.CANCELLED:
+            break
+        time.sleep(0.05)
+    assert status.get("state") == mcp_server.JobState.CANCELLED
+
+    # Give the worker callback thread time to attempt stale events.
+    time.sleep(0.2)
+
+    payload = events_fn(job_id=job_id, since_seq=0, max_events=200, include_summary=True)
+    events = payload.get("events", [])
+    assert isinstance(events, list)
+
+    cancel_seq = max(
+        (int(event.get("seq", 0)) for event in events if event.get("event") == "job_cancelled_finalized"),
+        default=0,
+    )
+    assert cancel_seq > 0
+
+    late_running_heartbeat = [
+        event
+        for event in events
+        if int(event.get("seq", 0)) > cancel_seq
+        and event.get("event") == "heartbeat"
+        and str(event.get("state", "")) == mcp_server.JobState.RUNNING
+    ]
+    assert late_running_heartbeat == []
+
+    late_job_completed = [
+        event
+        for event in events
+        if int(event.get("seq", 0)) > cancel_seq and event.get("event") == "job_completed"
+    ]
+    assert late_job_completed == []
+
+    summary = payload.get("summary", {})
+    assert isinstance(summary, dict)
+    assert summary.get("latest_state") == mcp_server.JobState.CANCELLED
 
 
 def test_sync_verify_returns_running_when_wait_window_exceeded(tmp_path: Path, monkeypatch) -> None:
