@@ -235,14 +235,18 @@ Generate a budgeted context pack for a task.
 **Auto defaults (when omitted):**
 - `budget`: adaptive policy (`tiny` for quick/small scope, `small` for daily usage, `medium` for complex scope)
 - `changed_files`: auto-discovered from git diff (worktree + staged) when available
+- if `changed_files` is still empty, `accel_context` fails fast by default (`runtime.context_require_changed_files=true`) to prevent accidental wide-scope context inflation
 
 **Key response fields:**
-- `estimated_tokens`: estimated tokens for generated context payload (`chars / 4`)
-- `estimated_source_tokens`: estimated tokens for indexed source baseline
+- `estimated_tokens`: tokenizer-based estimate for generated context payload (calibration applied)
+- `estimated_source_tokens`: source baseline estimate derived from tokenizer chars-per-token ratio
 - `compression_ratio`: `context_chars / source_chars` (smaller is better)
 - `token_reduction_ratio`: `1 - compression_ratio`
+- `selected_tests_count`: number of tests selected in `verify_plan.target_tests`
+- `selected_checks_count`: number of checks selected in `verify_plan.target_checks`
 - `budget_source` / `budget_preset`: whether budget came from user input or auto policy
 - `changed_files_source`: `user` | `git_auto` | `none`
+- `token_estimator`: backend/model/encoding/calibration metadata used for estimation
 
 #### `accel_verify`
 
@@ -275,8 +279,29 @@ Start incremental verification with runtime override options.
 - Returns quickly with `status=started` and `job_id` to avoid MCP 60s call timeouts.
 - For live progress, poll:
   - `accel_verify_status(job_id)`
-  - `accel_verify_events(job_id, since_seq)`
+  - `accel_verify_events(job_id, since_seq, max_events=30, include_summary=true)` (recommended compact mode)
 - For compatibility, a bounded synchronous wait mode is still available internally.
+
+#### `accel_verify_events` (compact recommendations)
+
+```json
+{
+  "job_id": "verify_xxx",
+  "since_seq": 0,
+  "max_events": 30,
+  "include_summary": true
+}
+```
+
+- `max_events`: clip to the latest N events (default 30, max 500)
+- `include_summary`: include aggregate counters and latest stage/state for model-friendly ingestion
+
+Tokenizer estimation runtime knobs (via `accel.local.yaml` runtime or env):
+- `token_estimator_backend`: `auto` | `tiktoken` | `heuristic`
+- `token_estimator_encoding`: e.g. `cl100k_base`
+- `token_estimator_model`: optional model name for encoder resolution
+- `token_estimator_calibration`: positive float multiplier (default `1.0`)
+- `token_estimator_fallback_chars_per_token`: fallback ratio when tokenizer is unavailable (default `4.0`)
 
 ### Running MCP Server
 

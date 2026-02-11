@@ -20,6 +20,7 @@ from .indexers import build_or_update_indexes
 from .query.context_compiler import compile_context_pack, write_context_pack
 from .query.planner import normalize_task_tokens
 from .storage.cache import ensure_project_dirs, project_paths
+from .token_estimator import estimate_tokens_for_text, estimate_tokens_from_chars
 from .verify.orchestrator import run_verify, run_verify_with_callback
 from .verify.callbacks import VerifyProgressCallback, VerifyStage
 from .verify.job_manager import JobManager, JobState, VerifyJob
@@ -168,6 +169,74 @@ def _coerce_optional_int(value: Any) -> int | None:
             except ValueError:
                 return None
     return None
+
+
+def _coerce_events_limit(value: Any, default_value: int = 30, max_value: int = 500) -> int:
+    parsed = _coerce_optional_int(value)
+    if parsed is None:
+        parsed = default_value
+    return max(1, min(int(max_value), int(parsed)))
+
+
+def _summarize_verify_events(events: list[dict[str, Any]], status: JSONDict) -> JSONDict:
+    event_type_counts: dict[str, int] = {}
+    command_start = 0
+    command_complete = 0
+    command_skipped = 0
+    command_errors = 0
+    cache_hits = 0
+    terminal_event_seen = False
+    first_seq = 0
+    last_seq = 0
+    latest_stage = str(status.get("stage", ""))
+    latest_state = str(status.get("state", ""))
+    terminal_events = {"job_completed", "job_failed", "job_cancelled_finalized"}
+
+    for event in events:
+        event_type = str(event.get("event", "")).strip()
+        if not event_type:
+            continue
+        event_type_counts[event_type] = int(event_type_counts.get(event_type, 0)) + 1
+        if event_type == "command_start":
+            command_start += 1
+        elif event_type == "command_complete":
+            command_complete += 1
+        elif event_type == "command_skipped":
+            command_skipped += 1
+        elif event_type == "error":
+            command_errors += 1
+        elif event_type == "cache_hit":
+            cache_hits += 1
+        if event_type in terminal_events:
+            terminal_event_seen = True
+
+        seq = _coerce_optional_int(event.get("seq"))
+        if seq is not None and seq > 0:
+            if first_seq <= 0:
+                first_seq = int(seq)
+            last_seq = max(last_seq, int(seq))
+
+        stage = str(event.get("stage", "")).strip()
+        if stage:
+            latest_stage = stage
+        state = str(event.get("state", "")).strip()
+        if state:
+            latest_state = state
+
+    return {
+        "latest_state": latest_state or str(status.get("state", "")),
+        "latest_stage": latest_stage or str(status.get("stage", "")),
+        "terminal_event_seen": bool(terminal_event_seen),
+        "event_type_counts": event_type_counts,
+        "command_stats": {
+            "started": int(command_start),
+            "completed": int(command_complete),
+            "skipped": int(command_skipped),
+            "errors": int(command_errors),
+            "cache_hits": int(cache_hits),
+        },
+        "seq_range": {"first": int(first_seq), "last": int(last_seq)},
+    }
 
 
 def _wait_for_verify_job_result(
@@ -453,10 +522,6 @@ def _auto_context_budget_preset(task: str, changed_files: list[str], hints: list
     return "small", "auto:small_default"
 
 
-def _estimate_tokens(chars: int) -> int:
-    return max(1, int((max(0, int(chars)) + 3) // 4))
-
-
 def _resolve_context_budget(
     budget: dict[str, int] | str | None,
     *,
@@ -531,6 +596,11 @@ def _tool_context(
         f"changed_files={len(changed_files_list)} hints={len(hints_list)} include_pack={include_pack_flag}"
     )
 
+    config = resolve_effective_config(project_dir)
+    _debug_log("_tool_context: config resolved")
+    runtime_cfg = config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {}
+    require_changed_files = bool(runtime_cfg.get("context_require_changed_files", True))
+
     changed_files_source = "user" if changed_files_list else "none"
     if not changed_files_list:
         auto_changed = _discover_changed_files_from_git(project_dir)
@@ -541,6 +611,11 @@ def _tool_context(
         "_tool_context: changed_files resolution "
         f"source={changed_files_source} count={len(changed_files_list)}"
     )
+    if require_changed_files and not changed_files_list:
+        raise ValueError(
+            "changed_files is required for context narrowing. "
+            "Provide changed_files explicitly or ensure git diff is available."
+        )
 
     budget_override, budget_source, budget_preset, budget_reason = _resolve_context_budget(
         budget,
@@ -559,8 +634,6 @@ def _tool_context(
         f"budget={budget_preset}({budget_source})"
     )
 
-    config = resolve_effective_config(project_dir)
-    _debug_log("_tool_context: config resolved")
     feedback_payload: JSONDict | None = None
 
     resolved_feedback_path = _resolve_path(project_dir, feedback_path)
@@ -597,24 +670,63 @@ def _tool_context(
     source_chars = int(meta.get("source_chars_est", 0) or 0)
     if source_chars <= 0:
         source_chars = context_chars
+
+    token_estimate = estimate_tokens_for_text(
+        pack_json_text,
+        backend=runtime_cfg.get("token_estimator_backend", "auto"),
+        model=runtime_cfg.get("token_estimator_model", ""),
+        encoding=runtime_cfg.get("token_estimator_encoding", "cl100k_base"),
+        calibration=runtime_cfg.get("token_estimator_calibration", 1.0),
+        fallback_chars_per_token=runtime_cfg.get("token_estimator_fallback_chars_per_token", 4.0),
+    )
+    source_token_estimate = estimate_tokens_from_chars(
+        source_chars,
+        chars_per_token=token_estimate.get(
+            "chars_per_token",
+            runtime_cfg.get("token_estimator_fallback_chars_per_token", 4.0),
+        ),
+        calibration=token_estimate.get("calibration", runtime_cfg.get("token_estimator_calibration", 1.0)),
+    )
+
     compression_ratio = float(context_chars / source_chars) if source_chars > 0 else 1.0
     token_reduction_ratio = max(0.0, 1.0 - compression_ratio)
     warnings: list[str] = []
     if changed_files_source == "none":
         warnings.append("changed_files not provided and no git delta detected; context scope may be wider than necessary")
 
+    verify_plan = pack.get("verify_plan", {}) if isinstance(pack.get("verify_plan", {}), dict) else {}
+    target_tests = verify_plan.get("target_tests", [])
+    target_checks = verify_plan.get("target_checks", [])
+    selected_tests_count = len(target_tests) if isinstance(target_tests, list) else 0
+    selected_checks_count = len(target_checks) if isinstance(target_checks, list) else 0
+
     payload: JSONDict = {
         "status": "ok",
         "out": str(out_path),
         "top_files": len(pack.get("top_files", [])),
         "snippets": len(pack.get("snippets", [])),
-        "verify_plan": pack.get("verify_plan", {}),
+        "verify_plan": verify_plan,
+        "selected_tests_count": selected_tests_count,
+        "selected_checks_count": selected_checks_count,
         "context_chars": context_chars,
         "source_chars": source_chars,
-        "estimated_tokens": _estimate_tokens(context_chars),
-        "estimated_source_tokens": _estimate_tokens(source_chars),
+        "estimated_tokens": int(token_estimate.get("estimated_tokens", 1)),
+        "estimated_source_tokens": int(source_token_estimate.get("estimated_tokens", 1)),
         "compression_ratio": round(compression_ratio, 6),
         "token_reduction_ratio": round(token_reduction_ratio, 6),
+        "token_estimator": {
+            "backend_requested": token_estimate.get("backend_requested", "auto"),
+            "backend_used": token_estimate.get("backend_used", "heuristic"),
+            "encoding_requested": token_estimate.get("encoding_requested", "cl100k_base"),
+            "encoding_used": token_estimate.get("encoding_used", "chars/4"),
+            "model": token_estimate.get("model", ""),
+            "calibration": float(token_estimate.get("calibration", 1.0)),
+            "fallback_chars_per_token": float(token_estimate.get("fallback_chars_per_token", 4.0)),
+            "context_chars_per_token": round(float(token_estimate.get("chars_per_token", 4.0)), 6),
+            "source_chars_per_token": round(float(source_token_estimate.get("chars_per_token", 4.0)), 6),
+            "raw_context_tokens": int(token_estimate.get("raw_tokens", 1)),
+            "raw_source_tokens": int(source_token_estimate.get("raw_tokens", 1)),
+        },
         "budget_effective": pack.get("budget", {}),
         "budget_source": budget_source,
         "budget_preset": budget_preset,
@@ -623,6 +735,11 @@ def _tool_context(
         "changed_files_source": changed_files_source,
         "changed_files_count": len(changed_files_list),
     }
+    fallback_reason = str(token_estimate.get("fallback_reason", "")).strip()
+    if fallback_reason:
+        token_estimator_payload = payload.get("token_estimator")
+        if isinstance(token_estimator_payload, dict):
+            token_estimator_payload["fallback_reason"] = fallback_reason
     if warnings:
         payload["warnings"] = warnings
     if include_pack_flag:
@@ -1034,17 +1151,49 @@ def create_server() -> FastMCP:
 
     @server.tool(
         name="accel_verify_events",
-        description="Get events for a verification job since given sequence number.",
+        description="Get verification events with optional summary and tail clipping.",
     )
-    def accel_verify_events(job_id: str, since_seq: int = 0) -> JSONDict:
+    def accel_verify_events(
+        job_id: str,
+        since_seq: int = 0,
+        max_events: Any = 30,
+        include_summary: Any = True,
+    ) -> JSONDict:
         try:
-            _debug_log(f"accel_verify_events called: job_id={job_id}, since_seq={since_seq}")
+            _debug_log(
+                f"accel_verify_events called: job_id={job_id}, since_seq={since_seq}, "
+                f"max_events={max_events}, include_summary={include_summary}"
+            )
             jm = JobManager()
             job = jm.get_job(job_id)
             if job is None:
                 return {"error": "job_not_found", "job_id": job_id}
-            events = job.get_events(since_seq)
-            return {"job_id": job_id, "events": events, "count": len(events)}
+
+            since_seq_value = int(_coerce_optional_int(since_seq) or 0)
+            limit = _coerce_events_limit(max_events, default_value=30, max_value=500)
+            include_summary_flag = _coerce_bool(include_summary, True)
+
+            events_all = job.get_events(since_seq_value)
+            total_available = len(events_all)
+            truncated = False
+            if total_available > limit:
+                events = events_all[-limit:]
+                truncated = True
+            else:
+                events = events_all
+
+            payload: JSONDict = {
+                "job_id": job_id,
+                "events": events,
+                "count": len(events),
+                "total_available": total_available,
+                "truncated": truncated,
+                "max_events": limit,
+                "since_seq": since_seq_value,
+            }
+            if include_summary_flag:
+                payload["summary"] = _summarize_verify_events(events_all, job.to_status())
+            return payload
         except Exception as exc:
             _debug_log(f"accel_verify_events failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc

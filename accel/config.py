@@ -40,6 +40,12 @@ DEFAULT_LOCAL_CONFIG: dict[str, Any] = {
         "verify_cache_enabled": True,
         "verify_cache_ttl_seconds": 900,
         "verify_cache_max_entries": 400,
+        "token_estimator_backend": "auto",
+        "token_estimator_encoding": "cl100k_base",
+        "token_estimator_model": "",
+        "token_estimator_calibration": 1.0,
+        "token_estimator_fallback_chars_per_token": 4.0,
+        "context_require_changed_files": True,
         "accel_home": "",
         "per_command_timeout_seconds": 1200,
         "total_verify_timeout_seconds": 3600,
@@ -84,7 +90,6 @@ def _load_config_file(path: Path) -> dict[str, Any]:
 
             # Add timeout protection for YAML loading
             import threading
-            import time
 
             class TimeoutError(Exception):
                 pass
@@ -143,6 +148,16 @@ def _normalize_positive_int(value: Any, default_value: int) -> int:
     except (TypeError, ValueError):
         return default_value
     return max(1, parsed)
+
+
+def _normalize_positive_float(value: Any, default_value: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return float(default_value)
+    if parsed <= 0:
+        return float(default_value)
+    return float(parsed)
 
 
 def _normalize_bool(value: Any, default_value: bool = False) -> bool:
@@ -209,6 +224,27 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         runtime["verify_cache_max_entries"] = _normalize_positive_int(
             os.environ["ACCEL_VERIFY_CACHE_MAX_ENTRIES"], int(runtime.get("verify_cache_max_entries", 400))
         )
+    if os.environ.get("ACCEL_TOKEN_ESTIMATOR_BACKEND"):
+        runtime["token_estimator_backend"] = str(os.environ["ACCEL_TOKEN_ESTIMATOR_BACKEND"]).strip().lower()
+    if os.environ.get("ACCEL_TOKEN_ESTIMATOR_ENCODING"):
+        runtime["token_estimator_encoding"] = str(os.environ["ACCEL_TOKEN_ESTIMATOR_ENCODING"]).strip()
+    if os.environ.get("ACCEL_TOKEN_ESTIMATOR_MODEL"):
+        runtime["token_estimator_model"] = str(os.environ["ACCEL_TOKEN_ESTIMATOR_MODEL"]).strip()
+    if os.environ.get("ACCEL_TOKEN_ESTIMATOR_CALIBRATION"):
+        runtime["token_estimator_calibration"] = _normalize_positive_float(
+            os.environ["ACCEL_TOKEN_ESTIMATOR_CALIBRATION"],
+            float(runtime.get("token_estimator_calibration", 1.0)),
+        )
+    if os.environ.get("ACCEL_TOKEN_ESTIMATOR_FALLBACK_CHARS_PER_TOKEN"):
+        runtime["token_estimator_fallback_chars_per_token"] = _normalize_positive_float(
+            os.environ["ACCEL_TOKEN_ESTIMATOR_FALLBACK_CHARS_PER_TOKEN"],
+            float(runtime.get("token_estimator_fallback_chars_per_token", 4.0)),
+        )
+    if os.environ.get("ACCEL_CONTEXT_REQUIRE_CHANGED_FILES") is not None:
+        runtime["context_require_changed_files"] = _normalize_bool(
+            os.environ["ACCEL_CONTEXT_REQUIRE_CHANGED_FILES"],
+            bool(runtime.get("context_require_changed_files", True)),
+        )
     if os.environ.get("ACCEL_GPU_ENABLED") is not None:
         gpu["enabled"] = _normalize_bool(os.environ["ACCEL_GPU_ENABLED"], False)
     if os.environ.get("ACCEL_LOCAL_CONFIG"):
@@ -267,6 +303,23 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
     )
     runtime["verify_cache_max_entries"] = _normalize_positive_int(
         runtime.get("verify_cache_max_entries", 400), default_value=400
+    )
+    runtime["token_estimator_backend"] = str(runtime.get("token_estimator_backend", "auto")).strip().lower() or "auto"
+    if runtime["token_estimator_backend"] not in {"auto", "tiktoken", "heuristic"}:
+        runtime["token_estimator_backend"] = "auto"
+    runtime["token_estimator_encoding"] = str(runtime.get("token_estimator_encoding", "cl100k_base")).strip() or "cl100k_base"
+    runtime["token_estimator_model"] = str(runtime.get("token_estimator_model", "")).strip()
+    runtime["token_estimator_calibration"] = _normalize_positive_float(
+        runtime.get("token_estimator_calibration", 1.0),
+        default_value=1.0,
+    )
+    runtime["token_estimator_fallback_chars_per_token"] = _normalize_positive_float(
+        runtime.get("token_estimator_fallback_chars_per_token", 4.0),
+        default_value=4.0,
+    )
+    runtime["context_require_changed_files"] = _normalize_bool(
+        runtime.get("context_require_changed_files", True),
+        default_value=True,
     )
 
     accel_home = runtime.get("accel_home")

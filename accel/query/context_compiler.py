@@ -68,7 +68,20 @@ def _compact_snippet_content(content: str, max_chars: int) -> tuple[str, int]:
 
     compact_lines: list[str] = []
     blank_run = 0
+    import_run = 0
+    suppressed_imports = 0
     for line in lines:
+        stripped_line = line.strip()
+        is_import_line = stripped_line.startswith(("import ", "from ")) and "(" not in stripped_line and ")" not in stripped_line
+        if is_import_line:
+            import_run += 1
+            # Keep a short import header but avoid spending budget on large import blocks.
+            if import_run > 12:
+                suppressed_imports += 1
+                continue
+        else:
+            import_run = 0
+
         if not line.strip():
             blank_run += 1
             if blank_run <= 1:
@@ -76,6 +89,9 @@ def _compact_snippet_content(content: str, max_chars: int) -> tuple[str, int]:
             continue
         blank_run = 0
         compact_lines.append(line)
+
+    if suppressed_imports > 0:
+        compact_lines.append(f"# ... [omitted {suppressed_imports} import lines]")
 
     compact = "\n".join(compact_lines).strip("\n")
     if len(compact) > max_chars:

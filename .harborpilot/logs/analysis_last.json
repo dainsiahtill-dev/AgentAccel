@@ -1,12 +1,12 @@
 {
-  "ts": "2026-02-11T22:45:09.807571+00:00",
-  "run_id": "run_20260212_mcp_fullfix_all",
-  "goal": "Fix MCP timeout/blocking symptoms and complete token-optimization improvements end-to-end.",
+  "ts": "2026-02-11T23:05:22.077191+00:00",
+  "run_id": "run_20260212_tokenizer_calibration",
+  "goal": "Replace chars/4 token estimate with tokenizer-backed estimate and calibration factor.",
   "acceptance_criteria": [
-    "Context tool accepts flexible inputs (budget presets, string/list forms) without schema rejection.",
-    "Verify tool returns started immediately and supports live status/events polling.",
-    "Cancel converges to cancelled for in-flight jobs.",
-    "Evidence exists for index/context/verify/start/status/events/cancel paths."
+    "estimated_tokens uses tokenizer when available.",
+    "calibration factor is configurable and applied.",
+    "fallback remains available when tokenizer is unavailable.",
+    "tests and docs updated."
   ],
   "capability_matrix": {
     "repo": "read/write",
@@ -14,7 +14,7 @@
     "network": "available"
   },
   "risk_notes": [
-    "Current Codex session still shows Transport closed for pre-loaded MCP handle; restart client to reload updated config.",
-    "On very fast jobs, cancel may legitimately return already-completed terminal status."
+    "source token estimate still derives from chars-per-token ratio, not full source tokenization.",
+    "tokenizer backend can fall back to heuristic if runtime lacks tiktoken."
   ]
 }
