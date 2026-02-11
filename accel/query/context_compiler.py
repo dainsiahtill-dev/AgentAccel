@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,71 @@ def _group_by_file(rows: list[dict[str, Any]], key: str) -> dict[str, list[dict[
             continue
         grouped.setdefault(file_value, []).append(row)
     return grouped
+
+
+def _estimate_source_bytes(project_dir: Path, indexed_files: list[str], sample_limit: int = 200) -> int:
+    if not indexed_files:
+        return 0
+    sample = indexed_files[: max(1, int(sample_limit))]
+    total = 0
+    counted = 0
+    for rel_path in sample:
+        try:
+            total += int((project_dir / rel_path).stat().st_size)
+            counted += 1
+        except OSError:
+            continue
+    if counted <= 0:
+        return 0
+    if len(indexed_files) > counted:
+        ratio = float(len(indexed_files)) / float(counted)
+        return int(total * ratio)
+    return total
+
+
+def _snippet_fingerprint(content: str) -> str:
+    normalized = " ".join(str(content).lower().split())
+    return hashlib.sha1(normalized.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _compact_snippet_content(content: str, max_chars: int) -> tuple[str, int]:
+    original = str(content or "")
+    lines = [line.rstrip() for line in original.splitlines()]
+
+    # Drop long leading banner comments/blank lines to keep more executable context.
+    leading = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            leading += 1
+            continue
+        if stripped.startswith(("#", "//", "/*", "*", "*/", '"""', "'''")):
+            leading += 1
+            continue
+        break
+    if leading >= 8:
+        lines = lines[leading:]
+
+    compact_lines: list[str] = []
+    blank_run = 0
+    for line in lines:
+        if not line.strip():
+            blank_run += 1
+            if blank_run <= 1:
+                compact_lines.append("")
+            continue
+        blank_run = 0
+        compact_lines.append(line)
+
+    compact = "\n".join(compact_lines).strip("\n")
+    if len(compact) > max_chars:
+        marker = "\n... [truncated]"
+        keep = max(0, max_chars - len(marker))
+        compact = compact[:keep].rstrip() + marker
+
+    if not compact:
+        compact = original[:max_chars]
+    return compact, max(0, len(original) - len(compact))
 
 
 def _build_verify_plan(
@@ -83,6 +149,13 @@ def compile_context_pack(
     snippet_radius = int(context_cfg.get("snippet_radius", 40))
     max_chars = int(context_cfg.get("max_chars", 24000))
     max_snippets = int(context_cfg.get("max_snippets", 60))
+    effective_file_window = max(1, min(max_snippets, top_n_files))
+    per_snippet_max_chars = int(
+        context_cfg.get(
+            "per_snippet_max_chars",
+            max(800, min(6000, int((max_chars / effective_file_window) * 2))),
+        )
+    )
 
     task_tokens = normalize_task_tokens(task)
     candidate_files = build_candidate_files(
@@ -118,6 +191,10 @@ def compile_context_pack(
 
     snippets: list[dict[str, Any]] = []
     current_chars = 0
+    raw_snippet_chars = 0
+    compacted_snippet_chars = 0
+    deduped_snippet_count = 0
+    seen_fingerprints: set[str] = set()
     for top_item in top_files:
         file_path = top_item["path"]
         symbol_rows = symbols_by_file.get(file_path, [])
@@ -127,11 +204,25 @@ def compile_context_pack(
             task_tokens=task_tokens,
             symbol_rows=symbol_rows,
             snippet_radius=snippet_radius,
-            max_chars=max_chars,
+            max_chars=per_snippet_max_chars,
         )
         if snippet is None:
             continue
-        size = len(snippet["content"])
+        raw_content = str(snippet.get("content", ""))
+        compact_content, _ = _compact_snippet_content(raw_content, per_snippet_max_chars)
+        if not compact_content.strip():
+            continue
+        snippet["content"] = compact_content
+
+        fingerprint = _snippet_fingerprint(compact_content)
+        if fingerprint in seen_fingerprints:
+            deduped_snippet_count += 1
+            continue
+        seen_fingerprints.add(fingerprint)
+
+        raw_snippet_chars += len(raw_content)
+        size = len(compact_content)
+        compacted_snippet_chars += size
         if current_chars + size > max_chars:
             continue
         snippets.append(snippet)
@@ -140,10 +231,20 @@ def compile_context_pack(
             break
 
     verify_plan = _build_verify_plan(top_files, ownership_rows, changed_files)
+    counts = dict(manifest.get("counts", {}))
+    source_bytes = int(counts.get("source_bytes", 0))
+    source_chars_est = int(counts.get("source_chars_est", 0))
+    if source_bytes <= 0:
+        source_bytes = _estimate_source_bytes(project_dir, list(manifest.get("indexed_files", [])))
+    if source_chars_est <= 0:
+        source_chars_est = source_bytes
+
     budget = {
         "max_chars": max_chars,
         "max_snippets": max_snippets,
         "top_n_files": top_n_files,
+        "snippet_radius": snippet_radius,
+        "per_snippet_max_chars": per_snippet_max_chars,
     }
 
     pack: dict[str, Any] = {
@@ -157,6 +258,12 @@ def compile_context_pack(
         "meta": {
             "task_tokens": task_tokens,
             "changed_files": changed_files,
+            "source_bytes": source_bytes,
+            "source_chars_est": source_chars_est,
+            "snippet_raw_chars": raw_snippet_chars,
+            "snippet_chars": compacted_snippet_chars,
+            "snippet_saved_chars": max(0, raw_snippet_chars - compacted_snippet_chars),
+            "snippet_deduped_count": deduped_snippet_count,
             "drift_reason": "",
         },
     }

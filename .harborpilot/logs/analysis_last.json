@@ -1,22 +1,20 @@
 {
-  "ts_utc": "2026-02-11T22:01:45.817783+00:00",
-  "mode": "S1",
-  "contract": {
-    "goal": "?? verify ??????? cancelling ??????? context ????????????",
-    "acceptance_criteria": [
-      "accel_verify_cancel ??????? cancelled?????????",
-      "index/context/verify/start/status/events/cancel ???????",
-      "accel_context ?? budget ??????? small??????????"
-    ]
-  },
+  "ts": "2026-02-11T22:45:09.807571+00:00",
+  "run_id": "run_20260212_mcp_fullfix_all",
+  "goal": "Fix MCP timeout/blocking symptoms and complete token-optimization improvements end-to-end.",
+  "acceptance_criteria": [
+    "Context tool accepts flexible inputs (budget presets, string/list forms) without schema rejection.",
+    "Verify tool returns started immediately and supports live status/events polling.",
+    "Cancel converges to cancelled for in-flight jobs.",
+    "Evidence exists for index/context/verify/start/status/events/cancel paths."
+  ],
   "capability_matrix": {
     "repo": "read/write",
     "terminal": "available",
     "network": "available"
   },
-  "findings": [
-    "????????? cancelling??????????",
-    "worker ?????????????????",
-    "MCP ???????? budget='small' ?? schema ??????"
+  "risk_notes": [
+    "Current Codex session still shows Transport closed for pre-loaded MCP handle; restart client to reload updated config.",
+    "On very fast jobs, cancel may legitimately return already-completed terminal status."
   ]
 }

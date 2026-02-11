@@ -1,0 +1,144 @@
+{
+  "started_at": "2026-02-11T22:42:41Z",
+  "calls": [
+    {
+      "tool": "accel_index_build",
+      "elapsed_sec": 0.025,
+      "result": {
+        "status": "ok",
+        "manifest": {
+          "version": 1,
+          "schema_version": 1,
+          "indexed_at": "2026-02-11T22:42:42.008943+00:00",
+          "mode": "build",
+          "full_rebuild": true,
+          "project_dir": "x:\\MCPs\\agent-accel\\.harborpilot\\tmp\\slow_cancel_project",
+          "indexed_files": [
+            "src/app.py"
+          ],
+          "changed_files": [
+            "src/app.py"
+          ],
+          "removed_files": [],
+          "counts": {
+            "symbols": 0,
+            "references": 0,
+            "dependencies": 0,
+            "test_ownership": 0,
+            "files": 1,
+            "source_bytes": 13,
+            "source_chars_est": 13
+          },
+          "performance": {
+            "index_workers": 96,
+            "parallel_backend": "thread",
+            "parallelized": false,
+            "processed_files": 1
+          },
+          "delta": {
+            "pending_ops": {
+              "symbols": 0,
+              "references": 0,
+              "dependencies": 0
+            },
+            "compacted": true,
+            "compact_threshold": 200
+          }
+        }
+      }
+    },
+    {
+      "tool": "accel_verify_start",
+      "elapsed_sec": 0.002,
+      "result": {
+        "job_id": "verify_fe0bcfa21d08",
+        "status": "started"
+      }
+    },
+    {
+      "tool": "accel_verify_events",
+      "elapsed_sec": 0.0,
+      "result": {
+        "job_id": "verify_fe0bcfa21d08",
+        "events": [
+          {
+            "seq": 1,
+            "ts": "2026-02-11T22:42:42.016074+00:00",
+            "event": "heartbeat",
+            "job_id": "verify_fe0bcfa21d08",
+            "elapsed_sec": 0.0,
+            "eta_sec": null,
+            "state": "running",
+            "stage": "running",
+            "progress": 0.0
+          },
+          {
+            "seq": 2,
+            "ts": "2026-02-11T22:42:42.017472+00:00",
+            "event": "job_started",
+            "job_id": "verify_fe0bcfa21d08",
+            "total_commands": 1
+          },
+          {
+            "seq": 3,
+            "ts": "2026-02-11T22:42:42.022511+00:00",
+            "event": "stage_change",
+            "job_id": "verify_fe0bcfa21d08",
+            "stage": "load_cache"
+          },
+          {
+            "seq": 4,
+            "ts": "2026-02-11T22:42:42.022522+00:00",
+            "event": "stage_change",
+            "job_id": "verify_fe0bcfa21d08",
+            "stage": "select_cmds"
+          },
+          {
+            "seq": 5,
+            "ts": "2026-02-11T22:42:42.024400+00:00",
+            "event": "stage_change",
+            "job_id": "verify_fe0bcfa21d08",
+            "stage": "running"
+          },
+          {
+            "seq": 6,
+            "ts": "2026-02-11T22:42:42.024413+00:00",
+            "event": "stage_change",
+            "job_id": "verify_fe0bcfa21d08",
+            "stage": "parallel"
+          }
+        ],
+        "count": 6
+      }
+    },
+    {
+      "tool": "accel_verify_cancel",
+      "elapsed_sec": 0.0,
+      "result": {
+        "job_id": "verify_fe0bcfa21d08",
+        "status": "cancelled",
+        "cancelled": true,
+        "message": "Cancellation requested and finalized"
+      }
+    },
+    {
+      "tool": "accel_verify_status",
+      "elapsed_sec": 0.0,
+      "result": {
+        "job_id": "verify_fe0bcfa21d08",
+        "state": "cancelled",
+        "stage": "cancelled",
+        "progress": 0.0,
+        "elapsed_sec": 0.5,
+        "eta_sec": null,
+        "current_command": "",
+        "total_commands": 1,
+        "completed_commands": 0
+      }
+    }
+  ],
+  "project": "x:\\MCPs\\agent-accel\\.harborpilot\\tmp\\slow_cancel_project",
+  "job_id": "verify_fe0bcfa21d08",
+  "final_state": "cancelled",
+  "ended_at": "2026-02-11T22:42:42Z"
+}

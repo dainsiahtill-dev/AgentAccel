@@ -232,6 +232,18 @@ Generate a budgeted context pack for a task.
 }
 ```
 
+**Auto defaults (when omitted):**
+- `budget`: adaptive policy (`tiny` for quick/small scope, `small` for daily usage, `medium` for complex scope)
+- `changed_files`: auto-discovered from git diff (worktree + staged) when available
+
+**Key response fields:**
+- `estimated_tokens`: estimated tokens for generated context payload (`chars / 4`)
+- `estimated_source_tokens`: estimated tokens for indexed source baseline
+- `compression_ratio`: `context_chars / source_chars` (smaller is better)
+- `token_reduction_ratio`: `1 - compression_ratio`
+- `budget_source` / `budget_preset`: whether budget came from user input or auto policy
+- `changed_files_source`: `user` | `git_auto` | `none`
+
 #### `accel_verify`
 
 Start incremental verification with runtime override options.
@@ -256,8 +268,8 @@ Start incremental verification with runtime override options.
 | `evidence_run` | boolean \| string | `false` | Evidence collection mode |
 | `fast_loop` | boolean \| string | `false` | Fast verification loop |
 | `verify_fail_fast` | boolean \| string | `null` | Stop on first failure |
-| `verify_workers` | integer | `null` | Number of parallel workers |
-| `per_command_timeout_seconds` | integer | `null` | Timeout per command |
+| `verify_workers` | integer \| string | `null` | Number of parallel workers |
+| `per_command_timeout_seconds` | integer \| string | `null` | Timeout per command |
 
 **Response behavior:**
 - Returns quickly with `status=started` and `job_id` to avoid MCP 60s call timeouts.
@@ -287,8 +299,8 @@ For Claude Desktop or other MCP clients:
 {
   "mcpServers": {
     "agent-accel": {
-      "command": "accel-mcp",
-      "args": [],
+      "command": "python",
+      "args": ["X:/MCPs/agent-accel/scripts/accel_mcp_entry.py"],
       "env": {
         "ACCEL_MCP_DEBUG": "1"
       }
@@ -296,6 +308,8 @@ For Claude Desktop or other MCP clients:
   }
 }
 ```
+
+This launcher avoids `Transport closed` failures when client runtime does not preserve `PYTHONPATH`.
 
 ---
 

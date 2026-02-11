@@ -97,6 +97,115 @@ def test_tool_context_budget_and_list_string_compat(tmp_path: Path) -> None:
     )
     assert context["status"] == "ok"
     assert Path(context["out"]).is_file()
+    assert int(context["estimated_tokens"]) > 0
+    assert float(context["compression_ratio"]) > 0.0
+    assert context["budget_source"] == "user"
+    assert context["budget_preset"] == "small"
+    assert context["changed_files_source"] == "user"
+
+
+def test_tool_context_auto_budget_and_git_changed_files(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_auto_project"
+    project_dir.mkdir(parents=True)
+    out_path = project_dir / "context_auto.json"
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {"runtime": {"accel_home": str(tmp_path / ".accel-home")}},
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "_discover_changed_files_from_git",
+        lambda project_dir, limit=200: ["src/auto_changed.py"],
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_compile_context_pack(
+        project_dir,
+        config,
+        task,
+        changed_files=None,
+        hints=None,
+        previous_attempt_feedback=None,
+        budget_override=None,
+    ):
+        captured["changed_files"] = list(changed_files or [])
+        captured["budget_override"] = dict(budget_override or {})
+        return {
+            "version": 1,
+            "task": task,
+            "generated_at": "2026-02-12T00:00:00+00:00",
+            "budget": {
+                "max_chars": int((budget_override or {}).get("max_chars", 0)),
+                "max_snippets": int((budget_override or {}).get("max_snippets", 0)),
+                "top_n_files": int((budget_override or {}).get("top_n_files", 0)),
+            },
+            "top_files": [{"path": "src/auto_changed.py", "score": 1.0, "reasons": ["changed_file"], "signals": []}],
+            "snippets": [{"path": "src/auto_changed.py", "start_line": 1, "end_line": 2, "symbol": "", "reason": "", "content": "print('ok')"}],
+            "verify_plan": {"target_tests": [], "target_checks": ["pytest -q"]},
+            "meta": {"source_chars_est": 50000},
+        }
+
+    monkeypatch.setattr(mcp_server, "compile_context_pack", fake_compile_context_pack)
+
+    result = mcp_server._tool_context(
+        project=str(project_dir),
+        task="quick typo fix in one file",
+        changed_files=None,
+        hints=None,
+        out=str(out_path),
+        budget=None,
+    )
+
+    assert result["status"] == "ok"
+    assert Path(result["out"]).is_file()
+    assert result["changed_files_source"] == "git_auto"
+    assert int(result["changed_files_count"]) == 1
+    assert result["budget_source"] == "auto"
+    assert result["budget_preset"] == "tiny"
+    assert int(result["estimated_tokens"]) > 0
+    assert float(result["compression_ratio"]) < 1.0
+    assert captured["changed_files"] == ["src/auto_changed.py"]
+    assert isinstance(captured["budget_override"], dict) and int(captured["budget_override"]["max_chars"]) > 0
+
+
+def test_tool_context_accepts_non_string_budget_value(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_budget_compat"
+    project_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {"runtime": {"accel_home": str(tmp_path / ".accel-home")}},
+    )
+    monkeypatch.setattr(mcp_server, "_discover_changed_files_from_git", lambda project_dir, limit=200: [])
+    monkeypatch.setattr(
+        mcp_server,
+        "compile_context_pack",
+        lambda **kwargs: {
+            "version": 1,
+            "task": str(kwargs.get("task", "")),
+            "generated_at": "2026-02-12T00:00:00+00:00",
+            "budget": {"max_chars": 6000, "max_snippets": 16, "top_n_files": 6},
+            "top_files": [],
+            "snippets": [],
+            "verify_plan": {"target_tests": [], "target_checks": []},
+            "meta": {"source_chars_est": 6000},
+        },
+    )
+
+    result = mcp_server._tool_context(
+        project=str(project_dir),
+        task="quick docs check",
+        changed_files=None,
+        hints=None,
+        budget=12345,
+    )
+    assert result["status"] == "ok"
+    assert result["budget_source"] == "auto"
+    assert result["budget_preset"] in {"tiny", "small", "medium"}
 
 
 def test_tool_verify_runs_with_evidence_mode(tmp_path: Path) -> None:
@@ -302,6 +411,68 @@ def test_sync_verify_returns_running_when_wait_window_exceeded(tmp_path: Path, m
             break
         time.sleep(0.1)
 
+    assert final_status.get("state") == mcp_server.JobState.COMPLETED
+
+
+def test_verify_start_accepts_string_runtime_overrides(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "verify_string_overrides_project"
+    project_dir.mkdir(parents=True)
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir, cli_overrides=None: {
+            "runtime": {"accel_home": str(tmp_path / ".accel-home")},
+            "verify": {},
+        },
+    )
+
+    def fake_run_verify_with_callback(project_dir, config, changed_files=None, callback=None):
+        return {
+            "status": "success",
+            "exit_code": 0,
+            "nonce": "string_override_nonce",
+            "log_path": str(tmp_path / "verify.log"),
+            "jsonl_path": str(tmp_path / "verify.jsonl"),
+            "commands": [],
+            "results": [],
+            "degraded": False,
+            "fail_fast": False,
+            "fail_fast_skipped_commands": [],
+            "cache_enabled": False,
+            "cache_hits": 0,
+            "cache_misses": 0,
+        }
+
+    monkeypatch.setattr(mcp_server, "run_verify_with_callback", fake_run_verify_with_callback)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    start_fn = tools["accel_verify_start"].fn
+    status_fn = tools["accel_verify_status"].fn
+
+    started = start_fn(
+        project=str(project_dir),
+        changed_files="src/app.py,src/lib.py",
+        evidence_run="true",
+        fast_loop="false",
+        verify_workers="2",
+        per_command_timeout_seconds="10",
+        verify_cache_ttl_seconds="300",
+        verify_cache_max_entries="200",
+    )
+    assert started["status"] == "started"
+
+    job_id = str(started["job_id"])
+    final_status = {}
+    for _ in range(30):
+        final_status = status_fn(job_id=job_id)
+        if final_status.get("state") == mcp_server.JobState.COMPLETED:
+            break
+        time.sleep(0.05)
     assert final_status.get("state") == mcp_server.JobState.COMPLETED
 
 

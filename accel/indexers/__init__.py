@@ -5,7 +5,6 @@ import hashlib
 import json
 import logging
 import os
-import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, TimeoutError
 from datetime import datetime, timezone
@@ -634,6 +633,7 @@ def build_or_update_indexes(
     dependencies_index = flatten_grouped_rows(dependencies_grouped)
 
     indexed_files = sorted(current_paths.keys())
+    source_bytes_total = int(sum(int(state.size) for state in current_states.values()))
     test_ownership = build_test_ownership(indexed_files, dependencies_index)
     write_jsonl_atomic(base_path_for_kind(paths["index"], "test_ownership"), test_ownership)
 
@@ -657,6 +657,8 @@ def build_or_update_indexes(
             "dependencies": len(dependencies_index),
             "test_ownership": len(test_ownership),
             "files": len(indexed_files),
+            "source_bytes": source_bytes_total,
+            "source_chars_est": source_bytes_total,
         },
         "performance": {
             "index_workers": index_workers,

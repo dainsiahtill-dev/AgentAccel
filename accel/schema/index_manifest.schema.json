@@ -21,7 +21,9 @@
         "references": { "type": "integer", "minimum": 0 },
         "dependencies": { "type": "integer", "minimum": 0 },
         "test_ownership": { "type": "integer", "minimum": 0 },
-        "files": { "type": "integer", "minimum": 0 }
+        "files": { "type": "integer", "minimum": 0 },
+        "source_bytes": { "type": "integer", "minimum": 0 },
+        "source_chars_est": { "type": "integer", "minimum": 0 }
       }
     }
   }

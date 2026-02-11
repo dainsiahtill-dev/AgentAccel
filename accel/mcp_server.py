@@ -5,7 +5,9 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -16,6 +18,7 @@ from fastmcp import FastMCP
 from .config import resolve_effective_config
 from .indexers import build_or_update_indexes
 from .query.context_compiler import compile_context_pack, write_context_pack
+from .query.planner import normalize_task_tokens
 from .storage.cache import ensure_project_dirs, project_paths
 from .verify.orchestrator import run_verify, run_verify_with_callback
 from .verify.callbacks import VerifyProgressCallback, VerifyStage
@@ -24,7 +27,7 @@ from .verify.job_manager import JobManager, JobState, VerifyJob
 
 JSONDict = dict[str, Any]
 SERVER_NAME = "agent-accel-mcp"
-SERVER_VERSION = "0.2.1"
+SERVER_VERSION = "0.2.2"
 TOOL_ERROR_EXECUTION_FAILED = "ACCEL_TOOL_EXECUTION_FAILED"
 
 # Debug logging setup
@@ -139,6 +142,31 @@ def _coerce_optional_bool(value: Any) -> bool | None:
         if token in _TRUE_LITERALS:
             return True
         return None
+    return None
+
+
+def _coerce_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        token = value.strip()
+        if not token:
+            return None
+        if token.lower() in _FALSE_LITERALS:
+            return None
+        try:
+            return int(token)
+        except ValueError:
+            try:
+                return int(float(token))
+            except ValueError:
+                return None
     return None
 
 
@@ -265,7 +293,7 @@ _BUDGET_PRESET_ALIASES: dict[str, str] = {
     "l": "large",
     "lg": "large",
     "xl": "xlarge",
-    "default": "medium",
+    "default": "small",
 }
 
 
@@ -339,6 +367,117 @@ def _to_budget_override(value: dict[str, int] | str | None) -> dict[str, int]:
     return out
 
 
+def _discover_changed_files_from_git(project_dir: Path, limit: int = 200) -> list[str]:
+    discovered: list[str] = []
+    lock = threading.Lock()
+
+    def _collect() -> None:
+        commands = [
+            ["git", "-C", str(project_dir), "diff", "--name-only", "--relative", "HEAD"],
+            ["git", "-C", str(project_dir), "diff", "--name-only", "--relative", "--cached"],
+        ]
+        seen: set[str] = set()
+        output: list[str] = []
+        for cmd in commands:
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=2,
+                    check=False,
+                )
+            except Exception:
+                continue
+            if int(proc.returncode) != 0:
+                continue
+            for raw_line in proc.stdout.splitlines():
+                rel = str(raw_line).strip().replace("\\", "/")
+                if not rel or rel in seen:
+                    continue
+                seen.add(rel)
+                output.append(rel)
+                if len(output) >= limit:
+                    break
+            if len(output) >= limit:
+                break
+        with lock:
+            discovered.extend(output)
+
+    worker = threading.Thread(target=_collect, daemon=True)
+    worker.start()
+    worker.join(timeout=2.5)
+    if worker.is_alive():
+        _debug_log("_discover_changed_files_from_git timed out; fallback to empty changed_files")
+        return []
+    with lock:
+        return list(discovered)
+
+
+def _auto_context_budget_preset(task: str, changed_files: list[str], hints: list[str]) -> tuple[str, str]:
+    task_text = str(task or "").strip()
+    task_low = task_text.lower()
+    task_tokens = normalize_task_tokens(task_text)
+    changed_count = len(changed_files)
+    hint_count = len(hints)
+
+    quick_markers = {"explain", "summary", "summarize", "quick", "small", "typo", "doc", "readme"}
+    complex_markers = {
+        "architecture",
+        "migration",
+        "investigate",
+        "root cause",
+        "refactor",
+        "performance",
+        "security",
+        "concurrency",
+        "state machine",
+        "deep",
+    }
+
+    score = 0
+    score += min(6, len(task_tokens) // 4)
+    score += min(5, changed_count // 2)
+    score += 1 if hint_count >= 3 else 0
+    if any(marker in task_low for marker in complex_markers):
+        score += 2
+    if any(marker in task_low for marker in quick_markers):
+        score -= 1
+
+    if changed_count <= 1 and len(task_tokens) <= 8 and len(task_text) <= 120 and score <= 2:
+        return "tiny", "auto:tiny_for_quick_task"
+    if changed_count >= 8 or len(task_tokens) >= 20 or len(task_text) >= 260 or score >= 8:
+        return "medium", "auto:medium_for_complex_scope"
+    return "small", "auto:small_default"
+
+
+def _estimate_tokens(chars: int) -> int:
+    return max(1, int((max(0, int(chars)) + 3) // 4))
+
+
+def _resolve_context_budget(
+    budget: dict[str, int] | str | None,
+    *,
+    task: str,
+    changed_files: list[str],
+    hints: list[str],
+) -> tuple[dict[str, int], str, str, str]:
+    override = _to_budget_override(budget)
+    if override:
+        preset = "custom"
+        if isinstance(budget, str):
+            token = budget.strip().lower()
+            canonical = _BUDGET_PRESET_ALIASES.get(token, token)
+            if canonical in _BUDGET_PRESETS:
+                preset = canonical
+        return override, "user", preset, "user_budget_input"
+
+    auto_preset, auto_reason = _auto_context_budget_preset(task, changed_files, hints)
+    return dict(_BUDGET_PRESETS[auto_preset]), "auto", auto_preset, auto_reason
+
+
 def _tool_index_build(project: str = ".", full: bool = True) -> JSONDict:
     _debug_log(f"accel_index_build called: project={project}, full={full}")
     project_dir = _normalize_project_dir(project)
@@ -371,29 +510,65 @@ def _tool_context(
     *,
     project: str = ".",
     task: str,
-    changed_files: list[str] | str | None = None,
-    hints: list[str] | str | None = None,
+    changed_files: Any = None,
+    hints: Any = None,
     feedback_path: str | None = None,
     out: str | None = None,
-    include_pack: bool | str = False,
-    budget: dict[str, int] | str | None = None,
+    include_pack: Any = False,
+    budget: Any = None,
 ) -> JSONDict:
-    changed_files_list = _to_string_list(changed_files)
-    hints_list = _to_string_list(hints)
-    include_pack_flag = _coerce_bool(include_pack, False)
-    _debug_log(f"accel_context called: project={project}, task='{task[:50]}...', changed_files={len(changed_files_list)}")
+    _debug_log("_tool_context: begin")
     project_dir = _normalize_project_dir(project)
+    _debug_log(f"_tool_context: normalized project_dir={project_dir}")
     task_text = str(task).strip()
     if not task_text:
         raise ValueError("task is required")
+    changed_files_list = _to_string_list(changed_files)
+    hints_list = _to_string_list(hints)
+    include_pack_flag = _coerce_bool(include_pack, False)
+    _debug_log(
+        "_tool_context: parsed inputs "
+        f"changed_files={len(changed_files_list)} hints={len(hints_list)} include_pack={include_pack_flag}"
+    )
+
+    changed_files_source = "user" if changed_files_list else "none"
+    if not changed_files_list:
+        auto_changed = _discover_changed_files_from_git(project_dir)
+        if auto_changed:
+            changed_files_list = auto_changed
+            changed_files_source = "git_auto"
+    _debug_log(
+        "_tool_context: changed_files resolution "
+        f"source={changed_files_source} count={len(changed_files_list)}"
+    )
+
+    budget_override, budget_source, budget_preset, budget_reason = _resolve_context_budget(
+        budget,
+        task=task_text,
+        changed_files=changed_files_list,
+        hints=hints_list,
+    )
+    _debug_log(
+        "_tool_context: budget resolution "
+        f"source={budget_source} preset={budget_preset} max_chars={budget_override.get('max_chars', 0)}"
+    )
+    _debug_log(
+        "accel_context called: "
+        f"project={project}, task='{task[:50]}...', "
+        f"changed_files={len(changed_files_list)}({changed_files_source}), "
+        f"budget={budget_preset}({budget_source})"
+    )
 
     config = resolve_effective_config(project_dir)
+    _debug_log("_tool_context: config resolved")
     feedback_payload: JSONDict | None = None
 
     resolved_feedback_path = _resolve_path(project_dir, feedback_path)
     if resolved_feedback_path is not None and resolved_feedback_path.exists():
         feedback_payload = json.loads(resolved_feedback_path.read_text(encoding="utf-8"))
+    _debug_log("_tool_context: feedback loaded")
 
+    _debug_log("_tool_context: compile_context_pack start")
     pack = compile_context_pack(
         project_dir=project_dir,
         config=config,
@@ -401,8 +576,9 @@ def _tool_context(
         changed_files=changed_files_list,
         hints=hints_list,
         previous_attempt_feedback=feedback_payload,
-        budget_override=_to_budget_override(budget),
+        budget_override=budget_override,
     )
+    _debug_log("_tool_context: compile_context_pack done")
 
     accel_home = Path(config["runtime"]["accel_home"]).resolve()
     paths = project_paths(accel_home, project_dir)
@@ -412,17 +588,46 @@ def _tool_context(
     if out_path is None:
         out_path = paths["context"] / f"context_pack_{uuid4().hex[:10]}.json"
 
+    _debug_log(f"_tool_context: write_context_pack start out={out_path}")
     write_context_pack(out_path, pack)
+    _debug_log("_tool_context: write_context_pack done")
+    pack_json_text = json.dumps(pack, ensure_ascii=False)
+    context_chars = len(pack_json_text)
+    meta = pack.get("meta", {}) if isinstance(pack.get("meta", {}), dict) else {}
+    source_chars = int(meta.get("source_chars_est", 0) or 0)
+    if source_chars <= 0:
+        source_chars = context_chars
+    compression_ratio = float(context_chars / source_chars) if source_chars > 0 else 1.0
+    token_reduction_ratio = max(0.0, 1.0 - compression_ratio)
+    warnings: list[str] = []
+    if changed_files_source == "none":
+        warnings.append("changed_files not provided and no git delta detected; context scope may be wider than necessary")
+
     payload: JSONDict = {
         "status": "ok",
         "out": str(out_path),
         "top_files": len(pack.get("top_files", [])),
         "snippets": len(pack.get("snippets", [])),
         "verify_plan": pack.get("verify_plan", {}),
+        "context_chars": context_chars,
+        "source_chars": source_chars,
+        "estimated_tokens": _estimate_tokens(context_chars),
+        "estimated_source_tokens": _estimate_tokens(source_chars),
+        "compression_ratio": round(compression_ratio, 6),
+        "token_reduction_ratio": round(token_reduction_ratio, 6),
+        "budget_effective": pack.get("budget", {}),
+        "budget_source": budget_source,
+        "budget_preset": budget_preset,
+        "budget_reason": budget_reason,
+        "changed_files_used": changed_files_list,
+        "changed_files_source": changed_files_source,
+        "changed_files_count": len(changed_files_list),
     }
+    if warnings:
+        payload["warnings"] = warnings
     if include_pack_flag:
         payload["pack"] = pack
-    
+
     _debug_log(f"accel_context completed: {len(pack.get('top_files', []))} files, {len(pack.get('snippets', []))} snippets")
     return payload
 
@@ -528,12 +733,12 @@ def create_server() -> FastMCP:
     def accel_context(
         task: str,
         project: str = ".",
-        changed_files: list[str] | str | None = None,
-        hints: list[str] | str | None = None,
+        changed_files: Any = None,
+        hints: Any = None,
         feedback_path: str | None = None,
         out: str | None = None,
-        include_pack: bool | str = False,
-        budget: dict[str, int] | str | None = None,
+        include_pack: Any = False,
+        budget: Any = None,
     ) -> JSONDict:
         try:
             return _with_timeout(_tool_context, timeout_seconds=300)(
@@ -553,36 +758,39 @@ def create_server() -> FastMCP:
     def _start_verify_job(
         *,
         project: str = ".",
-        changed_files: list[str] | str | None = None,
-        evidence_run: bool = False,
-        fast_loop: bool = False,
-        verify_workers: int | None = None,
-        per_command_timeout_seconds: int | None = None,
+        changed_files: Any = None,
+        evidence_run: Any = False,
+        fast_loop: Any = False,
+        verify_workers: Any = None,
+        per_command_timeout_seconds: Any = None,
         verify_fail_fast: bool | str | None = None,
         verify_cache_enabled: bool | str | None = None,
-        verify_cache_ttl_seconds: int | None = None,
-        verify_cache_max_entries: int | None = None,
+        verify_cache_ttl_seconds: Any = None,
+        verify_cache_max_entries: Any = None,
     ) -> VerifyJob:
-        if isinstance(changed_files, str):
-            changed_files = [f.strip() for f in changed_files.split(",") if f.strip()]
+        changed_files_list = _to_string_list(changed_files)
 
         evidence_run_normalized = _coerce_bool(evidence_run, False)
         fast_loop_normalized = _coerce_bool(fast_loop, False)
         verify_fail_fast_normalized = _coerce_optional_bool(verify_fail_fast)
         verify_cache_enabled_normalized = _coerce_optional_bool(verify_cache_enabled)
+        verify_workers_value = _coerce_optional_int(verify_workers)
+        per_command_timeout_value = _coerce_optional_int(per_command_timeout_seconds)
+        verify_cache_ttl_value = _coerce_optional_int(verify_cache_ttl_seconds)
+        verify_cache_max_entries_value = _coerce_optional_int(verify_cache_max_entries)
 
-        _debug_log(f"_start_verify_job called: project={project}, changed_files={len(changed_files or [])}")
+        _debug_log(f"_start_verify_job called: project={project}, changed_files={len(changed_files_list)}")
         project_dir = _normalize_project_dir(project)
 
         runtime_overrides: JSONDict = {}
-        if verify_workers is not None:
-            runtime_overrides["verify_workers"] = int(verify_workers)
-        if per_command_timeout_seconds is not None:
-            runtime_overrides["per_command_timeout_seconds"] = int(per_command_timeout_seconds)
-        if verify_cache_ttl_seconds is not None:
-            runtime_overrides["verify_cache_ttl_seconds"] = int(verify_cache_ttl_seconds)
-        if verify_cache_max_entries is not None:
-            runtime_overrides["verify_cache_max_entries"] = int(verify_cache_max_entries)
+        if verify_workers_value is not None:
+            runtime_overrides["verify_workers"] = int(verify_workers_value)
+        if per_command_timeout_value is not None:
+            runtime_overrides["per_command_timeout_seconds"] = int(per_command_timeout_value)
+        if verify_cache_ttl_value is not None:
+            runtime_overrides["verify_cache_ttl_seconds"] = int(verify_cache_ttl_value)
+        if verify_cache_max_entries_value is not None:
+            runtime_overrides["verify_cache_max_entries"] = int(verify_cache_max_entries_value)
 
         if evidence_run_normalized and not fast_loop_normalized:
             runtime_overrides["verify_fail_fast"] = False
@@ -635,7 +843,7 @@ def create_server() -> FastMCP:
 
         thread = threading.Thread(
             target=_run_verify_thread,
-            args=(job.job_id, project_dir, config, _to_string_list(changed_files)),
+            args=(job.job_id, project_dir, config, changed_files_list),
             daemon=True,
         )
         thread.start()
@@ -671,17 +879,17 @@ def create_server() -> FastMCP:
     )
     def accel_verify(
         project: str = ".",
-        changed_files: list[str] | str | None = None,
-        evidence_run: bool = False,
-        fast_loop: bool = False,
-        verify_workers: int | None = None,
-        per_command_timeout_seconds: int | None = None,
+        changed_files: Any = None,
+        evidence_run: Any = False,
+        fast_loop: Any = False,
+        verify_workers: Any = None,
+        per_command_timeout_seconds: Any = None,
         verify_fail_fast: bool | str | None = None,
         verify_cache_enabled: bool | str | None = None,
-        verify_cache_ttl_seconds: int | None = None,
-        verify_cache_max_entries: int | None = None,
-        wait_for_completion: bool | str = False,
-        sync_wait_seconds: int | None = None,
+        verify_cache_ttl_seconds: Any = None,
+        verify_cache_max_entries: Any = None,
+        wait_for_completion: Any = False,
+        sync_wait_seconds: Any = None,
     ) -> JSONDict:
         try:
             wait_flag = _coerce_bool(wait_for_completion, False)
@@ -714,7 +922,10 @@ def create_server() -> FastMCP:
                     "elapsed_sec": status_payload.get("elapsed_sec", 0.0),
                 }
 
-            wait_seconds = float(sync_wait_seconds if sync_wait_seconds is not None else _effective_sync_verify_wait_seconds())
+            sync_wait_seconds_value = _coerce_optional_int(sync_wait_seconds)
+            wait_seconds = float(
+                sync_wait_seconds_value if sync_wait_seconds_value is not None else _effective_sync_verify_wait_seconds()
+            )
             wait_seconds = max(1.0, min(55.0, wait_seconds))
             result = _wait_for_verify_job_result(
                 job_id,
@@ -775,15 +986,15 @@ def create_server() -> FastMCP:
     )
     def accel_verify_start(
         project: str = ".",
-        changed_files: list[str] | str | None = None,
-        evidence_run: bool = False,
-        fast_loop: bool = False,
-        verify_workers: int | None = None,
-        per_command_timeout_seconds: int | None = None,
+        changed_files: Any = None,
+        evidence_run: Any = False,
+        fast_loop: Any = False,
+        verify_workers: Any = None,
+        per_command_timeout_seconds: Any = None,
         verify_fail_fast: bool | str | None = None,
         verify_cache_enabled: bool | str | None = None,
-        verify_cache_ttl_seconds: int | None = None,
-        verify_cache_max_entries: int | None = None,
+        verify_cache_ttl_seconds: Any = None,
+        verify_cache_max_entries: Any = None,
     ) -> JSONDict:
         try:
             job = _start_verify_job(
