@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 import accel.mcp_server as mcp_server
@@ -93,3 +94,113 @@ def test_tool_verify_runs_with_evidence_mode(tmp_path: Path) -> None:
 
     assert result["status"] in {"success", "degraded"}
     assert int(result["exit_code"]) in {0, 2}
+
+
+def test_sync_verify_returns_running_when_wait_window_exceeded(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "sync_wait_project"
+    project_dir.mkdir(parents=True)
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(mcp_server, "_sync_verify_wait_seconds", 1)
+    monkeypatch.setattr(mcp_server, "_sync_verify_poll_seconds", 0.05)
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir, cli_overrides=None: {
+            "runtime": {"accel_home": str(tmp_path / ".accel-home")}
+        },
+    )
+
+    def fake_run_verify_with_callback(project_dir, config, changed_files=None, callback=None):
+        time.sleep(1.4)
+        return {
+            "status": "success",
+            "exit_code": 0,
+            "nonce": "fake_nonce",
+            "log_path": str(tmp_path / "verify.log"),
+            "jsonl_path": str(tmp_path / "verify.jsonl"),
+            "commands": [],
+            "results": [],
+            "degraded": False,
+            "fail_fast": False,
+            "fail_fast_skipped_commands": [],
+            "cache_enabled": False,
+            "cache_hits": 0,
+            "cache_misses": 0,
+        }
+
+    monkeypatch.setattr(mcp_server, "run_verify_with_callback", fake_run_verify_with_callback)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    verify_fn = tools["accel_verify"].fn
+    status_fn = tools["accel_verify_status"].fn
+
+    started = time.perf_counter()
+    result = verify_fn(project=str(project_dir))
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 1.3
+    assert result["status"] == "running"
+    assert bool(result["timed_out"]) is True
+    job_id = str(result["job_id"])
+
+    final_status = {}
+    for _ in range(30):
+        final_status = status_fn(job_id=job_id)
+        if final_status.get("state") == mcp_server.JobState.COMPLETED:
+            break
+        time.sleep(0.1)
+
+    assert final_status.get("state") == mcp_server.JobState.COMPLETED
+
+
+def test_sync_verify_returns_completed_result_for_fast_job(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "sync_fast_project"
+    project_dir.mkdir(parents=True)
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(mcp_server, "_sync_verify_wait_seconds", 5)
+    monkeypatch.setattr(mcp_server, "_sync_verify_poll_seconds", 0.05)
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir, cli_overrides=None: {
+            "runtime": {"accel_home": str(tmp_path / ".accel-home")}
+        },
+    )
+
+    expected = {
+        "status": "success",
+        "exit_code": 0,
+        "nonce": "fast_nonce",
+        "log_path": str(tmp_path / "verify_fast.log"),
+        "jsonl_path": str(tmp_path / "verify_fast.jsonl"),
+        "commands": [],
+        "results": [],
+        "degraded": False,
+        "fail_fast": False,
+        "fail_fast_skipped_commands": [],
+        "cache_enabled": False,
+        "cache_hits": 0,
+        "cache_misses": 0,
+    }
+
+    def fake_run_verify_with_callback(project_dir, config, changed_files=None, callback=None):
+        return dict(expected)
+
+    monkeypatch.setattr(mcp_server, "run_verify_with_callback", fake_run_verify_with_callback)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    verify_fn = tools["accel_verify"].fn
+    result = verify_fn(project=str(project_dir))
+
+    assert result["status"] == "success"
+    assert int(result["exit_code"]) == 0
+    assert result["nonce"] == "fast_nonce"
+    assert "job_id" in result

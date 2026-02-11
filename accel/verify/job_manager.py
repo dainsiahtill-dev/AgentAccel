@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import threading
 import time
 from collections import deque
@@ -42,10 +41,13 @@ class VerifyJob:
     result: dict[str, Any] | None = None
     _events: deque[dict] = field(default_factory=deque, repr=False)
     _event_seq: int = field(default=0, repr=False)
+    _start_perf_counter: float | None = field(default=None, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def to_status(self) -> dict[str, Any]:
         with self._lock:
+            if self.state in (JobState.RUNNING, JobState.CANCELLING) and self._start_perf_counter is not None:
+                self.elapsed_sec = max(0.0, time.perf_counter() - self._start_perf_counter)
             return {
                 "job_id": self.job_id,
                 "state": self.state,
@@ -84,8 +86,8 @@ class VerifyJob:
             self.current_command = current_command
             if total > 0:
                 self.progress = (completed / total) * 100.0
-            if completed > 0 and self.start_time:
-                elapsed = time.perf_counter() - self.start_time.timestamp()
+            if completed > 0 and self._start_perf_counter is not None:
+                elapsed = time.perf_counter() - self._start_perf_counter
                 avg_time = elapsed / completed
                 remaining = total - completed
                 self.eta_sec = avg_time * remaining
@@ -97,6 +99,7 @@ class VerifyJob:
             self.stage = stage
             if self.start_time is None:
                 self.start_time = datetime.now(timezone.utc)
+                self._start_perf_counter = time.perf_counter()
                 self.elapsed_sec = 0.0
 
     def mark_completed(self, status: str, exit_code: int, result: dict[str, Any] | None = None) -> None:

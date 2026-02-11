@@ -29,12 +29,16 @@ TOOL_ERROR_EXECUTION_FAILED = "ACCEL_TOOL_EXECUTION_FAILED"
 
 # Debug logging setup
 _debug_enabled = os.environ.get("ACCEL_MCP_DEBUG", "").lower() in {"1", "true", "yes"}
-_debug_log: logging.Logger | None = None
+_debug_logger: logging.Logger | None = None
 
 # Global server timeout protection
 _server_start_time = 0
 _server_max_runtime = int(os.environ.get("ACCEL_MCP_MAX_RUNTIME", "3600"))  # 1 hour default
 _shutdown_requested = False
+
+# Keep sync verify bounded so a single call cannot monopolize MCP request handling.
+_sync_verify_wait_seconds = int(os.environ.get("ACCEL_MCP_SYNC_VERIFY_WAIT_SECONDS", "45"))
+_sync_verify_poll_seconds = float(os.environ.get("ACCEL_MCP_SYNC_VERIFY_POLL_SECONDS", "0.2"))
 
 def _signal_handler(signum: int, frame) -> None:
     """Handle shutdown signals gracefully."""
@@ -88,10 +92,86 @@ def _setup_debug_log() -> logging.Logger:
 def _debug_log(message: str) -> None:
     """Log debug message if debugging is enabled."""
     if _debug_enabled:
-        global _debug_log
-        if _debug_log is None:
-            _debug_log = _setup_debug_log()
-        _debug_log.debug(message)
+        global _debug_logger
+        if _debug_logger is None:
+            _debug_logger = _setup_debug_log()
+        _debug_logger.debug(message)
+
+
+def _effective_sync_verify_wait_seconds() -> int:
+    return max(1, min(50, int(_sync_verify_wait_seconds)))
+
+
+def _effective_sync_verify_poll_seconds() -> float:
+    return max(0.05, float(_sync_verify_poll_seconds))
+
+
+def _wait_for_verify_job_result(
+    job_id: str,
+    *,
+    max_wait_seconds: float,
+    poll_seconds: float,
+) -> JSONDict | None:
+    jm = JobManager()
+    deadline = time.perf_counter() + max(0.0, max_wait_seconds)
+    poll = max(0.05, poll_seconds)
+
+    while True:
+        job = jm.get_job(job_id)
+        if job is None:
+            return {
+                "status": "failed",
+                "exit_code": 1,
+                "job_id": job_id,
+                "error": "job_not_found",
+            }
+
+        if job.state == JobState.COMPLETED:
+            if isinstance(job.result, dict) and job.result:
+                payload = dict(job.result)
+            else:
+                payload = {"status": "success", "exit_code": 0}
+            payload.setdefault("job_id", job_id)
+            return payload
+
+        if job.state == JobState.FAILED:
+            return {
+                "status": "failed",
+                "exit_code": 1,
+                "job_id": job_id,
+                "error": str(job.error or "verify job failed"),
+            }
+
+        if job.state == JobState.CANCELLED:
+            return {
+                "status": "cancelled",
+                "exit_code": 130,
+                "job_id": job_id,
+            }
+
+        if time.perf_counter() >= deadline:
+            return None
+        time.sleep(poll)
+
+
+def _sync_verify_timeout_payload(job_id: str, wait_seconds: float) -> JSONDict:
+    jm = JobManager()
+    job = jm.get_job(job_id)
+    status = job.to_status() if job is not None else {}
+    return {
+        "status": "running",
+        "exit_code": 124,
+        "timed_out": True,
+        "job_id": job_id,
+        "message": (
+            f"accel_verify exceeded synchronous wait window ({wait_seconds:.1f}s); "
+            "use accel_verify_status/accel_verify_events to continue polling."
+        ),
+        "state": status.get("state", "running"),
+        "stage": status.get("stage", "running"),
+        "progress": status.get("progress", 0.0),
+        "elapsed_sec": status.get("elapsed_sec", 0.0),
+    }
 
 def _with_timeout(func, timeout_seconds: int = 300):
     """Wrapper to add timeout to MCP tool functions."""
@@ -366,6 +446,95 @@ def create_server() -> FastMCP:
             _debug_log(f"accel_context failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
 
+    def _start_verify_job(
+        *,
+        project: str = ".",
+        changed_files: list[str] | str | None = None,
+        evidence_run: bool = False,
+        fast_loop: bool = False,
+        verify_workers: int | None = None,
+        per_command_timeout_seconds: int | None = None,
+        verify_fail_fast: bool | str | None = None,
+        verify_cache_enabled: bool | str | None = None,
+        verify_cache_ttl_seconds: int | None = None,
+        verify_cache_max_entries: int | None = None,
+    ) -> VerifyJob:
+        if isinstance(changed_files, str):
+            changed_files = [f.strip() for f in changed_files.split(",") if f.strip()]
+
+        def _to_bool(value: bool | str | None, default: bool = False) -> bool:
+            if value is None:
+                return default
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.lower() not in {"false", "0", "no", "off", ""}
+            return bool(value)
+
+        evidence_run_normalized = _to_bool(evidence_run, False)
+        fast_loop_normalized = _to_bool(fast_loop, False)
+        verify_fail_fast_normalized = _to_bool(verify_fail_fast, None)
+        verify_cache_enabled_normalized = _to_bool(verify_cache_enabled, None)
+
+        _debug_log(f"_start_verify_job called: project={project}, changed_files={len(changed_files or [])}")
+        project_dir = _normalize_project_dir(project)
+
+        runtime_overrides: JSONDict = {}
+        if verify_workers is not None:
+            runtime_overrides["verify_workers"] = int(verify_workers)
+        if per_command_timeout_seconds is not None:
+            runtime_overrides["per_command_timeout_seconds"] = int(per_command_timeout_seconds)
+        if verify_cache_ttl_seconds is not None:
+            runtime_overrides["verify_cache_ttl_seconds"] = int(verify_cache_ttl_seconds)
+        if verify_cache_max_entries is not None:
+            runtime_overrides["verify_cache_max_entries"] = int(verify_cache_max_entries)
+
+        if evidence_run_normalized and not fast_loop_normalized:
+            runtime_overrides["verify_fail_fast"] = False
+            runtime_overrides["verify_cache_enabled"] = False
+        elif fast_loop_normalized and not evidence_run_normalized:
+            runtime_overrides["verify_fail_fast"] = True
+            runtime_overrides["verify_cache_enabled"] = True
+
+        if verify_fail_fast_normalized is not None:
+            runtime_overrides["verify_fail_fast"] = bool(verify_fail_fast_normalized)
+        if verify_cache_enabled_normalized is not None:
+            runtime_overrides["verify_cache_enabled"] = bool(verify_cache_enabled_normalized)
+
+        cli_overrides = {"runtime": runtime_overrides} if runtime_overrides else None
+        config = resolve_effective_config(project_dir, cli_overrides=cli_overrides)
+
+        jm = JobManager()
+        job = jm.create_job()
+
+        def _run_verify_thread(job_id: str, project_dir: Path, config: dict[str, Any], changed_files: list[str] | None) -> None:
+            j = jm.get_job(job_id)
+            if j is None:
+                return
+            try:
+                j.mark_running("running")
+                callback = _JobCallback(j)
+                result = run_verify_with_callback(
+                    project_dir=project_dir,
+                    config=config,
+                    changed_files=changed_files,
+                    callback=callback,
+                )
+                j.mark_completed(result.get("status", "unknown"), result.get("exit_code", 1), result)
+            except Exception as exc:
+                j.mark_failed(str(exc))
+                j.add_event("job_failed", {"error": str(exc)})
+
+        import threading
+
+        thread = threading.Thread(
+            target=_run_verify_thread,
+            args=(job.job_id, project_dir, config, _to_string_list(changed_files)),
+            daemon=True,
+        )
+        thread.start()
+        return job
+
     @server.tool(
         name="accel_verify",
         description="Run incremental verification with runtime override options.",
@@ -381,9 +550,12 @@ def create_server() -> FastMCP:
         verify_cache_enabled: bool | str | None = None,
         verify_cache_ttl_seconds: int | None = None,
         verify_cache_max_entries: int | None = None,
+        wait_for_completion: bool | str = False,
+        sync_wait_seconds: int | None = None,
     ) -> JSONDict:
         try:
-            return _with_timeout(_tool_verify, timeout_seconds=600)(
+            wait_flag = str(wait_for_completion).strip().lower() not in {"", "0", "false", "no", "off"}
+            job = _start_verify_job(
                 project=project,
                 changed_files=changed_files,
                 evidence_run=evidence_run,
@@ -395,6 +567,32 @@ def create_server() -> FastMCP:
                 verify_cache_ttl_seconds=verify_cache_ttl_seconds,
                 verify_cache_max_entries=verify_cache_max_entries,
             )
+            job_id = str(job.job_id).strip()
+
+            if not wait_flag:
+                status_payload = job.to_status()
+                return {
+                    "status": "started",
+                    "exit_code": 0,
+                    "job_id": job_id,
+                    "message": "Verification started asynchronously. Use accel_verify_status/events for live progress.",
+                    "state": status_payload.get("state", "pending"),
+                    "stage": status_payload.get("stage", "init"),
+                    "progress": status_payload.get("progress", 0.0),
+                    "elapsed_sec": status_payload.get("elapsed_sec", 0.0),
+                }
+
+            wait_seconds = float(sync_wait_seconds if sync_wait_seconds is not None else _effective_sync_verify_wait_seconds())
+            wait_seconds = max(1.0, min(55.0, wait_seconds))
+            result = _wait_for_verify_job_result(
+                job_id,
+                max_wait_seconds=wait_seconds,
+                poll_seconds=_effective_sync_verify_poll_seconds(),
+            )
+            if result is None:
+                _debug_log(f"accel_verify sync wait timeout for job_id={job_id}")
+                return _sync_verify_timeout_payload(job_id, wait_seconds)
+            return result
         except Exception as exc:
             _debug_log(f"accel_verify failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
@@ -456,80 +654,18 @@ def create_server() -> FastMCP:
         verify_cache_max_entries: int | None = None,
     ) -> JSONDict:
         try:
-            if isinstance(changed_files, str):
-                changed_files = [f.strip() for f in changed_files.split(",") if f.strip()]
-
-            def _to_bool(value: bool | str | None, default: bool = False) -> bool:
-                if value is None:
-                    return default
-                if isinstance(value, bool):
-                    return value
-                if isinstance(value, str):
-                    return value.lower() not in {"false", "0", "no", "off", ""}
-                return bool(value)
-
-            evidence_run = _to_bool(evidence_run, False)
-            fast_loop = _to_bool(fast_loop, False)
-            verify_fail_fast = _to_bool(verify_fail_fast, None)
-            verify_cache_enabled = _to_bool(verify_cache_enabled, None)
-
-            _debug_log(f"accel_verify_start called: project={project}, changed_files={len(changed_files or [])}")
-            project_dir = _normalize_project_dir(project)
-
-            runtime_overrides: JSONDict = {}
-            if verify_workers is not None:
-                runtime_overrides["verify_workers"] = int(verify_workers)
-            if per_command_timeout_seconds is not None:
-                runtime_overrides["per_command_timeout_seconds"] = int(per_command_timeout_seconds)
-            if verify_cache_ttl_seconds is not None:
-                runtime_overrides["verify_cache_ttl_seconds"] = int(verify_cache_ttl_seconds)
-            if verify_cache_max_entries is not None:
-                runtime_overrides["verify_cache_max_entries"] = int(verify_cache_max_entries)
-
-            if evidence_run and not fast_loop:
-                runtime_overrides["verify_fail_fast"] = False
-                runtime_overrides["verify_cache_enabled"] = False
-            elif fast_loop and not evidence_run:
-                runtime_overrides["verify_fail_fast"] = True
-                runtime_overrides["verify_cache_enabled"] = True
-
-            if verify_fail_fast is not None:
-                runtime_overrides["verify_fail_fast"] = bool(verify_fail_fast)
-            if verify_cache_enabled is not None:
-                runtime_overrides["verify_cache_enabled"] = bool(verify_cache_enabled)
-
-            cli_overrides = {"runtime": runtime_overrides} if runtime_overrides else None
-            config = resolve_effective_config(project_dir, cli_overrides=cli_overrides)
-
-            jm = JobManager()
-            job = jm.create_job()
-
-            def _run_verify_thread(job_id: str, project_dir: Path, config: dict[str, Any], changed_files: list[str] | None) -> None:
-                j = jm.get_job(job_id)
-                if j is None:
-                    return
-                try:
-                    j.mark_running("running")
-                    callback = _JobCallback(j)
-                    result = run_verify_with_callback(
-                        project_dir=project_dir,
-                        config=config,
-                        changed_files=changed_files,
-                        callback=callback,
-                    )
-                    j.mark_completed(result.get("status", "unknown"), result.get("exit_code", 1), result)
-                except Exception as exc:
-                    j.mark_failed(str(exc))
-                    j.add_event("job_failed", {"error": str(exc)})
-
-            import threading
-            thread = threading.Thread(
-                target=_run_verify_thread,
-                args=(job.job_id, project_dir, config, _to_string_list(changed_files)),
-                daemon=True,
+            job = _start_verify_job(
+                project=project,
+                changed_files=changed_files,
+                evidence_run=evidence_run,
+                fast_loop=fast_loop,
+                verify_workers=verify_workers,
+                per_command_timeout_seconds=per_command_timeout_seconds,
+                verify_fail_fast=verify_fail_fast,
+                verify_cache_enabled=verify_cache_enabled,
+                verify_cache_ttl_seconds=verify_cache_ttl_seconds,
+                verify_cache_max_entries=verify_cache_max_entries,
             )
-            thread.start()
-
             _debug_log(f"accel_verify_start created job: {job.job_id}")
             return {"job_id": job.job_id, "status": "started"}
 
@@ -661,7 +797,7 @@ def main() -> None:
     
     if _debug_enabled:
         _debug_log(f"Starting agent-accel MCP server with args: {vars(args)}")
-        print(f"agent-accel MCP debug mode enabled. Logs will be written to ~/.accel/logs/", file=sys.stderr)
+        print("agent-accel MCP debug mode enabled. Logs will be written to ~/.accel/logs/", file=sys.stderr)
         print(f"Server max runtime: {_server_max_runtime}s", file=sys.stderr)
     
     server = create_server()
