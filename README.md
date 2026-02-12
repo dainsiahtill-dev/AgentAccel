@@ -261,6 +261,7 @@ Generate a budgeted context pack for a task.
   - `vs_full_index`
   - `vs_changed_files`
   - `vs_snippets_only`
+  - note: baseline ratios can be negative when context is larger than the selected baseline
 - `fallback_confidence`: confidence score for non-user changed-files inference (especially planner/index fallback)
 - `output_mode`: `full` | `snippets_only`
 - `selected_tests_count`: number of tests selected in `verify_plan.target_tests`

@@ -1083,6 +1083,54 @@ def test_tool_context_exposes_fallback_confidence_and_token_reduction_baselines(
     assert any("low" in str(item).lower() for item in warnings)
 
 
+def test_tool_context_token_reduction_vs_snippets_only_can_be_negative(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_token_reduction_negative_project"
+    (project_dir / "src").mkdir(parents=True)
+    (project_dir / "src" / "a.py").write_text("print('hello')\n", encoding="utf-8")
+    out_path = project_dir / "context_token_reduction_negative.json"
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {"runtime": {"accel_home": str(tmp_path / ".accel-home")}},
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "_discover_changed_files_from_git",
+        lambda project_dir, limit=200: ["src/a.py"],
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "compile_context_pack",
+        lambda **kwargs: {
+            "version": 1,
+            "task": str(kwargs.get("task", "")),
+            "generated_at": "2026-02-12T00:00:00+00:00",
+            "budget": {"max_chars": 6000, "max_snippets": 16, "top_n_files": 6},
+            "top_files": [{"path": "src/a.py", "score": 1.0, "reasons": ["changed_file"], "signals": []}],
+            "snippets": [{"path": "src/a.py", "content": "print('hello')", "start_line": 1, "end_line": 1}],
+            "verify_plan": {"target_tests": [], "target_checks": ["pytest -q"]},
+            "meta": {"source_chars_est": 9000},
+        },
+    )
+
+    result = mcp_server._tool_context(
+        project=str(project_dir),
+        task="ensure snippets-only baseline regression remains visible",
+        out=str(out_path),
+    )
+
+    token_reduction = result.get("token_reduction", {})
+    assert isinstance(token_reduction, dict)
+    snippets_only = token_reduction.get("vs_snippets_only", {})
+    assert isinstance(snippets_only, dict)
+    assert int(snippets_only.get("context_tokens", 0)) > int(
+        snippets_only.get("baseline_tokens", 0)
+    )
+    assert float(snippets_only.get("ratio", 0.0)) < 0.0
+    assert float(result.get("token_reduction_ratio_vs_snippets_only", 0.0)) < 0.0
+
+
 def test_tool_context_snippets_only_and_include_metadata_controls_output(tmp_path: Path, monkeypatch) -> None:
     project_dir = tmp_path / "context_snippets_only_project"
     project_dir.mkdir(parents=True)

@@ -17,7 +17,8 @@ def _token_reduction_ratio(context_tokens: int, baseline_tokens: int) -> float:
     if baseline <= 0:
         return 0.0
     ratio = 1.0 - (float(max(0, int(context_tokens))) / float(baseline))
-    return _clamp_float(ratio, 0.0, 1.0)
+    # Keep regression visible: when context_tokens > baseline_tokens, ratio becomes negative.
+    return min(1.0, float(ratio))
 
 
 def _estimate_changed_files_chars(
