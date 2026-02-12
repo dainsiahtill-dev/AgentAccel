@@ -19,8 +19,9 @@ Contracts are enforced by `accel/schema/contracts.py` in `off | warn | strict` m
   - `$schema`
   - `$id`
   - top-level `title`
-- Runtime payloads should carry a contract version field when applicable:
-  - `context_pack.version` for pack payloads
+- Runtime payloads must carry a contract version field when applicable:
+  - `context_pack.version` and `context_pack.schema_version`
+  - MCP `accel_context` response `schema_version`
   - benchmark output `schema_version` for benchmark reports
 
 ## Change Types
@@ -49,6 +50,14 @@ Contracts are enforced by `accel/schema/contracts.py` in `off | warn | strict` m
 
 - Minimum support window for previous schema major: one minor release.
 - Deprecation must be announced in release notes before removal.
+
+## Current Contract Baseline
+
+- `context_pack.schema.json`:
+  - `version` is required.
+  - `schema_version` is optional but emitted by runtime payloads (`1`).
+- `mcp_context_response.schema.json`:
+  - `schema_version` is required and validated in strict mode.
 
 ## CI and Verification Expectations
 

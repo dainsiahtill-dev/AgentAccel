@@ -73,7 +73,10 @@ AI coding agents often waste tokens on:
 |---------|-------------|
 | **📁 Incremental Indexing** | Symbols, references, dependencies, and test ownership tracking |
 | **📦 Context Pack Generation** | Budget-constrained `context_pack.json` for AI consumption |
+| **🔎 Explainability (`accel explain`)** | Score breakdown for selected files and near-miss alternatives |
 | **✅ Verification Orchestration** | Incremental test/lint/typecheck with smart sharding |
+| **🧠 Verify Selection Evidence** | Machine-readable rationale for baseline vs accelerated checks |
+| **🧩 Language Profile Registry** | Profile-driven extension/verify-group mapping (built-in + custom) |
 | **🔌 MCP Server** | FastMCP-based service layer with stdio transport |
 | **🪝 CLI Hooks** | Pre/post execution hooks for agent integration |
 
@@ -279,6 +282,7 @@ Generate a budgeted context pack for a task.
 - `changed_files_source`: `user` | `git_auto` | `manifest_recent` | `planner_fallback` | `index_head_fallback` | `none`
 - `token_estimator`: backend/model/encoding/calibration metadata used for estimation
 - `out_meta`: sidecar metadata file path (`*.meta.json`) containing estimator/baseline/source/audit fields
+- `schema_version`: context response contract version marker
 
 #### `accel_verify`
 
@@ -332,6 +336,7 @@ Start incremental verification with runtime override options.
 - `fast_loop=true` now defaults `verify_cache_failed_results=true` unless explicitly overridden, reducing repeat-failure cost in rapid loops.
 - Failure outputs include `failure_kind` (`project_gate_failed` | `executor_failed` | `mixed_failed`) for clearer diagnosis.
 - If verify plan resolves to zero commands, status is `degraded` (not `success`) with explicit `DEGRADE_REASON` to avoid false-positive green results.
+- Verify result payload includes `verify_selection_evidence` (baseline layer vs incremental acceleration layer).
 
 #### `accel_verify_events` (compact recommendations)
 
@@ -377,6 +382,7 @@ Tokenizer estimation runtime knobs (via `accel.local.yaml` runtime or env):
 - `sync_verify_timeout_action`: `poll` | `cancel` (default `poll`)
 - `sync_verify_cancel_grace_seconds`: grace period after auto-cancel request (default `5.0`)
 - `sync_context_timeout_action`: `fallback_async` | `cancel` (default `fallback_async`)
+- `max_workers` / `verify_workers` / `index_workers`: support `auto` (CPU-aware defaults, explicit values still override)
 
 ### Running MCP Server
 
@@ -420,6 +426,7 @@ The `context_pack.json` is designed for direct AI consumption:
 ```json
 {
   "version": 1,
+  "schema_version": 1,
   "task": "Fix authentication bug in login module",
   "budget": {
     "max_chars": 24000,
@@ -448,7 +455,22 @@ The `context_pack.json` is designed for direct AI consumption:
   ],
   "verify_plan": {
     "target_tests": ["tests/test_auth.py", "tests/test_login.py"],
-    "target_checks": ["pytest -q tests/test_auth.py", "mypy src/auth.py"]
+    "target_checks": ["pytest -q tests/test_auth.py", "mypy src/auth.py"],
+    "selection_evidence": {
+      "run_all": false,
+      "enabled_verify_groups": ["python"],
+      "changed_verify_groups": ["python"],
+      "layers": [
+        {
+          "layer": "safety_baseline",
+          "commands": ["python -m pytest -q", "python -m mypy ."]
+        },
+        {
+          "layer": "incremental_acceleration",
+          "targeted_tests": ["tests/test_auth.py"]
+        }
+      ]
+    }
   }
 }
 ```
@@ -470,6 +492,10 @@ The `context_pack.json` is designed for direct AI consumption:
   "version": 1,
   "project_id": "my_project",
   "language_profiles": ["python", "typescript"],
+  "language_profile_registry": {
+    "python": { "extensions": [".py"], "verify_group": "python" },
+    "typescript": { "extensions": [".ts", ".tsx", ".js", ".jsx"], "verify_group": "node" }
+  },
   "index": {
     "scope_mode": "auto",
     "include": ["src/**", "tests/**"],
@@ -502,9 +528,9 @@ The `context_pack.json` is designed for direct AI consumption:
 ```json
 {
   "runtime": {
-    "max_workers": 12,
-    "verify_workers": 12,
-    "index_workers": 96,
+    "max_workers": "auto",
+    "verify_workers": "auto",
+    "index_workers": "auto",
     "verify_fail_fast": false,
     "verify_cache_enabled": true,
     "verify_cache_ttl_seconds": 900,
@@ -636,6 +662,19 @@ accel verify \
   [--fail-fast]
 ```
 
+#### `explain`
+
+Explain context ranking decisions and near-miss files.
+
+```bash
+accel explain \
+  --task "Refactor auth session cache" \
+  --changed-files accel/query/context_compiler.py tests/unit/test_context_compiler.py \
+  --top-n-files 12 \
+  --alternatives 8 \
+  --output json
+```
+
 #### `doctor`
 
 Run diagnostics and health checks.
@@ -694,7 +733,8 @@ python scripts/run_benchmarks.py \
   --project . \
   --tasks examples/benchmarks/tasks.sample.json \
   --index-mode update \
-  --out examples/benchmarks/results_local.json
+  --out examples/benchmarks/results_local.json \
+  --out-md examples/benchmarks/results_local.md
 ```
 
 Optional verify metrics:
@@ -705,7 +745,8 @@ python scripts/run_benchmarks.py \
   --tasks examples/benchmarks/tasks.sample.json \
   --index-mode update \
   --run-verify \
-  --out examples/benchmarks/results_with_verify.json
+  --out examples/benchmarks/results_with_verify.json \
+  --out-md examples/benchmarks/results_with_verify.md
 ```
 
 ### Metrics
@@ -719,6 +760,8 @@ python scripts/run_benchmarks.py \
 - Latency metrics:
   - `context_build_seconds`
   - `verify_seconds` (if `--run-verify`)
+
+The repository also ships a manual GitHub Actions workflow at `.github/workflows/benchmark-harness.yml` that runs the same harness and uploads JSON/Markdown artifacts.
 
 Benchmark details are documented in `examples/benchmarks/README.md`.
 
@@ -740,6 +783,8 @@ Contract enforcement modes:
 - `strict`: fail fast on schema violations
 
 Versioning and breaking-change policy is documented in `docs/schema_versioning.md`.
+
+Release notes are tracked in `CHANGELOG.md`.
 
 ---
 

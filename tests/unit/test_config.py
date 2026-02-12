@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from accel.config import init_project, resolve_effective_config
@@ -88,3 +89,26 @@ def test_constraint_mode_alias_normalization(tmp_path: Path, monkeypatch) -> Non
 
     cfg = resolve_effective_config(tmp_path)
     assert str(cfg["runtime"]["constraint_mode"]) == "strict"
+
+
+def test_runtime_worker_defaults_support_auto(tmp_path: Path) -> None:
+    init_project(tmp_path)
+    local_cfg = {
+        "runtime": {
+            "max_workers": "auto",
+            "verify_workers": "auto",
+            "index_workers": "auto",
+        }
+    }
+    (tmp_path / "accel.local.yaml").write_text(
+        json.dumps(local_cfg, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    cfg = resolve_effective_config(tmp_path)
+    cpu_count = max(1, int(os.cpu_count() or 1))
+    assert int(cfg["runtime"]["max_workers"]) >= 1
+    assert int(cfg["runtime"]["verify_workers"]) >= 1
+    assert int(cfg["runtime"]["index_workers"]) >= 1
+    assert int(cfg["runtime"]["max_workers"]) <= min(12, cpu_count)
+    assert int(cfg["runtime"]["index_workers"]) <= min(96, cpu_count)

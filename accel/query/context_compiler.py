@@ -6,6 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..language_profiles import (
+    resolve_enabled_verify_groups,
+    resolve_extension_verify_group_map,
+)
 from .planner import build_candidate_files, normalize_task_tokens
 from .ranker import score_file
 from .rule_compressor import compress_snippet_content
@@ -50,10 +54,11 @@ def _snippet_fingerprint(content: str) -> str:
 
 
 def _build_verify_plan(
+    config: dict[str, Any],
     top_files: list[dict[str, Any]],
     test_ownership_rows: list[dict[str, Any]],
     changed_files: list[str],
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
     selected_files = {item["path"] for item in top_files}
     target_tests: list[str] = []
     seen_tests: set[str] = set()
@@ -64,14 +69,184 @@ def _build_verify_plan(
             seen_tests.add(test_file)
             target_tests.append(test_file)
 
+    verify_cfg = config.get("verify", {})
+    extension_group_map = resolve_extension_verify_group_map(config)
+    enabled_groups = resolve_enabled_verify_groups(config)
+    if not enabled_groups:
+        enabled_groups = [
+            str(group).strip().lower()
+            for group, commands in dict(verify_cfg).items()
+            if isinstance(commands, list)
+        ]
+
     changed = [item.lower() for item in changed_files]
+    run_all = len(changed) == 0
+    changed_groups: set[str] = set()
+    for item in changed:
+        suffix = Path(item).suffix
+        if not suffix:
+            continue
+        group = str(extension_group_map.get(suffix, "")).strip().lower()
+        if group:
+            changed_groups.add(group)
+
     checks: list[str] = []
-    if not changed or any(item.endswith(".py") for item in changed):
-        checks.append("pytest -q")
-        checks.append("mypy .")
-    if not changed or any(item.endswith((".ts", ".tsx", ".js", ".jsx")) for item in changed):
-        checks.append("npm run typecheck")
-    return {"target_tests": target_tests[:20], "target_checks": checks}
+    for group, group_checks in dict(verify_cfg).items():
+        group_name = str(group).strip().lower()
+        if group_name not in enabled_groups:
+            continue
+        if not run_all and group_name not in changed_groups:
+            continue
+        if isinstance(group_checks, list):
+            for command in group_checks:
+                command_text = str(command).strip()
+                if command_text and command_text not in checks:
+                    checks.append(command_text)
+
+    selection_evidence: dict[str, Any] = {
+        "run_all": bool(run_all),
+        "enabled_verify_groups": list(enabled_groups),
+        "changed_verify_groups": sorted(changed_groups),
+        "targeted_tests_count": int(min(20, len(target_tests))),
+        "target_checks_count": int(len(checks)),
+        "layers": [
+            {
+                "layer": "safety_baseline",
+                "reason": "run_all" if run_all else "changed_verify_groups_match",
+                "commands": list(checks),
+            },
+            {
+                "layer": "incremental_acceleration",
+                "targeted_tests": list(target_tests[:20]),
+            },
+        ],
+    }
+    return {
+        "target_tests": target_tests[:20],
+        "target_checks": checks,
+        "selection_evidence": selection_evidence,
+    }
+
+
+def _rank_candidate_files(
+    *,
+    manifest: dict[str, Any],
+    changed_files: list[str],
+    hints: list[str] | None,
+    task: str,
+    symbols_by_file: dict[str, list[dict[str, Any]]],
+    references_by_file: dict[str, list[dict[str, Any]]],
+    deps_by_file: dict[str, list[dict[str, Any]]],
+    tests_by_file: dict[str, list[dict[str, Any]]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    task_tokens = normalize_task_tokens(task)
+    candidate_files = build_candidate_files(
+        list(manifest.get("indexed_files", [])),
+        changed_files=changed_files,
+    )
+    changed_set = set(changed_files)
+    ranked = [
+        score_file(
+            file_path=file_path,
+            task_tokens=task_tokens,
+            symbols_by_file=symbols_by_file,
+            references_by_file=references_by_file,
+            deps_by_file=deps_by_file,
+            tests_by_file=tests_by_file,
+            changed_file_set=changed_set,
+        )
+        for file_path in candidate_files
+    ]
+    ranked.sort(key=lambda item: (-float(item["score"]), str(item["path"])))
+
+    if hints:
+        hints_low = [str(hint).lower() for hint in hints]
+        for item in ranked:
+            path_low = str(item.get("path", "")).lower()
+            if any(hint in path_low for hint in hints_low):
+                item["score"] = round(float(item["score"]) + 0.05, 6)
+                item["reasons"] = list(
+                    dict.fromkeys(list(item.get("reasons", [])) + ["hint_match"])
+                )
+        ranked.sort(key=lambda item: (-float(item["score"]), str(item["path"])))
+
+    return ranked, task_tokens
+
+
+def explain_context_selection(
+    *,
+    project_dir: Path,
+    config: dict[str, Any],
+    task: str,
+    changed_files: list[str] | None = None,
+    hints: list[str] | None = None,
+    top_n_files: int | None = None,
+    alternatives: int = 5,
+) -> dict[str, Any]:
+    changed_files = [item.replace("\\", "/") for item in (changed_files or [])]
+    accel_home = Path(config["runtime"]["accel_home"]).resolve()
+    paths = project_paths(accel_home, project_dir)
+    index_dir = paths["index"]
+    manifest_path = index_dir / "manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError("Index manifest is missing. Run `accel index build` first.")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    symbols_rows = load_index_rows(index_dir=index_dir, kind="symbols", key_field="file")
+    references_rows = load_index_rows(index_dir=index_dir, kind="references", key_field="file")
+    deps_rows = load_index_rows(index_dir=index_dir, kind="dependencies", key_field="edge_from")
+    ownership_rows = load_index_rows(index_dir=index_dir, kind="test_ownership", key_field="owns_file")
+
+    symbols_by_file = _group_by_file(symbols_rows, "file")
+    references_by_file = _group_by_file(references_rows, "file")
+    deps_by_file = _group_by_file(deps_rows, "edge_from")
+    tests_by_file = _group_by_file(ownership_rows, "owns_file")
+
+    ranked, task_tokens = _rank_candidate_files(
+        manifest=manifest,
+        changed_files=changed_files,
+        hints=hints,
+        task=task,
+        symbols_by_file=symbols_by_file,
+        references_by_file=references_by_file,
+        deps_by_file=deps_by_file,
+        tests_by_file=tests_by_file,
+    )
+
+    context_cfg = dict(config.get("context", {}))
+    top_n = int(top_n_files if top_n_files is not None else context_cfg.get("top_n_files", 12))
+    top_n = max(1, top_n)
+    alternatives_count = max(0, int(alternatives))
+
+    selected = ranked[:top_n]
+    alternative_rows = ranked[top_n : top_n + alternatives_count]
+    threshold_score = float(selected[-1]["score"]) if selected else 0.0
+
+    alternatives_enriched: list[dict[str, Any]] = []
+    for row in alternative_rows:
+        gap = round(threshold_score - float(row.get("score", 0.0)), 6)
+        alternatives_enriched.append(
+            {
+                **dict(row),
+                "score_gap_to_threshold": gap,
+            }
+        )
+
+    return {
+        "version": 1,
+        "schema_version": 1,
+        "task": task,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "changed_files": changed_files,
+        "hints": list(hints or []),
+        "task_tokens": task_tokens,
+        "top_n_files": top_n,
+        "candidate_count": int(len(ranked)),
+        "selected_count": int(len(selected)),
+        "threshold_score": round(float(threshold_score), 6),
+        "selected": selected,
+        "alternatives": alternatives_enriched,
+    }
 
 
 def compile_context_pack(
@@ -118,35 +293,16 @@ def compile_context_pack(
         )
     )
 
-    task_tokens = normalize_task_tokens(task)
-    candidate_files = build_candidate_files(
-        list(manifest.get("indexed_files", [])),
+    ranked, task_tokens = _rank_candidate_files(
+        manifest=manifest,
         changed_files=changed_files,
+        hints=hints,
+        task=task,
+        symbols_by_file=symbols_by_file,
+        references_by_file=references_by_file,
+        deps_by_file=deps_by_file,
+        tests_by_file=tests_by_file,
     )
-    changed_set = set(changed_files)
-
-    ranked = [
-        score_file(
-            file_path=file_path,
-            task_tokens=task_tokens,
-            symbols_by_file=symbols_by_file,
-            references_by_file=references_by_file,
-            deps_by_file=deps_by_file,
-            tests_by_file=tests_by_file,
-            changed_file_set=changed_set,
-        )
-        for file_path in candidate_files
-    ]
-    ranked.sort(key=lambda item: (-float(item["score"]), str(item["path"])))
-
-    if hints:
-        hints_low = [hint.lower() for hint in hints]
-        for item in ranked:
-            path_low = item["path"].lower()
-            if any(hint in path_low for hint in hints_low):
-                item["score"] = round(float(item["score"]) + 0.05, 6)
-                item["reasons"] = list(dict.fromkeys(item["reasons"] + ["hint_match"]))
-        ranked.sort(key=lambda item: (-float(item["score"]), str(item["path"])))
 
     top_files = ranked[:top_n_files]
 
@@ -204,7 +360,7 @@ def compile_context_pack(
         if len(snippets) >= max_snippets:
             break
 
-    verify_plan = _build_verify_plan(top_files, ownership_rows, changed_files)
+    verify_plan = _build_verify_plan(config, top_files, ownership_rows, changed_files)
     counts = dict(manifest.get("counts", {}))
     source_bytes = int(counts.get("source_bytes", 0))
     source_chars_est = int(counts.get("source_chars_est", 0))
@@ -223,6 +379,7 @@ def compile_context_pack(
 
     pack: dict[str, Any] = {
         "version": 1,
+        "schema_version": 1,
         "task": task,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "budget": budget,

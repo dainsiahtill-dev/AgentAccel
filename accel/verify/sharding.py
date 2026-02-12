@@ -5,6 +5,10 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from ..language_profiles import (
+    resolve_enabled_verify_groups,
+    resolve_extension_verify_group_map,
+)
 from ..storage.cache import project_paths
 from ..storage.index_cache import load_index_rows
 from ..storage.semantic_cache import (
@@ -165,6 +169,8 @@ def _verify_config_hash(config: dict[str, Any]) -> str:
     payload = {
         "verify": config.get("verify", {}),
         "index": config.get("index", {}),
+        "language_profiles": config.get("language_profiles", []),
+        "language_profile_registry": config.get("language_profile_registry", {}),
     }
     return make_stable_hash(payload)
 
@@ -402,19 +408,102 @@ def _with_targeted_pytests_shards(
     return commands
 
 
+def _collect_changed_verify_groups(
+    changed_files: list[str],
+    extension_group_map: dict[str, str],
+) -> set[str]:
+    groups: set[str] = set()
+    for item in changed_files:
+        suffix = Path(str(item).strip().lower()).suffix
+        if not suffix:
+            continue
+        group = str(extension_group_map.get(suffix, "")).strip().lower()
+        if group:
+            groups.add(group)
+    return groups
+
+
+def _build_selection_evidence(
+    *,
+    changed_files: list[str],
+    enabled_verify_groups: list[str],
+    changed_verify_groups: set[str],
+    run_all: bool,
+    baseline_commands: list[str],
+    final_commands: list[str],
+    targeted_tests: list[str],
+    plan_cache_hit: bool,
+) -> dict[str, Any]:
+    accelerated_commands = [cmd for cmd in final_commands if cmd not in baseline_commands]
+    return {
+        "run_all": bool(run_all),
+        "plan_cache_hit": bool(plan_cache_hit),
+        "changed_files": list(changed_files),
+        "enabled_verify_groups": list(enabled_verify_groups),
+        "changed_verify_groups": sorted(changed_verify_groups),
+        "layers": [
+            {
+                "layer": "safety_baseline",
+                "reason": "run_all" if run_all else "changed_verify_groups_match",
+                "commands": list(baseline_commands),
+            },
+            {
+                "layer": "incremental_acceleration",
+                "commands": list(accelerated_commands),
+                "targeted_tests": list(targeted_tests),
+            },
+        ],
+        "baseline_commands_count": int(len(baseline_commands)),
+        "accelerated_commands_count": int(len(accelerated_commands)),
+        "final_commands_count": int(len(final_commands)),
+    }
+
+
 def select_verify_commands(
     config: dict[str, Any],
     changed_files: list[str] | None = None,
 ) -> list[str]:
+    result = _select_verify_plan(config=config, changed_files=changed_files)
+    return list(result.get("commands", []))
+
+
+def select_verify_commands_with_evidence(
+    config: dict[str, Any],
+    changed_files: list[str] | None = None,
+) -> dict[str, Any]:
+    result = _select_verify_plan(config=config, changed_files=changed_files)
+    return {
+        "commands": list(result.get("commands", [])),
+        "selection_evidence": dict(result.get("selection_evidence", {})),
+    }
+
+
+def _select_verify_plan(
+    *,
+    config: dict[str, Any],
+    changed_files: list[str] | None,
+) -> dict[str, Any]:
     raw_changed_files = [item for item in (changed_files or [])]
     changed_files_low = [item.lower() for item in raw_changed_files]
     verify_cfg = config.get("verify", {})
-    python_cmds = list(verify_cfg.get("python", []))
-    node_cmds = list(verify_cfg.get("node", []))
+    verify_groups_ordered = [
+        str(group).strip().lower()
+        for group, commands in dict(verify_cfg).items()
+        if isinstance(commands, list)
+    ]
+    verify_commands_by_group: dict[str, list[str]] = {}
+    for group_name in verify_groups_ordered:
+        group_commands = verify_cfg.get(group_name, [])
+        if isinstance(group_commands, list):
+            verify_commands_by_group[group_name] = [str(cmd) for cmd in group_commands]
 
-    has_py = any(item.endswith(".py") for item in changed_files_low)
-    has_js = any(
-        item.endswith((".ts", ".tsx", ".js", ".jsx")) for item in changed_files_low
+    extension_group_map = resolve_extension_verify_group_map(config)
+    enabled_verify_groups = resolve_enabled_verify_groups(config)
+    if not enabled_verify_groups:
+        enabled_verify_groups = list(verify_groups_ordered)
+
+    changed_verify_groups = _collect_changed_verify_groups(
+        changed_files_low, extension_group_map
     )
     run_all = len(changed_files_low) == 0
 
@@ -448,13 +537,33 @@ def select_verify_commands(
             cache_store = SemanticCacheStore(paths["state"] / "semantic_cache.db")
             cached_commands = cache_store.get_verify_plan(cache_key)
             if isinstance(cached_commands, list):
-                return cached_commands
+                evidence = _build_selection_evidence(
+                    changed_files=raw_changed_files,
+                    enabled_verify_groups=enabled_verify_groups,
+                    changed_verify_groups=changed_verify_groups,
+                    run_all=run_all,
+                    baseline_commands=list(cached_commands),
+                    final_commands=list(cached_commands),
+                    targeted_tests=[],
+                    plan_cache_hit=True,
+                )
+                return {
+                    "commands": list(cached_commands),
+                    "selection_evidence": evidence,
+                }
         except OSError:
             cache_store = None
 
     commands: list[str] = []
+    baseline_commands: list[str] = []
+    targeted_tests: list[str] = []
 
-    if run_all or has_py:
+    has_py = bool(run_all or ("python" in changed_verify_groups))
+    python_enabled = "python" in enabled_verify_groups
+
+    if has_py and python_enabled:
+        python_cmds = list(verify_commands_by_group.get("python", []))
+        baseline_commands.extend(python_cmds)
         targeted_python_cmds = list(python_cmds)
         if has_py and not run_all:
             indexed_files, deps_rows, ownership_rows = _load_index_inputs(config)
@@ -508,8 +617,23 @@ def select_verify_commands(
 
         commands.extend(targeted_python_cmds)
 
-    if run_all or has_js:
+    node_enabled = "node" in enabled_verify_groups
+    has_node = bool(run_all or ("node" in changed_verify_groups))
+    if has_node and node_enabled:
+        node_cmds = list(verify_commands_by_group.get("node", []))
+        baseline_commands.extend(node_cmds)
         commands.extend(node_cmds)
+
+    for group_name in verify_groups_ordered:
+        if group_name in {"python", "node"}:
+            continue
+        if group_name not in enabled_verify_groups:
+            continue
+        if not run_all and group_name not in changed_verify_groups:
+            continue
+        group_commands = list(verify_commands_by_group.get(group_name, []))
+        baseline_commands.extend(group_commands)
+        commands.extend(group_commands)
 
     commands = _apply_workspace_routing(
         commands=commands,
@@ -529,4 +653,17 @@ def select_verify_commands(
             max_entries=plan_cache_max_entries,
         )
 
-    return commands
+    selection_evidence = _build_selection_evidence(
+        changed_files=raw_changed_files,
+        enabled_verify_groups=enabled_verify_groups,
+        changed_verify_groups=changed_verify_groups,
+        run_all=run_all,
+        baseline_commands=baseline_commands,
+        final_commands=commands,
+        targeted_tests=targeted_tests,
+        plan_cache_hit=False,
+    )
+    return {
+        "commands": commands,
+        "selection_evidence": selection_evidence,
+    }

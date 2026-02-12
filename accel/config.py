@@ -52,9 +52,9 @@ DEFAULT_PROJECT_CONFIG: dict[str, Any] = {
 
 DEFAULT_LOCAL_CONFIG: dict[str, Any] = {
     "runtime": {
-        "max_workers": 12,
-        "verify_workers": 12,
-        "index_workers": 96,
+        "max_workers": "auto",
+        "verify_workers": "auto",
+        "index_workers": "auto",
         "index_delta_compact_every": 200,
         "verify_max_target_tests": 64,
         "verify_pytest_shard_size": 16,

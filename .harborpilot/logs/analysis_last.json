@@ -1,38 +1,33 @@
 ﻿{
-  "run_id": "run_20260212_schema_benchmark_no_security",
-  "ts": "2026-02-12T14:54:50.2239827Z",
+  "run_id": "run_20260213_benchmark_independent_codex",
+  "ts_utc": "2026-02-12T16:49:53.996659+00:00",
   "mode": "S2",
-  "capabilities": {
-    "repo_read": true,
-    "repo_write": true,
-    "terminal": true,
-    "network": true
-  },
-  "contract": {
-    "goal": "除去安全边界全部推进（即推进 Schema 与 Benchmark harness，跳过安全边界改造）。",
+  "contract_snapshot": {
+    "goal": "???????????????CLI?MCP??????benchmark???????????",
     "acceptance_criteria": [
-      "补齐正式 Schema：context pack + MCP 输出（重点 accel_verify_events 事件结构）并接入契约校验。",
-      "新增可复现 benchmark harness（任务集输入、指标产出、结果文件输出），覆盖 token/时延/质量相关指标。",
-      "补齐版本治理说明（schema versioning & breaking change policy）。",
-      "不实现安全边界项（allowlist/sandbox/dry-run 注入防护等不在本轮范围）。",
-      "质量门禁通过：python -m pytest -q、ruff check .、mypy .。"
+      "$env:PYTHONPATH='.'; python -m pytest -q",
+      "$env:PYTHONPATH='.'; pytest -q tests/integration",
+      "$env:PYTHONPATH='.'; ruff check .",
+      "$env:PYTHONPATH='.'; mypy .",
+      "python scripts/run_benchmarks.py --project . --tasks examples/benchmarks/tasks.sample.json --index-mode update --out .harborpilot/logs/benchmark_independent_codex.json --out-md .harborpilot/logs/benchmark_independent_codex.md"
     ],
-    "constraints": [
-      "按用户要求跳过安全边界功能改造",
-      "保持现有对外接口兼容，不新增第三方依赖"
+    "assumptions": [
+      "Primary objective is to make the listed full-gate and benchmark commands pass end-to-end in current workspace.",
+      "Unrendered criteria lines are treated as: no regression, outputs valid, and final status must be full gate (not reduced)."
     ]
   },
-  "scope": [
-    "accel/schema/*",
-    "accel/mcp_server.py",
-    "README.md",
-    "scripts/run_benchmarks.py",
-    "examples/benchmarks/*",
-    "tests/unit/test_output_constraints.py"
+  "capability_matrix": {
+    "repo": "read/write",
+    "terminal": "available",
+    "network": "available"
+  },
+  "risk_notes": [
+    "Workspace is dirty at start; only minimal targeted changes will be applied.",
+    "Benchmark command may expose latent runtime issues across multiple modules."
   ],
-  "budget": {
-    "touched_files_max": 25,
-    "changed_loc_max": 1500,
-    "deps": "no new deps"
+  "scope_budget": {
+    "touched_files_max": 50,
+    "changed_loc_max": 2000,
+    "dependencies": "no new deps"
   }
 }

@@ -8,13 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-SUPPORTED_EXTENSIONS = {
-    ".py": "python",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".js": "javascript",
-    ".jsx": "javascript",
-}
+from ..language_profiles import resolve_extension_language_map
 
 LEGACY_DEFAULT_INDEX_INCLUDE = ["src/**", "accel/**", "tests/**"]
 DEFAULT_INDEX_EXCLUDES = [
@@ -60,8 +54,8 @@ def _normalize_rel_path(path: Path) -> str:
     return path.as_posix()
 
 
-def detect_language(file_path: Path) -> str:
-    return SUPPORTED_EXTENSIONS.get(file_path.suffix.lower(), "")
+def detect_language(file_path: Path, extension_map: dict[str, str]) -> str:
+    return str(extension_map.get(file_path.suffix.lower(), "")).strip()
 
 
 def _match_any(rel_path: str, patterns: list[str]) -> bool:
@@ -159,10 +153,11 @@ def _filter_source_candidates(
     includes: list[str],
     excludes: list[str],
     max_size: int,
+    extension_map: dict[str, str],
 ) -> list[Path]:
     files: list[Path] = []
     for candidate in candidates:
-        if detect_language(candidate) == "":
+        if detect_language(candidate, extension_map) == "":
             continue
         try:
             rel_path = _normalize_rel_path(candidate.relative_to(project_dir))
@@ -193,6 +188,7 @@ def collect_source_files(project_dir: Path, config: dict[str, Any]) -> list[Path
     max_file_mb = int(index_cfg.get("max_file_mb", 2))
     max_size = max_file_mb * 1024 * 1024
     max_files_to_scan = int(index_cfg.get("max_files_to_scan", 10000))
+    extension_map = resolve_extension_language_map(config)
 
     files: list[Path] = []
     files_scanned = 0
@@ -212,6 +208,7 @@ def collect_source_files(project_dir: Path, config: dict[str, Any]) -> list[Path
                 includes=includes,
                 excludes=excludes,
                 max_size=max_size,
+                extension_map=extension_map,
             )
             if not filtered and scope_mode == "auto" and includes != ["**/*"]:
                 # In auto mode, never let a project-specific include pattern collapse scope to zero.
@@ -221,6 +218,7 @@ def collect_source_files(project_dir: Path, config: dict[str, Any]) -> list[Path
                     includes=["**/*"],
                     excludes=excludes,
                     max_size=max_size,
+                    extension_map=extension_map,
                 )
             elapsed = time.perf_counter() - start_time
             _log_deadlock_info(
@@ -257,7 +255,7 @@ def collect_source_files(project_dir: Path, config: dict[str, Any]) -> list[Path
 
             if not path.is_file():
                 continue
-            if detect_language(path) == "":
+            if detect_language(path, extension_map) == "":
                 continue
             rel_path = _normalize_rel_path(path.relative_to(project_dir))
             if includes and not _match_any(rel_path, includes):

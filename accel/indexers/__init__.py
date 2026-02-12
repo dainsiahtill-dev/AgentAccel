@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from ..language_profiles import resolve_extension_language_map
 from .deps import extract_dependencies
 from .references import extract_references
 from .symbols import extract_symbols
@@ -40,14 +41,6 @@ from ..storage.state_db import (
     upsert_state,
 )
 
-
-SUPPORTED_EXTENSIONS = {
-    ".py": "python",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".js": "javascript",
-    ".jsx": "javascript",
-}
 
 INDEX_KEY_FIELDS = {
     "symbols": "file",
@@ -143,8 +136,8 @@ def _normalize_rel_path(path: Path) -> str:
     return path.as_posix()
 
 
-def detect_language(file_path: Path) -> str:
-    return SUPPORTED_EXTENSIONS.get(file_path.suffix.lower(), "")
+def detect_language(file_path: Path, extension_map: dict[str, str]) -> str:
+    return str(extension_map.get(file_path.suffix.lower(), "")).strip()
 
 
 def _match_any(rel_path: str, patterns: list[str]) -> bool:
@@ -559,6 +552,7 @@ def build_or_update_indexes(
     state_db_path = paths["state"] / "index_state.db"
     previous_state = load_state(state_db_path)
     source_files = collect_source_files(project_dir, config)
+    extension_map = resolve_extension_language_map(config)
     current_paths = {
         _normalize_rel_path(path.relative_to(project_dir)): path
         for path in source_files
@@ -579,7 +573,7 @@ def build_or_update_indexes(
 
     for scan_index, (rel_path, abs_path) in enumerate(current_paths.items(), start=1):
         stat = abs_path.stat()
-        lang = detect_language(abs_path)
+        lang = detect_language(abs_path, extension_map)
         old = previous_state.get(rel_path)
         is_changed = (
             full

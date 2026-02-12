@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from ..language_profiles import (
+    resolve_enabled_verify_groups,
+    resolve_extension_verify_group_map,
+)
 from .runners import run_command
 from .sharding import select_verify_commands
 from .orchestrator_helpers import (
@@ -228,6 +232,98 @@ def _resolve_verify_workers(runtime_cfg: dict[str, Any]) -> int:
     return _normalize_positive_int(
         runtime_cfg.get("verify_workers", fallback), fallback
     )
+
+
+def _extract_pytest_targets(command: str) -> list[str]:
+    if "pytest" not in str(command).lower():
+        return []
+    effective = _effective_shell_command(command)
+    parts = shlex.split(effective, posix=os.name != "nt")
+    if not parts:
+        return []
+    targets: list[str] = []
+    for token in parts[1:]:
+        cleaned = str(token).strip().strip('"').strip("'")
+        if not cleaned or cleaned.startswith("-"):
+            continue
+        if cleaned.endswith(".py"):
+            targets.append(cleaned.replace("\\", "/"))
+    return targets
+
+
+def _build_verify_selection_evidence(
+    *,
+    config: dict[str, Any],
+    changed_files: list[str] | None,
+    commands: list[str],
+) -> dict[str, Any]:
+    verify_cfg = config.get("verify", {})
+    verify_group_order = [
+        str(group).strip().lower()
+        for group, raw_commands in dict(verify_cfg).items()
+        if isinstance(raw_commands, list)
+    ]
+    verify_group_commands: dict[str, list[str]] = {}
+    for group in verify_group_order:
+        raw_commands = verify_cfg.get(group, [])
+        if isinstance(raw_commands, list):
+            verify_group_commands[group] = [str(item) for item in raw_commands]
+
+    enabled_groups = resolve_enabled_verify_groups(config)
+    if not enabled_groups:
+        enabled_groups = list(verify_group_order)
+    extension_group_map = resolve_extension_verify_group_map(config)
+
+    changed = [str(item).replace("\\", "/").lower() for item in (changed_files or [])]
+    changed_groups: set[str] = set()
+    for item in changed:
+        suffix = Path(item).suffix
+        if not suffix:
+            continue
+        group = str(extension_group_map.get(suffix, "")).strip().lower()
+        if group:
+            changed_groups.add(group)
+    run_all = len(changed) == 0
+
+    baseline_commands: list[str] = []
+    for group in verify_group_order:
+        if group not in enabled_groups:
+            continue
+        if not run_all and group not in changed_groups:
+            continue
+        baseline_commands.extend(verify_group_commands.get(group, []))
+
+    accelerated_commands = [command for command in commands if command not in baseline_commands]
+    targeted_tests: list[str] = []
+    seen_targets: set[str] = set()
+    for command in commands:
+        for target in _extract_pytest_targets(command):
+            if target in seen_targets:
+                continue
+            seen_targets.add(target)
+            targeted_tests.append(target)
+
+    return {
+        "run_all": bool(run_all),
+        "changed_files": list(changed_files or []),
+        "enabled_verify_groups": list(enabled_groups),
+        "changed_verify_groups": sorted(changed_groups),
+        "layers": [
+            {
+                "layer": "safety_baseline",
+                "reason": "run_all" if run_all else "changed_verify_groups_match",
+                "commands": list(baseline_commands),
+            },
+            {
+                "layer": "incremental_acceleration",
+                "commands": list(accelerated_commands),
+                "targeted_tests": list(targeted_tests),
+            },
+        ],
+        "baseline_commands_count": int(len(baseline_commands)),
+        "accelerated_commands_count": int(len(accelerated_commands)),
+        "final_commands_count": int(len(commands)),
+    }
 
 
 def _invoke_run_command(
@@ -473,11 +569,21 @@ def run_verify(
     log_path = paths["verify"] / f"verify_{nonce}.log"
     jsonl_path = paths["verify"] / f"verify_{nonce}.jsonl"
     commands = select_verify_commands(config=config, changed_files=changed_files)
+    selection_evidence = _build_verify_selection_evidence(
+        config=config,
+        changed_files=changed_files,
+        commands=commands,
+    )
     selected_commands_count = int(len(commands))
 
     _append_line(log_path, f"VERIFICATION_START {nonce} {_utc_now()}")
     _append_line(
         log_path, f"ENV cwd={project_dir} python={shutil.which('python') or ''}"
+    )
+    _append_line(
+        log_path,
+        "SELECTION_EVIDENCE "
+        + json.dumps(selection_evidence, ensure_ascii=False),
     )
     _append_jsonl(
         jsonl_path,
@@ -500,6 +606,7 @@ def run_verify(
                 else None
             ),
             "workspace_routing_enabled": bool(workspace_routing_enabled),
+            "selection_evidence": selection_evidence,
         },
     )
 
@@ -1162,6 +1269,7 @@ def run_verify(
         else None,
         "auto_cancel_on_stall": bool(verify_auto_cancel_on_stall),
         "timed_out": bool(termination_reason == "max_wall_time_exceeded"),
+        "verify_selection_evidence": selection_evidence,
     }
 
 
@@ -1243,6 +1351,11 @@ def run_verify_with_callback(
     log_path = paths["verify"] / f"verify_{nonce}.log"
     jsonl_path = paths["verify"] / f"verify_{nonce}.jsonl"
     commands = select_verify_commands(config=config, changed_files=changed_files)
+    selection_evidence = _build_verify_selection_evidence(
+        config=config,
+        changed_files=changed_files,
+        commands=commands,
+    )
     selected_commands_count = int(len(commands))
     verify_started_at = time.perf_counter()
 
@@ -1251,6 +1364,11 @@ def run_verify_with_callback(
     _append_line(log_path, f"VERIFICATION_START {nonce} {_utc_now()}")
     _append_line(
         log_path, f"ENV cwd={project_dir} python={shutil.which('python') or ''}"
+    )
+    _append_line(
+        log_path,
+        "SELECTION_EVIDENCE "
+        + json.dumps(selection_evidence, ensure_ascii=False),
     )
     _append_jsonl(
         jsonl_path,
@@ -1273,6 +1391,7 @@ def run_verify_with_callback(
                 else None
             ),
             "workspace_routing_enabled": bool(workspace_routing_enabled),
+            "selection_evidence": selection_evidence,
         },
     )
 
@@ -2402,4 +2521,5 @@ def run_verify_with_callback(
         else None,
         "auto_cancel_on_stall": bool(verify_auto_cancel_on_stall),
         "timed_out": bool(termination_reason == "max_wall_time_exceeded"),
+        "verify_selection_evidence": selection_evidence,
     }

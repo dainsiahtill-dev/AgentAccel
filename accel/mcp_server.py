@@ -2310,6 +2310,7 @@ def _tool_context(
     )
 
     payload: JSONDict = {
+        "schema_version": 1,
         "status": "ok",
         "out": str(out_path),
         "top_files": len(pack_for_output.get("top_files", [])),

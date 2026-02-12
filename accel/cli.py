@@ -14,7 +14,11 @@ from uuid import uuid4
 
 from .config import init_project, resolve_effective_config
 from .indexers import build_or_update_indexes
-from .query.context_compiler import compile_context_pack, write_context_pack
+from .query.context_compiler import (
+    compile_context_pack,
+    explain_context_selection,
+    write_context_pack,
+)
 from .storage.cache import ensure_project_dirs, project_paths
 from .verify.orchestrator import run_verify
 
@@ -182,6 +186,22 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return int(result["exit_code"])
 
 
+def cmd_explain(args: argparse.Namespace) -> int:
+    project_dir = _normalize_path(Path(args.project))
+    cfg = resolve_effective_config(project_dir)
+    result = explain_context_selection(
+        project_dir=project_dir,
+        config=cfg,
+        task=str(args.task),
+        changed_files=list(args.changed_files),
+        hints=list(args.hints),
+        top_n_files=args.top_n_files,
+        alternatives=int(args.alternatives),
+    )
+    _print_output(result, args.output)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="accel",
@@ -233,6 +253,24 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--changed-files", nargs="*", default=[])
     verify_parser.add_argument("--output", choices=["text", "json"], default="text")
     verify_parser.set_defaults(func=cmd_verify)
+
+    explain_parser = sub.add_parser(
+        "explain",
+        help="Explain context ranking and near-miss alternatives",
+    )
+    explain_parser.add_argument("--project", default=".", help="Project directory")
+    explain_parser.add_argument("--task", required=True, help="Task description")
+    explain_parser.add_argument("--changed-files", nargs="*", default=[])
+    explain_parser.add_argument("--hints", nargs="*", default=[])
+    explain_parser.add_argument("--top-n-files", type=int, default=None)
+    explain_parser.add_argument(
+        "--alternatives",
+        type=int,
+        default=5,
+        help="Number of near-miss alternatives to show",
+    )
+    explain_parser.add_argument("--output", choices=["text", "json"], default="text")
+    explain_parser.set_defaults(func=cmd_explain)
 
     return parser
 

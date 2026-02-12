@@ -1,0 +1,49 @@
+name: benchmark-harness
+
+on:
+  workflow_dispatch:
+    inputs:
+      index_mode:
+        description: "Index mode passed to run_benchmarks.py"
+        required: false
+        default: "update"
+        type: choice
+        options:
+          - reuse
+          - update
+          - build
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Run benchmark harness
+        run: |
+          python scripts/run_benchmarks.py \
+            --project . \
+            --tasks examples/benchmarks/tasks.sample.json \
+            --index-mode "${{ github.event.inputs.index_mode || 'update' }}" \
+            --out .harborpilot/logs/benchmark_ci_results.json \
+            --out-md .harborpilot/logs/benchmark_ci_results.md
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-harness-results
+          path: |
+            .harborpilot/logs/benchmark_ci_results.json
+            .harborpilot/logs/benchmark_ci_results.md

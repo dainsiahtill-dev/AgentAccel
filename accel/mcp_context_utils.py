@@ -252,6 +252,7 @@ def _write_context_metadata_sidecar(out_path: Path, payload: JSONDict) -> Path:
     token_estimator_payload = payload.get("token_estimator", {})
     sidecar_payload: JSONDict = {
         "version": 1,
+        "schema_version": int(payload.get("schema_version", 1) or 1),
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "out": str(out_path),
         "output_mode": payload.get("output_mode", "full"),

@@ -4,6 +4,23 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .language_profiles import (
+    resolve_language_profile_registry,
+    resolve_selected_language_profiles,
+)
+
+
+def _cpu_count() -> int:
+    return max(1, int(os.cpu_count() or 1))
+
+
+def _default_max_workers() -> int:
+    return max(1, min(12, _cpu_count()))
+
+
+def _default_index_workers() -> int:
+    return max(1, min(96, _cpu_count()))
+
 
 def default_accel_home() -> Path:
     local_app_data = os.environ.get("LOCALAPPDATA")
@@ -13,6 +30,8 @@ def default_accel_home() -> Path:
 
 
 def _normalize_max_workers(value: Any, default_value: int) -> int:
+    if str(value or "").strip().lower() == "auto":
+        return max(1, int(default_value))
     try:
         parsed = int(value)
     except (TypeError, ValueError):
@@ -21,6 +40,8 @@ def _normalize_max_workers(value: Any, default_value: int) -> int:
 
 
 def _normalize_positive_int(value: Any, default_value: int) -> int:
+    if str(value or "").strip().lower() == "auto":
+        return max(1, int(default_value))
     try:
         parsed = int(value)
     except (TypeError, ValueError):
@@ -92,21 +113,29 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
     if os.environ.get("ACCEL_HOME"):
         runtime["accel_home"] = os.environ["ACCEL_HOME"]
     if os.environ.get("ACCEL_MAX_WORKERS"):
+        max_workers_default = _normalize_max_workers(
+            runtime.get("max_workers", _default_max_workers()),
+            _default_max_workers(),
+        )
         runtime["max_workers"] = _normalize_max_workers(
-            os.environ["ACCEL_MAX_WORKERS"], int(runtime.get("max_workers", 12))
+            os.environ["ACCEL_MAX_WORKERS"], max_workers_default
         )
     if os.environ.get("ACCEL_VERIFY_WORKERS"):
         verify_workers_default = _normalize_positive_int(
-            runtime.get("verify_workers", runtime.get("max_workers", 12)),
-            12,
+            runtime.get("verify_workers", runtime.get("max_workers", _default_max_workers())),
+            _default_max_workers(),
         )
         runtime["verify_workers"] = _normalize_positive_int(
             os.environ["ACCEL_VERIFY_WORKERS"],
             verify_workers_default,
         )
     if os.environ.get("ACCEL_INDEX_WORKERS"):
+        index_workers_default = _normalize_positive_int(
+            runtime.get("index_workers", _default_index_workers()),
+            _default_index_workers(),
+        )
         runtime["index_workers"] = _normalize_positive_int(
-            os.environ["ACCEL_INDEX_WORKERS"], int(runtime.get("index_workers", 96))
+            os.environ["ACCEL_INDEX_WORKERS"], index_workers_default
         )
     if os.environ.get("ACCEL_INDEX_COMPACT_EVERY"):
         runtime["index_delta_compact_every"] = _normalize_positive_int(
@@ -321,6 +350,9 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
     if int(config.get("version", 0)) <= 0:
         raise ValueError("version must be a positive integer")
 
+    config["language_profile_registry"] = resolve_language_profile_registry(config)
+    config["language_profiles"] = resolve_selected_language_profiles(config)
+
     index = config.get("index", {})
     if not isinstance(index, dict):
         raise ValueError("index must be an object")
@@ -366,14 +398,16 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
     if not isinstance(runtime, dict):
         raise ValueError("runtime must be an object")
     runtime["max_workers"] = _normalize_max_workers(
-        runtime.get("max_workers", 12), default_value=12
+        runtime.get("max_workers", _default_max_workers()),
+        default_value=_default_max_workers(),
     )
     runtime["verify_workers"] = _normalize_positive_int(
-        runtime.get("verify_workers", runtime.get("max_workers", 12)),
-        default_value=12,
+        runtime.get("verify_workers", runtime.get("max_workers", _default_max_workers())),
+        default_value=int(runtime.get("max_workers", _default_max_workers())),
     )
     runtime["index_workers"] = _normalize_positive_int(
-        runtime.get("index_workers", 96), default_value=96
+        runtime.get("index_workers", _default_index_workers()),
+        default_value=_default_index_workers(),
     )
     runtime["index_delta_compact_every"] = _normalize_positive_int(
         runtime.get("index_delta_compact_every", 200), default_value=200

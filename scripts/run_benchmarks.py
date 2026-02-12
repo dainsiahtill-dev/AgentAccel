@@ -347,6 +347,97 @@ def _aggregate(task_rows: list[dict[str, Any]], run_verify_enabled: bool) -> dic
     return summary
 
 
+def _format_ratio_percent(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value) * 100.0:.2f}%"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def _format_number(value: Any, digits: int = 2) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def _render_markdown_report(payload: dict[str, Any]) -> str:
+    summary = payload.get("summary", {}) if isinstance(payload.get("summary"), dict) else {}
+    results = payload.get("results", []) if isinstance(payload.get("results"), list) else []
+
+    lines: list[str] = []
+    lines.append("# AgentAccel Benchmark Report")
+    lines.append("")
+    lines.append(f"- generated_at: `{payload.get('generated_at', '')}`")
+    lines.append(f"- project_dir: `{payload.get('project_dir', '')}`")
+    lines.append(f"- tasks_file: `{payload.get('tasks_file', '')}`")
+    lines.append(f"- index_mode: `{payload.get('index_mode', '')}`")
+    lines.append(f"- run_verify: `{bool(payload.get('run_verify', False))}`")
+    lines.append("")
+
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| metric | value |")
+    lines.append("| --- | --- |")
+    lines.append(f"| tasks | {int(summary.get('tasks', 0) or 0)} |")
+    lines.append(
+        f"| context_build_seconds_avg | {_format_number(summary.get('context_build_seconds_avg'), 6)} |"
+    )
+    lines.append(
+        f"| context_build_seconds_p50 | {_format_number(summary.get('context_build_seconds_p50'), 6)} |"
+    )
+    lines.append(f"| context_tokens_avg | {_format_number(summary.get('context_tokens_avg'), 2)} |")
+    lines.append(
+        f"| token_reduction_vs_full_index_avg | {_format_ratio_percent(summary.get('token_reduction_vs_full_index_avg'))} |"
+    )
+    lines.append(
+        f"| token_reduction_vs_changed_files_avg | {_format_ratio_percent(summary.get('token_reduction_vs_changed_files_avg'))} |"
+    )
+    lines.append(
+        f"| top_file_recall_avg | {_format_ratio_percent(summary.get('top_file_recall_avg'))} |"
+    )
+    if "verify_pass_rate" in summary:
+        lines.append(
+            f"| verify_pass_rate | {_format_ratio_percent(summary.get('verify_pass_rate'))} |"
+        )
+    if "verify_seconds_avg" in summary:
+        lines.append(
+            f"| verify_seconds_avg | {_format_number(summary.get('verify_seconds_avg'), 6)} |"
+        )
+    lines.append("")
+
+    lines.append("## Per Task")
+    lines.append("")
+    lines.append(
+        "| id | context_tokens | reduction_vs_full | reduction_vs_changed | top_file_recall | context_seconds | verify_exit_code |"
+    )
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        lines.append(
+            "| "
+            + f"{str(row.get('id', ''))} | "
+            + f"{int(row.get('context_tokens', 0) or 0)} | "
+            + f"{_format_ratio_percent(row.get('token_reduction_vs_full_index'))} | "
+            + f"{_format_ratio_percent(row.get('token_reduction_vs_changed_files'))} | "
+            + f"{_format_ratio_percent(row.get('top_file_recall'))} | "
+            + f"{_format_number(row.get('context_build_seconds'), 6)} | "
+            + (
+                f"{int(row.get('verify_exit_code', 0))}"
+                if row.get("verify_exit_code") is not None
+                else "n/a"
+            )
+            + " |"
+        )
+
+    return "\n".join(lines) + "\n"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run reproducible benchmark tasks for agent-accel")
     parser.add_argument("--project", default=".", help="Project directory (default: current directory)")
@@ -359,6 +450,11 @@ def parse_args() -> argparse.Namespace:
         "--out",
         default="",
         help="Output JSON path (default: examples/benchmarks/results_<ts>.json)",
+    )
+    parser.add_argument(
+        "--out-md",
+        default="",
+        help="Optional Markdown report path (default: disabled)",
     )
     parser.add_argument(
         "--index-mode",
@@ -438,8 +534,25 @@ def main() -> int:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    out_md_path = ""
+    if args.out_md:
+        out_md = _normalize_path(Path(args.out_md))
+        out_md.parent.mkdir(parents=True, exist_ok=True)
+        out_md.write_text(_render_markdown_report(payload), encoding="utf-8")
+        out_md_path = str(out_md)
 
-    print(json.dumps({"status": "ok", "out": str(out_path), "summary": payload["summary"]}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "out": str(out_path),
+                "out_md": out_md_path,
+                "summary": payload["summary"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

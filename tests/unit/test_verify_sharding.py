@@ -192,3 +192,19 @@ def test_verify_sharding_workspace_routing_can_be_disabled(tmp_path: Path) -> No
 
     cmds = select_verify_commands(cfg, changed_files=["frontend/src/app.ts"])
     assert cmds == ["npm run lint"]
+
+
+def test_verify_sharding_respects_custom_language_profile_registry() -> None:
+    cfg = {
+        "language_profiles": ["go"],
+        "language_profile_registry": {
+            "go": {"extensions": [".go"], "verify_group": "go"},
+        },
+        "verify": {
+            "python": ["pytest -q"],
+            "go": ["go test ./..."],
+        },
+        "runtime": {"command_plan_cache_enabled": False},
+    }
+    cmds = select_verify_commands(cfg, changed_files=["pkg/service.go"])
+    assert cmds == ["go test ./..."]

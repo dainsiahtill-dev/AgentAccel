@@ -24,7 +24,8 @@ python scripts/run_benchmarks.py \
   --project . \
   --tasks examples/benchmarks/tasks.sample.json \
   --index-mode update \
-  --out examples/benchmarks/results_local.json
+  --out examples/benchmarks/results_local.json \
+  --out-md examples/benchmarks/results_local.md
 ```
 
 With verify metrics enabled:
@@ -35,12 +36,13 @@ python scripts/run_benchmarks.py \
   --tasks examples/benchmarks/tasks.sample.json \
   --index-mode update \
   --run-verify \
-  --out examples/benchmarks/results_with_verify.json
+  --out examples/benchmarks/results_with_verify.json \
+  --out-md examples/benchmarks/results_with_verify.md
 ```
 
 ## Output
 
-Each run writes one UTF-8 JSON report:
+Each run writes one UTF-8 JSON report and can optionally emit a Markdown report via `--out-md`:
 
 - Metadata: generation timestamp, git head/status, runtime config snapshot.
 - Per-task metrics:
@@ -55,6 +57,10 @@ Each run writes one UTF-8 JSON report:
   - average context tokens
   - average token reduction and recall
   - verify pass-rate and average verify duration (when enabled)
+
+Manual CI entrypoint:
+
+- `.github/workflows/benchmark-harness.yml` (`workflow_dispatch`) runs this harness and uploads JSON/Markdown artifacts.
 
 ## Reproducibility Notes
 

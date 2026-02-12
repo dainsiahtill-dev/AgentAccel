@@ -499,6 +499,9 @@ def test_run_verify_jsonl_command_result_includes_structured_fields(tmp_path: Pa
         )
         if isinstance(line, dict)
     ]
+    start_rows = [row for row in rows if row.get("event") == "verification_start"]
+    assert len(start_rows) == 1
+    assert isinstance(start_rows[0].get("selection_evidence"), dict)
     command_rows = [row for row in rows if row.get("event") == "command_result"]
     assert len(command_rows) == 1
     row = command_rows[0]
@@ -510,6 +513,7 @@ def test_run_verify_jsonl_command_result_includes_structured_fields(tmp_path: Pa
     assert int(row.get("command_index", 0)) == 1
     assert int(row.get("total_commands", 0)) == 1
     assert str(row.get("cache_kind", "")) in {"success", "failure"}
+    assert isinstance(result.get("verify_selection_evidence"), dict)
 
 
 def test_command_binary_handles_workspace_wrapped_commands() -> None:
