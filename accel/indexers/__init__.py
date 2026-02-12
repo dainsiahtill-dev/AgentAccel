@@ -11,7 +11,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, TimeoutError
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .deps import extract_dependencies
 from .references import extract_references
@@ -65,6 +65,8 @@ DEFAULT_INDEX_EXCLUDES = [
 _deadlock_logger = logging.getLogger("accel_deadlock_detection")
 _deadlock_logger.setLevel(logging.DEBUG)
 
+IndexProgressCallback = Callable[[dict[str, Any]], None]
+
 def _setup_deadlock_logging() -> None:
     """Setup deadlock detection logging if not already configured."""
     if not _deadlock_logger.handlers:
@@ -85,6 +87,40 @@ def _log_deadlock_info(message: str) -> None:
     if not _deadlock_logger.handlers:
         _setup_deadlock_logging()
     _deadlock_logger.debug(message)
+
+
+def _emit_index_progress(
+    progress_callback: IndexProgressCallback | None,
+    *,
+    stage: str,
+    processed_files: int,
+    total_files: int,
+    current_path: str = "",
+    changed_files: int = 0,
+    message: str = "",
+) -> None:
+    if progress_callback is None:
+        return
+    total_value = max(0, int(total_files))
+    processed_value = max(0, int(processed_files))
+    if total_value > 0:
+        processed_value = min(processed_value, total_value)
+    payload: dict[str, Any] = {
+        "stage": str(stage or "indexing"),
+        "processed_files": processed_value,
+        "total_files": total_value,
+        "changed_files": max(0, int(changed_files)),
+    }
+    if total_value > 0:
+        payload["progress_pct"] = round((processed_value / total_value) * 100.0, 2)
+    if current_path:
+        payload["current_path"] = str(current_path)
+    if message:
+        payload["message"] = str(message)
+    try:
+        progress_callback(payload)
+    except Exception:
+        return
 
 
 def _utc_now() -> str:
@@ -405,6 +441,7 @@ def _build_payloads_for_changed(
     current_states: dict[str, FileState],
     index_workers: int,
     index_parallel_backend: str,
+    progress_callback: IndexProgressCallback | None = None,
 ) -> dict[str, dict[str, Any]]:
     if not changed_paths:
         return {}
@@ -415,10 +452,30 @@ def _build_payloads_for_changed(
     ]
 
     _log_deadlock_info(f"Starting parallel processing: {len(jobs)} jobs, {index_workers} workers, {index_parallel_backend} backend")
+    total_jobs = len(jobs)
+    completed_jobs = 0
+
+    def _progress(file_path: str = "") -> None:
+        nonlocal completed_jobs
+        completed_jobs += 1
+        if completed_jobs == 1 or completed_jobs == total_jobs or (completed_jobs % 10 == 0):
+            _emit_index_progress(
+                progress_callback,
+                stage="index_payloads",
+                processed_files=completed_jobs,
+                total_files=total_jobs,
+                current_path=file_path,
+                changed_files=total_jobs,
+                message="Building symbol/reference/dependency payloads",
+            )
 
     if len(jobs) <= 1 or index_workers <= 1:
         _log_deadlock_info("Using sequential processing (single job or single worker)")
-        results = [_process_file_for_index(job) for job in jobs]
+        results = []
+        for job in jobs:
+            result = _process_file_for_index(job)
+            results.append(result)
+            _progress(str(result.get("file", job[1])))
     else:
         workers = min(index_workers, len(jobs))
         _log_deadlock_info(f"Using parallel processing: {workers} workers")
@@ -441,6 +498,7 @@ def _build_payloads_for_changed(
                                 result = future.result(timeout=timeout_per_file)
                                 results.append(result)
                                 _log_deadlock_info(f"Completed job: {job[1]}")
+                                _progress(str(result.get("file", job[1])))
                             except TimeoutError:
                                 _log_deadlock_info(f"Timeout for job: {job[1]}")
                                 # Add a failure result for timed out jobs
@@ -452,6 +510,7 @@ def _build_payloads_for_changed(
                                     "references": [],
                                     "error": "timeout"
                                 })
+                                _progress(job[1])
                             except Exception as exc:
                                 _log_deadlock_info(f"Error for job {job[1]}: {exc!r}")
                                 results.append({
@@ -462,17 +521,20 @@ def _build_payloads_for_changed(
                                     "references": [],
                                     "error": str(exc)
                                 })
+                                _progress(job[1])
                     else:
                         # Compatibility path for lightweight test doubles exposing only map().
                         _log_deadlock_info("Executor missing submit(), falling back to map()")
-                        results = list(pool.map(_process_file_for_index, jobs))
-                        for job in jobs:
+                        results = []
+                        for job, result in zip(jobs, pool.map(_process_file_for_index, jobs), strict=False):
+                            results.append(result)
                             _log_deadlock_info(f"Completed job: {job[1]}")
+                            _progress(str(result.get("file", job[1])))
             else:
                 _log_deadlock_info("Using ProcessPoolExecutor")
-                with ProcessPoolExecutor(max_workers=workers) as pool:
-                    if hasattr(pool, "submit"):
-                        future_map = {pool.submit(_process_file_for_index, job): job for job in jobs}
+                with ProcessPoolExecutor(max_workers=workers) as process_pool:
+                    if hasattr(process_pool, "submit"):
+                        future_map = {process_pool.submit(_process_file_for_index, job): job for job in jobs}
                         
                         results = []
                         for future in as_completed(future_map, timeout=overall_timeout):
@@ -481,6 +543,7 @@ def _build_payloads_for_changed(
                                 result = future.result(timeout=timeout_per_file)
                                 results.append(result)
                                 _log_deadlock_info(f"Completed job: {job[1]}")
+                                _progress(str(result.get("file", job[1])))
                             except TimeoutError:
                                 _log_deadlock_info(f"Timeout for job: {job[1]}")
                                 results.append({
@@ -491,6 +554,7 @@ def _build_payloads_for_changed(
                                     "references": [],
                                     "error": "timeout"
                                 })
+                                _progress(job[1])
                             except Exception as exc:
                                 _log_deadlock_info(f"Error for job {job[1]}: {exc!r}")
                                 results.append({
@@ -501,12 +565,15 @@ def _build_payloads_for_changed(
                                     "references": [],
                                     "error": str(exc)
                                 })
+                                _progress(job[1])
                     else:
                         # Compatibility path for lightweight test doubles exposing only map().
                         _log_deadlock_info("Executor missing submit(), falling back to map()")
-                        results = list(pool.map(_process_file_for_index, jobs))
-                        for job in jobs:
+                        results = []
+                        for job, result in zip(jobs, process_pool.map(_process_file_for_index, jobs), strict=False):
+                            results.append(result)
                             _log_deadlock_info(f"Completed job: {job[1]}")
+                            _progress(str(result.get("file", job[1])))
                             
         except TimeoutError:
             _log_deadlock_info(f"Overall timeout after {overall_timeout}s, falling back to sequential")
@@ -516,6 +583,7 @@ def _build_payloads_for_changed(
                 try:
                     result = _process_file_for_index(job)
                     results.append(result)
+                    _progress(str(result.get("file", job[1])))
                 except Exception as exc:
                     _log_deadlock_info(f"Sequential processing error for {job[1]}: {exc!r}")
                     results.append({
@@ -526,6 +594,7 @@ def _build_payloads_for_changed(
                         "references": [],
                         "error": str(exc)
                     })
+                    _progress(job[1])
         except Exception as exc:
             _log_deadlock_info(f"Parallel execution failed: {exc!r}, falling back to sequential")
             # Fallback to sequential processing
@@ -534,6 +603,7 @@ def _build_payloads_for_changed(
                 try:
                     result = _process_file_for_index(job)
                     results.append(result)
+                    _progress(str(result.get("file", job[1])))
                 except Exception as exc:
                     _log_deadlock_info(f"Sequential processing error for {job[1]}: {exc!r}")
                     results.append({
@@ -544,6 +614,7 @@ def _build_payloads_for_changed(
                         "references": [],
                         "error": str(exc)
                     })
+                    _progress(job[1])
         
         elapsed = time.perf_counter() - start_time
         _log_deadlock_info(f"Parallel processing completed in {elapsed:.3f}s")
@@ -625,6 +696,7 @@ def build_or_update_indexes(
     config: dict[str, Any],
     mode: str = "build",
     full: bool = False,
+    progress_callback: IndexProgressCallback | None = None,
 ) -> dict[str, Any]:
     accel_home = Path(config["runtime"]["accel_home"]).resolve()
     paths = project_paths(accel_home, project_dir)
@@ -640,8 +712,17 @@ def build_or_update_indexes(
 
     current_states: dict[str, FileState] = {}
     changed_paths: list[str] = []
+    total_scan_files = len(current_paths)
+    _emit_index_progress(
+        progress_callback,
+        stage="scan_files",
+        processed_files=0,
+        total_files=total_scan_files,
+        changed_files=0,
+        message="Scanning workspace files for index deltas",
+    )
 
-    for rel_path, abs_path in current_paths.items():
+    for scan_index, (rel_path, abs_path) in enumerate(current_paths.items(), start=1):
         stat = abs_path.stat()
         lang = detect_language(abs_path)
         old = previous_state.get(rel_path)
@@ -665,6 +746,16 @@ def build_or_update_indexes(
             content_hash=content_hash,
             lang=lang,
         )
+        if scan_index == 1 or scan_index == total_scan_files or (scan_index % 25 == 0):
+            _emit_index_progress(
+                progress_callback,
+                stage="scan_files",
+                processed_files=scan_index,
+                total_files=total_scan_files,
+                current_path=rel_path,
+                changed_files=len(changed_paths),
+                message="Scanning workspace files for index deltas",
+            )
 
     for rel_path in removed_paths:
         unit_path = _unit_path(paths["index_units"], rel_path)
@@ -693,6 +784,7 @@ def build_or_update_indexes(
         current_states=current_states,
         index_workers=index_workers,
         index_parallel_backend=index_parallel_backend,
+        progress_callback=progress_callback,
     )
 
     for rel_path, payload in changed_payloads.items():
@@ -855,5 +947,23 @@ def build_or_update_indexes(
             "compact_threshold": compact_threshold,
         },
     }
+    _emit_index_progress(
+        progress_callback,
+        stage="finalize_manifest",
+        processed_files=len(indexed_files),
+        total_files=len(indexed_files),
+        changed_files=len(changed_paths),
+        current_path="",
+        message="Writing index manifest and finishing",
+    )
     write_json(paths["index"] / "manifest.json", manifest)
+    _emit_index_progress(
+        progress_callback,
+        stage="completed",
+        processed_files=len(indexed_files),
+        total_files=len(indexed_files),
+        changed_files=len(changed_paths),
+        current_path="",
+        message="Indexing completed",
+    )
     return manifest

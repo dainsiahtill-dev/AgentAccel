@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -116,12 +117,50 @@ def _kill_process_tree(process: subprocess.Popen[str]) -> None:
                 pass
 
 
-def run_command(command: str, cwd: Path, timeout_seconds: int) -> dict[str, Any]:
+def _read_pipe_stream(
+    pipe: Any,
+    stream_name: str,
+    chunks: list[str],
+    output_callback: Callable[[str, str], None] | None,
+) -> None:
+    if pipe is None:
+        return
+    try:
+        while True:
+            line = pipe.readline()
+            if line == "":
+                break
+            text = _normalize_output(line)
+            if not text:
+                continue
+            chunks.append(text)
+            if output_callback is not None:
+                try:
+                    output_callback(stream_name, text)
+                except Exception:
+                    pass
+    except Exception:
+        return
+    finally:
+        try:
+            pipe.close()
+        except Exception:
+            pass
+
+
+def run_command(
+    command: str,
+    cwd: Path,
+    timeout_seconds: int,
+    output_callback: Callable[[str, str], None] | None = None,
+) -> dict[str, Any]:
     """Run a command with enhanced timeout handling and process cleanup."""
     started = time.perf_counter()
     process: subprocess.Popen[str] | None = None
-    stdout_text: str | bytes | None = ""
-    stderr_text: str | bytes | None = ""
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    stdout_thread: threading.Thread | None = None
+    stderr_thread: threading.Thread | None = None
     
     try:
         # Create process with enhanced settings for better timeout handling
@@ -135,28 +174,43 @@ def run_command(command: str, cwd: Path, timeout_seconds: int) -> dict[str, Any]
             text=True,
             encoding="utf-8",
             errors="replace",
+            bufsize=1,
             # Set process group for better termination on Unix
             preexec_fn=_resolve_preexec_fn(),
         )
-        
-        # Use communicate with timeout
+
+        stdout_thread = threading.Thread(
+            target=_read_pipe_stream,
+            args=(process.stdout, "stdout", stdout_chunks, output_callback),
+            daemon=True,
+        )
+        stderr_thread = threading.Thread(
+            target=_read_pipe_stream,
+            args=(process.stderr, "stderr", stderr_chunks, output_callback),
+            daemon=True,
+        )
+        stdout_thread.start()
+        stderr_thread.start()
+
+        timed_out = False
         try:
-            stdout_text, stderr_text = process.communicate(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired as exc:
-            # Enhanced timeout handling
-            if process is not None:
-                _kill_process_tree(process)
-                try:
-                    # Try to get any remaining output with a shorter timeout
-                    stdout_text, stderr_text = process.communicate(timeout=5)
-                except (subprocess.TimeoutExpired, OSError):
-                    # If that fails, use the exception output
-                    stdout_text = exc.stdout
-                    stderr_text = exc.stderr
-            else:
-                stdout_text = exc.stdout
-                stderr_text = exc.stderr
-            
+            process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _kill_process_tree(process)
+            try:
+                process.wait(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
+        if stdout_thread is not None:
+            stdout_thread.join(timeout=1.0)
+        if stderr_thread is not None:
+            stderr_thread.join(timeout=1.0)
+
+        stdout_text = "".join(stdout_chunks)
+        stderr_text = "".join(stderr_chunks)
+        if timed_out:
             elapsed = time.perf_counter() - started
             return {
                 "command": command,
@@ -173,8 +227,8 @@ def run_command(command: str, cwd: Path, timeout_seconds: int) -> dict[str, Any]
             "command": command,
             "exit_code": int(process.returncode or 0),
             "duration_seconds": round(elapsed, 3),
-            "stdout": _normalize_output(stdout_text)[-OUTPUT_TAIL_LIMIT:],
-            "stderr": _normalize_output(stderr_text)[-OUTPUT_TAIL_LIMIT:],
+            "stdout": _normalize_output("".join(stdout_chunks))[-OUTPUT_TAIL_LIMIT:],
+            "stderr": _normalize_output("".join(stderr_chunks))[-OUTPUT_TAIL_LIMIT:],
             "timed_out": False,
         }
         
@@ -190,6 +244,10 @@ def run_command(command: str, cwd: Path, timeout_seconds: int) -> dict[str, Any]
             "timed_out": False,
         }
     finally:
+        if stdout_thread is not None and stdout_thread.is_alive():
+            stdout_thread.join(timeout=0.2)
+        if stderr_thread is not None and stderr_thread.is_alive():
+            stderr_thread.join(timeout=0.2)
         # Ensure process is cleaned up
         if process is not None and process.poll() is None:
             try:

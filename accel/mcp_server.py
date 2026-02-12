@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from fastmcp import FastMCP
@@ -67,6 +67,7 @@ _SEMANTIC_CACHE_MODE_ALIASES = {
     "readwrite": "hybrid",
     "rw": "hybrid",
 }
+_VERIFY_OUTPUT_CHUNK_LIMIT = 600
 
 def _signal_handler(signum: int, frame) -> None:
     """Handle shutdown signals gracefully."""
@@ -506,6 +507,11 @@ def _write_context_metadata_sidecar(out_path: Path, payload: JSONDict) -> Path:
         "changed_files_source": payload.get("changed_files_source", "none"),
         "changed_files_count": int(payload.get("changed_files_count", 0) or 0),
         "changed_files_used": list(payload.get("changed_files_used", [])),
+        "changed_files_detection": (
+            dict(payload.get("changed_files_detection", {}))
+            if isinstance(payload.get("changed_files_detection"), dict)
+            else {}
+        ),
         "fallback_confidence": float(payload.get("fallback_confidence", 0.0) or 0.0),
         "strict_changed_files": bool(payload.get("strict_changed_files", False)),
         "strict_scope_filtered_top_files": int(payload.get("strict_scope_filtered_top_files", 0) or 0),
@@ -532,6 +538,12 @@ def _write_context_metadata_sidecar(out_path: Path, payload: JSONDict) -> Path:
             "hit": bool(payload.get("semantic_cache_hit", False)),
             "mode": str(payload.get("semantic_cache_mode_used", "off")),
             "similarity": float(payload.get("semantic_cache_similarity", 0.0) or 0.0),
+            "reason": str(payload.get("semantic_cache_reason", "")),
+            "invalidation_reason": str(payload.get("semantic_cache_invalidation_reason", "")),
+            "safety_fingerprint": str(payload.get("semantic_cache_safety_fingerprint", "")),
+            "safety": dict(payload.get("semantic_cache_safety", {}))
+            if isinstance(payload.get("semantic_cache_safety"), dict)
+            else {},
         },
         "compression": {
             "rules_applied": dict(payload.get("compression_rules_applied", {})),
@@ -555,11 +567,15 @@ def _summarize_verify_events(events: list[dict[str, Any]], status: JSONDict) -> 
     command_skipped = 0
     command_errors = 0
     cache_hits = 0
+    command_output_chunks = 0
+    stall_heartbeats = 0
     terminal_event_seen = False
     first_seq = 0
     last_seq = 0
     latest_stage = str(status.get("stage", ""))
     latest_state = str(status.get("state", ""))
+    latest_command_complete: JSONDict = {}
+    recent_output: list[JSONDict] = []
     terminal_events = {"job_completed", "job_failed", "job_cancelled_finalized"}
     terminal_states = {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
     terminal_state_from_event = ""
@@ -586,6 +602,32 @@ def _summarize_verify_events(events: list[dict[str, Any]], status: JSONDict) -> 
             command_errors += 1
         elif event_type == "cache_hit":
             cache_hits += 1
+        elif event_type == "command_output":
+            command_output_chunks += 1
+            chunk = str(event.get("chunk", "")).strip()
+            if chunk:
+                recent_output.append(
+                    {
+                        "seq": int(event.get("seq", 0) or 0),
+                        "stream": str(event.get("stream", "stdout")),
+                        "command": str(event.get("command", "")),
+                        "chunk": chunk,
+                    }
+                )
+                if len(recent_output) > 3:
+                    recent_output = recent_output[-3:]
+        elif event_type == "command_complete":
+            latest_command_complete = {
+                "command": str(event.get("command", "")),
+                "exit_code": int(event.get("exit_code", 1) or 1),
+                "duration": float(event.get("duration", 0.0) or 0.0),
+                "stdout_tail": str(event.get("stdout_tail", "")),
+                "stderr_tail": str(event.get("stderr_tail", "")),
+                "completed": int(event.get("completed", 0) or 0),
+                "total": int(event.get("total", 0) or 0),
+            }
+        elif event_type == "heartbeat" and _coerce_bool(event.get("stall_detected"), False):
+            stall_heartbeats += 1
         if event_type in terminal_events:
             terminal_event_seen = True
             seq_for_terminal = _coerce_optional_int(event.get("seq")) or 0
@@ -636,8 +678,12 @@ def _summarize_verify_events(events: list[dict[str, Any]], status: JSONDict) -> 
             "skipped": int(command_skipped),
             "errors": int(command_errors),
             "cache_hits": int(cache_hits),
+            "output_chunks": int(command_output_chunks),
+            "stall_heartbeats": int(stall_heartbeats),
         },
         "seq_range": {"first": int(first_seq), "last": int(last_seq)},
+        "latest_command_complete": latest_command_complete,
+        "recent_output": recent_output,
     }
 
 
@@ -843,6 +889,10 @@ def _sync_index_timeout_payload(job_id: str, wait_seconds: float) -> JSONDict:
         "stage": status.get("stage", "running"),
         "progress": status.get("progress", 0.0),
         "elapsed_sec": status.get("elapsed_sec", 0.0),
+        "processed_files": int(status.get("completed_commands", 0) or 0),
+        "total_files": int(status.get("total_commands", 0) or 0),
+        "current_path": str(status.get("current_command", "")),
+        "eta_sec": status.get("eta_sec"),
     }
 
 
@@ -878,10 +928,53 @@ def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
                     "full": bool(full_value),
                 },
             )
+            def _on_index_progress(progress_payload: JSONDict) -> None:
+                stage_name = str(progress_payload.get("stage", "indexing")).strip().lower() or "indexing"
+                processed_files = max(0, int(progress_payload.get("processed_files", 0) or 0))
+                total_files = max(0, int(progress_payload.get("total_files", 0) or 0))
+                changed_files = max(0, int(progress_payload.get("changed_files", 0) or 0))
+                current_path = str(progress_payload.get("current_path", "")).strip()
+                message = str(progress_payload.get("message", "")).strip()
+                if stage_name:
+                    current.stage = stage_name
+                if total_files > 0:
+                    current.update_progress(min(processed_files, total_files), total_files, current_path)
+                elif current_path:
+                    current.current_command = current_path
+                index_event_payload: JSONDict = {
+                    "stage": stage_name,
+                    "processed_files": int(processed_files),
+                    "total_files": int(total_files),
+                    "changed_files": int(changed_files),
+                    "progress_pct": round(float(current.progress), 2),
+                    "eta_sec": round(float(current.eta_sec), 1) if current.eta_sec is not None else None,
+                }
+                if current_path:
+                    index_event_payload["current_path"] = current_path
+                if message:
+                    index_event_payload["message"] = message
+                current.add_live_event("index_progress", index_event_payload)
+
             if mode_value == "build":
-                result = _tool_index_build(project=str(project_dir), full=full_value)
+                try:
+                    result = _tool_index_build(
+                        project=str(project_dir),
+                        full=full_value,
+                        progress_callback=_on_index_progress,
+                    )
+                except TypeError:
+                    result = _tool_index_build(
+                        project=str(project_dir),
+                        full=full_value,
+                    )
             else:
-                result = _tool_index_update(project=str(project_dir))
+                try:
+                    result = _tool_index_update(
+                        project=str(project_dir),
+                        progress_callback=_on_index_progress,
+                    )
+                except TypeError:
+                    result = _tool_index_update(project=str(project_dir))
             if current.state in (JobState.CANCELLING, JobState.CANCELLED):
                 if current.state != JobState.CANCELLED:
                     current.mark_cancelled()
@@ -929,6 +1022,10 @@ def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
                     "state": state or JobState.RUNNING,
                     "stage": status.get("stage", "indexing"),
                     "progress": float(status.get("progress", 0.0)),
+                    "processed_files": int(status.get("completed_commands", 0) or 0),
+                    "total_files": int(status.get("total_commands", 0) or 0),
+                    "current_path": str(status.get("current_command", "")),
+                    "eta_sec": status.get("eta_sec"),
                 },
             )
             if not appended:
@@ -1069,82 +1166,178 @@ def _to_budget_override(value: dict[str, int] | str | None) -> dict[str, int]:
     return out
 
 
-def _discover_changed_files_from_git(project_dir: Path, limit: int = 200) -> list[str]:
-    def _extract_status_path(raw_line: str) -> str:
-        text = str(raw_line or "").rstrip()
-        if len(text) < 4:
-            return ""
-        payload = text[3:].strip()
-        if not payload:
-            return ""
-        if " -> " in payload:
-            payload = payload.split(" -> ", 1)[1].strip()
-        return payload.replace("\\", "/")
+def _extract_status_path(raw_line: str) -> str:
+    text = str(raw_line or "").rstrip()
+    if len(text) < 4:
+        return ""
+    payload = text[3:].strip()
+    if not payload:
+        return ""
+    if " -> " in payload:
+        payload = payload.split(" -> ", 1)[1].strip()
+    return payload.replace("\\", "/")
 
-    def _run_git_cmd(cmd: list[str], timeout_seconds: float) -> list[str]:
-        try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout_seconds,
-                check=False,
-            )
-        except Exception:
-            return []
-        if int(proc.returncode) != 0:
-            return []
-        return [line for line in proc.stdout.splitlines() if str(line).strip()]
 
+def _run_git_cmd_lines(cmd: list[str], timeout_seconds: float) -> tuple[list[str], int]:
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except Exception:
+        return [], -1
+    if int(proc.returncode) != 0:
+        return [], int(proc.returncode)
+    lines = [line for line in str(proc.stdout).splitlines() if str(line).strip()]
+    return lines, int(proc.returncode)
+
+
+def _discover_changed_files_from_git_details(project_dir: Path, limit: int = 200) -> tuple[list[str], JSONDict]:
     discovered: list[str] = []
+    details: JSONDict = {}
     lock = threading.Lock()
+    max_items = max(1, int(limit))
 
     def _collect() -> None:
         seen: set[str] = set()
         output: list[str] = []
-        status_lines = _run_git_cmd(
+        source_counts: dict[str, int] = {}
+        source_order: list[str] = []
+
+        def _add_source(name: str, lines: list[str], *, status_parser: bool = False) -> None:
+            if not lines or len(output) >= max_items:
+                return
+            source_order.append(name)
+            accepted = 0
+            for raw_line in lines:
+                rel = _extract_status_path(raw_line) if status_parser else str(raw_line).strip().replace("\\", "/")
+                if not rel or rel in seen:
+                    continue
+                seen.add(rel)
+                output.append(rel)
+                accepted += 1
+                if len(output) >= max_items:
+                    break
+            source_counts[name] = int(accepted)
+
+        inside_lines, _inside_rc = _run_git_cmd_lines(
+            ["git", "-C", str(project_dir), "rev-parse", "--is-inside-work-tree"],
+            1.0,
+        )
+        inside_token = str(inside_lines[0]).strip().lower() if inside_lines else ""
+        if _inside_rc != 0 or inside_token in {"", "false", "0", "no"}:
+            payload = {
+                "provider": "git",
+                "available": False,
+                "reason": "not_git_worktree",
+                "sources": [],
+                "source_counts": {},
+                "confidence": 0.0,
+            }
+            with lock:
+                details.clear()
+                details.update(payload)
+            return
+
+        git_root_lines, _root_rc = _run_git_cmd_lines(
+            ["git", "-C", str(project_dir), "rev-parse", "--show-toplevel"],
+            1.0,
+        )
+        git_root = str(git_root_lines[0]).strip() if git_root_lines else ""
+
+        status_lines, _status_rc = _run_git_cmd_lines(
             ["git", "-C", str(project_dir), "status", "--porcelain", "--untracked-files=normal"],
             2.0,
         )
-        for raw_line in status_lines:
-            rel = _extract_status_path(raw_line)
-            if not rel or rel in seen:
-                continue
-            seen.add(rel)
-            output.append(rel)
-            if len(output) >= limit:
+        _add_source("status_porcelain", status_lines, status_parser=True)
+
+        diff_commands = [
+            ("staged_diff", ["git", "-C", str(project_dir), "diff", "--name-only", "--relative", "--cached"]),
+            ("working_tree_diff", ["git", "-C", str(project_dir), "diff", "--name-only", "--relative"]),
+            ("head_diff", ["git", "-C", str(project_dir), "diff", "--name-only", "--relative", "HEAD"]),
+        ]
+        for source_name, cmd in diff_commands:
+            if len(output) >= max_items:
                 break
-        if len(output) < limit:
-            diff_commands = [
-                ["git", "-C", str(project_dir), "diff", "--name-only", "--relative", "HEAD"],
-                ["git", "-C", str(project_dir), "diff", "--name-only", "--relative", "--cached"],
-                ["git", "-C", str(project_dir), "diff", "--name-only", "--relative"],
-            ]
-            for cmd in diff_commands:
-                for raw_line in _run_git_cmd(cmd, 1.5):
-                    rel = str(raw_line).strip().replace("\\", "/")
-                    if not rel or rel in seen:
-                        continue
-                    seen.add(rel)
-                    output.append(rel)
-                    if len(output) >= limit:
-                        break
-                if len(output) >= limit:
-                    break
+            lines, _rc = _run_git_cmd_lines(cmd, 1.5)
+            _add_source(source_name, lines, status_parser=False)
+
+        upstream = ""
+        merge_base = ""
+        if len(output) < max_items:
+            upstream_lines, _upstream_rc = _run_git_cmd_lines(
+                ["git", "-C", str(project_dir), "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+                1.0,
+            )
+            if upstream_lines:
+                upstream = str(upstream_lines[0]).strip()
+            if upstream:
+                merge_base_lines, _mb_rc = _run_git_cmd_lines(
+                    ["git", "-C", str(project_dir), "merge-base", "HEAD", upstream],
+                    1.0,
+                )
+                if merge_base_lines:
+                    merge_base = str(merge_base_lines[0]).strip()
+            if merge_base:
+                upstream_diff_lines, _upstream_diff_rc = _run_git_cmd_lines(
+                    ["git", "-C", str(project_dir), "diff", "--name-only", "--relative", f"{merge_base}..HEAD"],
+                    2.0,
+                )
+                _add_source("upstream_diff", upstream_diff_lines, status_parser=False)
+
+        confidence = 0.0
+        if source_counts.get("upstream_diff", 0) > 0:
+            confidence = 0.99
+        elif source_counts.get("status_porcelain", 0) > 0:
+            confidence = 0.98
+        elif source_counts.get("staged_diff", 0) > 0 or source_counts.get("working_tree_diff", 0) > 0:
+            confidence = 0.96
+        elif source_counts.get("head_diff", 0) > 0:
+            confidence = 0.9
+
+        payload = {
+            "provider": "git",
+            "available": True,
+            "reason": "ok" if output else "git_no_changes_detected",
+            "git_root": git_root,
+            "upstream": upstream,
+            "merge_base": merge_base,
+            "sources": list(source_order),
+            "source_counts": dict(source_counts),
+            "confidence": round(float(confidence), 6),
+        }
 
         with lock:
-            discovered.extend(output[:limit])
+            discovered.clear()
+            discovered.extend(output[:max_items])
+            details.clear()
+            details.update(payload)
 
     worker = threading.Thread(target=_collect, daemon=True)
     worker.start()
-    worker.join(timeout=4.0)
+    worker.join(timeout=6.0)
     if worker.is_alive():
-        _debug_log("_discover_changed_files_from_git timed out; fallback to empty changed_files")
-        return []
+        _debug_log("_discover_changed_files_from_git_details timed out; fallback to empty changed_files")
+        return [], {
+            "provider": "git",
+            "available": False,
+            "reason": "git_detection_timeout",
+            "sources": [],
+            "source_counts": {},
+            "confidence": 0.0,
+        }
     with lock:
-        return list(discovered)
+        return list(discovered), dict(details)
+
+
+def _discover_changed_files_from_git(project_dir: Path, limit: int = 200) -> list[str]:
+    files, _details = _discover_changed_files_from_git_details(project_dir, limit=limit)
+    return files
 
 
 def _discover_changed_files_from_index_fallback(
@@ -1294,6 +1487,63 @@ def _context_budget_fingerprint(
     return make_stable_hash(payload)
 
 
+def _resolve_git_head_commit(project_dir: Path) -> str:
+    lines, rc = _run_git_cmd_lines(
+        ["git", "-C", str(project_dir), "rev-parse", "HEAD"],
+        1.0,
+    )
+    if rc != 0 or not lines:
+        return ""
+    return str(lines[0]).strip()
+
+
+def _collect_changed_files_state(project_dir: Path, changed_files: list[str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    project_root = project_dir.resolve()
+    for item in normalize_changed_files(changed_files):
+        path_token = str(item or "").strip()
+        if not path_token:
+            continue
+        raw_path = Path(path_token)
+        abs_path = raw_path if raw_path.is_absolute() else (project_root / raw_path)
+        rel_path = path_token
+        try:
+            rel_path = abs_path.resolve().relative_to(project_root).as_posix()
+        except Exception:
+            rel_path = path_token.replace("\\", "/")
+        row: dict[str, Any] = {"path": rel_path}
+        if abs_path.exists():
+            stat = abs_path.stat()
+            row["exists"] = True
+            row["size"] = int(stat.st_size)
+            row["mtime_ns"] = int(stat.st_mtime_ns)
+            row["is_dir"] = bool(abs_path.is_dir())
+        else:
+            row["exists"] = False
+        rows.append(row)
+    rows.sort(key=lambda entry: str(entry.get("path", "")))
+    return rows
+
+
+def _semantic_cache_safety_fingerprint(
+    project_dir: Path,
+    changed_files: list[str],
+) -> tuple[str, JSONDict]:
+    git_head = _resolve_git_head_commit(project_dir)
+    changed_state = _collect_changed_files_state(project_dir, changed_files)
+    payload = {
+        "git_head": git_head,
+        "changed_files_state": changed_state,
+    }
+    fingerprint = make_stable_hash(payload)
+    metadata: JSONDict = {
+        "git_head": git_head,
+        "changed_files_state": changed_state,
+        "fingerprint": fingerprint,
+    }
+    return fingerprint, metadata
+
+
 def _safe_semantic_cache_store(project_dir: Path, config: JSONDict) -> SemanticCacheStore | None:
     try:
         runtime_cfg = dict(config.get("runtime", {}))
@@ -1305,7 +1555,11 @@ def _safe_semantic_cache_store(project_dir: Path, config: JSONDict) -> SemanticC
         return None
 
 
-def _tool_index_build(project: str = ".", full: bool = True) -> JSONDict:
+def _tool_index_build(
+    project: str = ".",
+    full: bool = True,
+    progress_callback: Callable[[JSONDict], None] | None = None,
+) -> JSONDict:
     _debug_log(f"accel_index_build called: project={project}, full={full}")
     project_dir = _normalize_project_dir(project)
     config = resolve_effective_config(project_dir)
@@ -1314,6 +1568,7 @@ def _tool_index_build(project: str = ".", full: bool = True) -> JSONDict:
         config=config,
         mode="build",
         full=bool(full),
+        progress_callback=progress_callback,
     )
     file_count = int(manifest.get("counts", {}).get("files", 0) or 0)
     if file_count <= 0:
@@ -1327,6 +1582,7 @@ def _tool_index_build(project: str = ".", full: bool = True) -> JSONDict:
             config=retry_config,
             mode="build",
             full=bool(full),
+            progress_callback=progress_callback,
         )
         retry_file_count = int(retry_manifest.get("counts", {}).get("files", 0) or 0)
         if retry_file_count > file_count:
@@ -1337,7 +1593,10 @@ def _tool_index_build(project: str = ".", full: bool = True) -> JSONDict:
     return {"status": "ok", "manifest": manifest}
 
 
-def _tool_index_update(project: str = ".") -> JSONDict:
+def _tool_index_update(
+    project: str = ".",
+    progress_callback: Callable[[JSONDict], None] | None = None,
+) -> JSONDict:
     _debug_log(f"accel_index_update called: project={project}")
     project_dir = _normalize_project_dir(project)
     config = resolve_effective_config(project_dir)
@@ -1346,6 +1605,7 @@ def _tool_index_update(project: str = ".") -> JSONDict:
         config=config,
         mode="update",
         full=False,
+        progress_callback=progress_callback,
     )
     file_count = int(manifest.get("counts", {}).get("files", 0) or 0)
     if file_count <= 0:
@@ -1359,6 +1619,7 @@ def _tool_index_update(project: str = ".") -> JSONDict:
             config=retry_config,
             mode="update",
             full=False,
+            progress_callback=progress_callback,
         )
         retry_file_count = int(retry_manifest.get("counts", {}).get("files", 0) or 0)
         if retry_file_count > file_count:
@@ -1424,14 +1685,43 @@ def _tool_context(
     changed_files_source = "user" if changed_files_list else "none"
     changed_files_fallback_reason = ""
     fallback_confidence = 1.0 if changed_files_list else 0.0
+    changed_files_detection: JSONDict = {
+        "provider": "user",
+        "reason": "explicit_changed_files",
+        "confidence": 1.0 if changed_files_list else 0.0,
+        "sources": ["user_input"] if changed_files_list else [],
+        "source_counts": {"user_input": len(changed_files_list)} if changed_files_list else {},
+    }
     if not changed_files_list:
         auto_changed = _discover_changed_files_from_git(project_dir)
+        _, git_detection = _discover_changed_files_from_git_details(project_dir)
         if auto_changed:
             changed_files_list = auto_changed
             changed_files_source = "git_auto"
-            fallback_confidence = 0.98
+            if not _coerce_bool(git_detection.get("available"), True):
+                git_detection = {
+                    "provider": "git",
+                    "available": True,
+                    "reason": "git_auto_legacy",
+                    "sources": ["git_auto_legacy"],
+                    "source_counts": {"git_auto_legacy": len(auto_changed)},
+                    "confidence": 0.98,
+                }
+            fallback_confidence = float(git_detection.get("confidence", 0.98) or 0.98)
+            changed_files_detection = {
+                **dict(git_detection),
+                "provider": "git",
+                "reason": str(git_detection.get("reason", "ok")),
+                "confidence": round(float(fallback_confidence), 6),
+            }
         elif strict_changed_files_effective:
             changed_files_fallback_reason = "strict_changed_files_enabled_no_git_delta"
+            changed_files_detection = {
+                **dict(git_detection),
+                "provider": "git",
+                "reason": "strict_changed_files_enabled_no_git_delta",
+                "confidence": float(git_detection.get("confidence", 0.0) or 0.0),
+            }
         else:
             fallback_changed, fallback_reason, fallback_conf = _discover_changed_files_from_index_fallback(
                 project_dir,
@@ -1443,8 +1733,24 @@ def _tool_context(
                 changed_files_list = fallback_changed
                 changed_files_source = fallback_reason
                 fallback_confidence = float(fallback_conf)
+                changed_files_detection = {
+                    "provider": "index_fallback",
+                    "reason": fallback_reason,
+                    "confidence": round(float(fallback_confidence), 6),
+                    "sources": [fallback_reason],
+                    "source_counts": {fallback_reason: len(fallback_changed)},
+                }
             else:
                 changed_files_fallback_reason = fallback_reason
+                changed_files_detection = {
+                    "provider": "index_fallback",
+                    "reason": fallback_reason,
+                    "confidence": 0.0,
+                    "sources": [],
+                    "source_counts": {},
+                }
+    changed_files_detection["selected_count"] = int(len(changed_files_list))
+    changed_files_detection["selected_source"] = str(changed_files_source)
     _debug_log(
         "_tool_context: changed_files resolution "
         f"source={changed_files_source} count={len(changed_files_list)}"
@@ -1497,6 +1803,7 @@ def _tool_context(
         include_metadata=include_metadata_flag,
     )
     config_hash = _context_config_hash(config)
+    cache_safety_fingerprint, cache_safety_metadata = _semantic_cache_safety_fingerprint(project_dir, changed_files_list)
     task_sig = task_signature(task_tokens, hint_tokens)
     semantic_cache_key = make_stable_hash(
         {
@@ -1504,11 +1811,14 @@ def _tool_context(
             "changed_fingerprint": changed_fingerprint,
             "budget_fingerprint": budget_fingerprint,
             "config_hash": config_hash,
+            "safety_fingerprint": cache_safety_fingerprint,
         }
     )
     semantic_cache_hit = False
     semantic_cache_similarity = 0.0
     semantic_cache_mode_used = "off"
+    semantic_cache_reason = "cache_disabled"
+    semantic_cache_invalidation_reason = "none"
     semantic_store: SemanticCacheStore | None = None
     pack: JSONDict
 
@@ -1522,6 +1832,7 @@ def _tool_context(
             semantic_cache_hit = True
             semantic_cache_similarity = 1.0
             semantic_cache_mode_used = "exact"
+            semantic_cache_reason = "exact_key_match"
         else:
             cached_hybrid: JSONDict | None = None
             hybrid_similarity = 0.0
@@ -1532,6 +1843,7 @@ def _tool_context(
                     changed_files=changed_files_normalized,
                     budget_fingerprint=budget_fingerprint,
                     config_hash=config_hash,
+                    safety_fingerprint=cache_safety_fingerprint,
                     threshold=float(runtime_cfg.get("semantic_cache_hybrid_threshold", 0.86)),
                 )
             if isinstance(cached_hybrid, dict):
@@ -1539,7 +1851,18 @@ def _tool_context(
                 semantic_cache_hit = True
                 semantic_cache_similarity = float(hybrid_similarity)
                 semantic_cache_mode_used = "hybrid"
+                semantic_cache_reason = "hybrid_similarity_match"
             else:
+                miss_explain = semantic_store.explain_context_miss(
+                    task_signature_value=task_sig,
+                    budget_fingerprint=budget_fingerprint,
+                    config_hash=config_hash,
+                    safety_fingerprint=cache_safety_fingerprint,
+                    changed_fingerprint=changed_fingerprint,
+                    git_head=str(cache_safety_metadata.get("git_head", "")),
+                )
+                semantic_cache_reason = "miss"
+                semantic_cache_invalidation_reason = str(miss_explain.get("reason", "no_prior_entry"))
                 _debug_log("_tool_context: compile_context_pack start (cache miss)")
                 pack = compile_context_pack(
                     project_dir=project_dir,
@@ -1561,11 +1884,16 @@ def _tool_context(
                     changed_fingerprint=changed_fingerprint,
                     budget_fingerprint=budget_fingerprint,
                     config_hash=config_hash,
+                    safety_fingerprint=cache_safety_fingerprint,
+                    git_head=str(cache_safety_metadata.get("git_head", "")),
+                    changed_files_state=list(cache_safety_metadata.get("changed_files_state", [])),
                     payload=pack,
                     ttl_seconds=int(runtime_cfg.get("semantic_cache_ttl_seconds", 7200)),
                     max_entries=int(runtime_cfg.get("semantic_cache_max_entries", 800)),
                 )
     else:
+        if semantic_cache_enabled and semantic_store is None:
+            semantic_cache_reason = "store_unavailable"
         _debug_log("_tool_context: compile_context_pack start (semantic cache disabled)")
         pack = compile_context_pack(
             project_dir=project_dir,
@@ -1682,6 +2010,13 @@ def _tool_context(
         )
     if changed_files_fallback_reason:
         warnings.append(f"changed_files fallback detail: {changed_files_fallback_reason}")
+    detection_confidence = float(changed_files_detection.get("confidence", fallback_confidence) or fallback_confidence)
+    detection_provider = str(changed_files_detection.get("provider", "")).strip().lower()
+    if detection_provider == "git" and detection_confidence < 0.95:
+        warnings.append(
+            "git changed_files detection confidence below expected deterministic threshold; "
+            "consider passing changed_files explicitly"
+        )
     if strict_changed_files_effective and (strict_scope_filtered_top_files > 0 or strict_scope_filtered_snippets > 0):
         warnings.append(
             "strict_changed_files pruned non-changed context items "
@@ -1692,6 +2027,8 @@ def _tool_context(
             "strict_changed_files injected changed-file fallback context "
             f"(top_files={strict_scope_injected_top_files}, snippets={strict_scope_injected_snippets})"
         )
+    if semantic_cache_enabled and semantic_cache_reason == "store_unavailable":
+        warnings.append("semantic cache requested but storage backend is unavailable; fell back to fresh compilation")
 
     verify_plan = pack.get("verify_plan", {}) if isinstance(pack.get("verify_plan", {}), dict) else {}
     target_tests = verify_plan.get("target_tests", [])
@@ -1761,6 +2098,7 @@ def _tool_context(
         "changed_files_used": changed_files_list,
         "changed_files_source": changed_files_source,
         "changed_files_count": len(changed_files_list),
+        "changed_files_detection": dict(changed_files_detection),
         "strict_changed_files": strict_changed_files_effective,
         "strict_scope_filtered_top_files": int(strict_scope_filtered_top_files),
         "strict_scope_filtered_snippets": int(strict_scope_filtered_snippets),
@@ -1773,6 +2111,14 @@ def _tool_context(
         "semantic_cache_hit": bool(semantic_cache_hit),
         "semantic_cache_mode_used": str(semantic_cache_mode_used),
         "semantic_cache_similarity": round(float(semantic_cache_similarity), 6),
+        "semantic_cache_reason": str(semantic_cache_reason),
+        "semantic_cache_invalidation_reason": str(semantic_cache_invalidation_reason),
+        "semantic_cache_safety_fingerprint": str(cache_safety_fingerprint),
+        "semantic_cache_safety": {
+            "git_head": str(cache_safety_metadata.get("git_head", "")),
+            "changed_files_state_count": int(len(cache_safety_metadata.get("changed_files_state", []))),
+            "fingerprint": str(cache_safety_metadata.get("fingerprint", cache_safety_fingerprint)),
+        },
         "compression_rules_applied": compression_rules_applied,
         "compression_saved_chars": int(compression_saved_chars),
         "constraint_mode": constraint_mode_value,
@@ -2008,6 +2354,10 @@ def create_server() -> FastMCP:
             if job is None or not str(job_id).strip().lower().startswith("index_"):
                 return {"error": "job_not_found", "job_id": job_id}
             status_payload = job.to_status()
+            status_payload["processed_files"] = int(status_payload.get("completed_commands", 0) or 0)
+            status_payload["total_files"] = int(status_payload.get("total_commands", 0) or 0)
+            status_payload["current_path"] = str(status_payload.get("current_command", ""))
+            status_payload["progress_pct"] = float(status_payload.get("progress", 0.0) or 0.0)
             status_payload["state_source"] = "job_state"
             return status_payload
         except Exception as exc:
@@ -2057,6 +2407,7 @@ def create_server() -> FastMCP:
                 event_type_counts: JSONDict = {}
                 first_seq = 0
                 last_seq = 0
+                latest_progress_event: JSONDict = {}
                 for item in events_all:
                     event_name = str(item.get("event", "")).strip().lower() or "unknown"
                     event_type_counts[event_name] = int(event_type_counts.get(event_name, 0)) + 1
@@ -2065,6 +2416,8 @@ def create_server() -> FastMCP:
                         if first_seq == 0:
                             first_seq = seq
                         last_seq = seq
+                    if event_name == "index_progress":
+                        latest_progress_event = dict(item)
                 payload["summary"] = {
                     "latest_state": str(status_payload.get("state", "")),
                     "latest_stage": str(status_payload.get("stage", "")),
@@ -2072,6 +2425,14 @@ def create_server() -> FastMCP:
                     "event_type_counts": event_type_counts,
                     "seq_range": {"first": int(first_seq), "last": int(last_seq)},
                     "constraint_repair_count": 0,
+                    "progress": {
+                        "processed_files": int(status_payload.get("completed_commands", 0) or 0),
+                        "total_files": int(status_payload.get("total_commands", 0) or 0),
+                        "current_path": str(status_payload.get("current_command", "")),
+                        "eta_sec": status_payload.get("eta_sec"),
+                        "progress_pct": float(status_payload.get("progress", 0.0) or 0.0),
+                        "latest_progress_event_seq": int(latest_progress_event.get("seq", 0) or 0),
+                    },
                 }
             return payload
         except Exception as exc:
@@ -2452,6 +2813,8 @@ def create_server() -> FastMCP:
             command_elapsed_sec: float | None = None,
             command_timeout_sec: float | None = None,
             command_progress_pct: float | None = None,
+            stall_detected: bool | None = None,
+            stall_elapsed_sec: float | None = None,
         ) -> None:
             if self._job.is_terminal():
                 return
@@ -2472,7 +2835,38 @@ def create_server() -> FastMCP:
                 heartbeat_payload["command_timeout_sec"] = round(float(command_timeout_sec), 1)
             if command_progress_pct is not None:
                 heartbeat_payload["command_progress_pct"] = round(float(command_progress_pct), 2)
+            if stall_detected is not None:
+                heartbeat_payload["stall_detected"] = bool(stall_detected)
+            if stall_elapsed_sec is not None:
+                heartbeat_payload["stall_elapsed_sec"] = round(float(stall_elapsed_sec), 1)
             self._job.add_live_event("heartbeat", heartbeat_payload)
+
+        def on_command_output(
+            self,
+            job_id: str,
+            command: str,
+            stream: str,
+            chunk: str,
+            *,
+            truncated: bool = False,
+        ) -> None:
+            if self._job.is_terminal():
+                return
+            text = str(chunk or "").strip()
+            if not text:
+                return
+            if len(text) > _VERIFY_OUTPUT_CHUNK_LIMIT:
+                text = text[-_VERIFY_OUTPUT_CHUNK_LIMIT:]
+                truncated = True
+            self._job.add_live_event(
+                "command_output",
+                {
+                    "command": command,
+                    "stream": str(stream or "stdout"),
+                    "chunk": text,
+                    "truncated": bool(truncated),
+                },
+            )
 
         def on_cache_hit(self, job_id: str, command: str) -> None:
             if self._job.is_terminal():
@@ -2550,6 +2944,32 @@ def create_server() -> FastMCP:
             if job is None:
                 return {"error": "job_not_found", "job_id": job_id}
             status_payload = job.to_status()
+            tail_events = job.get_events(0)[-40:]
+            recent_output: list[JSONDict] = []
+            stall_detected = False
+            stall_elapsed_sec = 0.0
+            for event in tail_events:
+                event_name = str(event.get("event", "")).strip().lower()
+                if event_name == "command_output":
+                    chunk = str(event.get("chunk", "")).strip()
+                    if chunk:
+                        recent_output.append(
+                            {
+                                "seq": int(event.get("seq", 0) or 0),
+                                "stream": str(event.get("stream", "stdout")),
+                                "command": str(event.get("command", "")),
+                                "chunk": chunk,
+                            }
+                        )
+                        if len(recent_output) > 5:
+                            recent_output = recent_output[-5:]
+                if event_name == "heartbeat" and _coerce_bool(event.get("stall_detected"), False):
+                    stall_detected = True
+                    stall_elapsed_sec = max(stall_elapsed_sec, float(event.get("stall_elapsed_sec", 0.0) or 0.0))
+            status_payload["recent_output"] = recent_output
+            status_payload["stall_detected"] = bool(stall_detected)
+            if stall_detected:
+                status_payload["stall_elapsed_sec"] = round(float(stall_elapsed_sec), 1)
             status_payload["state_source"] = "job_state"
             status_payload["constraint_repair_count"] = 0
             return status_payload

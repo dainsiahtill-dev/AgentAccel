@@ -13,7 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from .runners import run_command
@@ -165,12 +165,25 @@ def _run_with_timeout_detection(
     project_dir: Path, 
     timeout_seconds: int,
     log_path: Path,
-    jsonl_path: Path
+    jsonl_path: Path,
+    output_callback: Callable[[str, str], None] | None = None,
 ) -> dict[str, Any]:
     """Run command with enhanced timeout detection and logging."""
     start_time = time.perf_counter()
     try:
-        result = run_command(command, project_dir, timeout_seconds)
+        if output_callback is None:
+            result = run_command(command, project_dir, timeout_seconds)
+        else:
+            try:
+                result = run_command(
+                    command,
+                    project_dir,
+                    timeout_seconds,
+                    output_callback=output_callback,
+                )
+            except TypeError:
+                # Backward-compatible path for monkeypatched runners that do not accept output_callback.
+                result = run_command(command, project_dir, timeout_seconds)
         elapsed = time.perf_counter() - start_time
         _append_line(log_path, f"COMMAND_COMPLETE {command} DURATION={elapsed:.3f}s")
         return result
@@ -434,16 +447,33 @@ def _start_command_tick_thread(
     job_id: str,
     command: str,
     timeout_seconds: int,
+    stall_timeout_seconds: float | None = None,
+    activity_probe: Callable[[], float] | None = None,
 ) -> tuple[threading.Event, float, threading.Thread]:
     stop_event = threading.Event()
     started = time.perf_counter()
     timeout_sec = max(1.0, float(timeout_seconds))
+    stall_timeout = None
+    if stall_timeout_seconds is not None:
+        stall_timeout = max(1.0, float(stall_timeout_seconds))
 
     def _ticker() -> None:
         while not stop_event.wait(1.0):
             elapsed = max(0.0, time.perf_counter() - started)
             progress_pct = min(99.0, (elapsed / timeout_sec) * 100.0)
             eta_sec = max(0.0, timeout_sec - elapsed)
+            last_activity = started
+            if activity_probe is not None:
+                try:
+                    last_activity = float(activity_probe())
+                except Exception:
+                    last_activity = started
+            stall_detected = False
+            stall_elapsed = 0.0
+            if stall_timeout is not None:
+                idle_sec = max(0.0, time.perf_counter() - last_activity)
+                stall_detected = idle_sec >= stall_timeout
+                stall_elapsed = max(0.0, idle_sec - stall_timeout)
             _safe_callback_call(
                 callback,
                 "on_heartbeat",
@@ -455,6 +485,8 @@ def _start_command_tick_thread(
                 command_elapsed_sec=elapsed,
                 command_timeout_sec=timeout_sec,
                 command_progress_pct=progress_pct,
+                stall_detected=stall_detected if stall_timeout is not None else None,
+                stall_elapsed_sec=stall_elapsed if stall_timeout is not None else None,
             )
 
     thread = threading.Thread(target=_ticker, daemon=True)
@@ -559,6 +591,15 @@ def run_verify(
         runtime_cfg.get("verify_preflight_timeout_seconds", 5),
         5,
     )
+    try:
+        stall_timeout_raw = float(runtime_cfg.get("verify_stall_timeout_seconds", 20.0))
+    except (TypeError, ValueError):
+        stall_timeout_raw = 20.0
+    verify_stall_timeout_seconds: float | None
+    if stall_timeout_raw <= 0:
+        verify_stall_timeout_seconds = None
+    else:
+        verify_stall_timeout_seconds = min(float(per_command_timeout), max(1.0, stall_timeout_raw))
     workspace_routing_enabled = _normalize_bool(runtime_cfg.get("verify_workspace_routing_enabled", True), True)
     verify_mode = "fail_fast" if verify_fail_fast else ("parallel" if verify_workers > 1 else "sequential")
 
@@ -580,6 +621,7 @@ def run_verify(
             "cache_failed_results": bool(verify_cache_failed_results),
             "cache_failed_ttl_seconds": int(verify_cache_failed_ttl_seconds),
             "preflight_enabled": bool(verify_preflight_enabled),
+            "stall_timeout_seconds": float(verify_stall_timeout_seconds) if verify_stall_timeout_seconds is not None else None,
             "workspace_routing_enabled": bool(workspace_routing_enabled),
         },
     )
@@ -1038,15 +1080,25 @@ def run_verify_with_callback(
         runtime_cfg.get("verify_preflight_timeout_seconds", 5),
         5,
     )
+    try:
+        stall_timeout_raw = float(runtime_cfg.get("verify_stall_timeout_seconds", 20.0))
+    except (TypeError, ValueError):
+        stall_timeout_raw = 20.0
+    verify_stall_timeout_seconds: float | None
+    if stall_timeout_raw <= 0:
+        verify_stall_timeout_seconds = None
+    else:
+        verify_stall_timeout_seconds = min(float(per_command_timeout), max(1.0, stall_timeout_raw))
     workspace_routing_enabled = _normalize_bool(runtime_cfg.get("verify_workspace_routing_enabled", True), True)
     verify_mode = "fail_fast" if verify_fail_fast else ("parallel" if verify_workers > 1 else "sequential")
 
     nonce = uuid4().hex[:12]
+    verify_job_id = "verify_" + nonce
     log_path = paths["verify"] / f"verify_{nonce}.log"
     jsonl_path = paths["verify"] / f"verify_{nonce}.jsonl"
     commands = select_verify_commands(config=config, changed_files=changed_files)
 
-    callback.on_start("verify_" + nonce, len(commands))
+    callback.on_start(verify_job_id, len(commands))
 
     _append_line(log_path, f"VERIFICATION_START {nonce} {_utc_now()}")
     _append_line(log_path, f"ENV cwd={project_dir} python={shutil.which('python') or ''}")
@@ -1061,6 +1113,7 @@ def run_verify_with_callback(
             "cache_failed_results": bool(verify_cache_failed_results),
             "cache_failed_ttl_seconds": int(verify_cache_failed_ttl_seconds),
             "preflight_enabled": bool(verify_preflight_enabled),
+            "stall_timeout_seconds": float(verify_stall_timeout_seconds) if verify_stall_timeout_seconds is not None else None,
             "workspace_routing_enabled": bool(workspace_routing_enabled),
         },
     )
@@ -1073,7 +1126,7 @@ def run_verify_with_callback(
     cache_hits = 0
     cache_misses = 0
 
-    callback.on_stage_change("verify_" + nonce, VerifyStage.LOAD_CACHE)
+    callback.on_stage_change(verify_job_id, VerifyStage.LOAD_CACHE)
 
     if cache_enabled:
         loaded_entries = _load_cache_entries(cache_path)
@@ -1086,7 +1139,7 @@ def run_verify_with_callback(
     elif verify_cache_enabled_cfg:
         _append_line(log_path, "CACHE_DISABLED no changed_files fingerprint")
 
-    callback.on_stage_change("verify_" + nonce, VerifyStage.SELECT_CMDS)
+    callback.on_stage_change(verify_job_id, VerifyStage.SELECT_CMDS)
 
     degraded = False
     degrade_reasons: list[str] = []
@@ -1134,19 +1187,38 @@ def run_verify_with_callback(
                     "fail_fast_skipped": False,
                 },
             )
-            callback.on_skip("verify_" + nonce, command, reason)
+            callback.on_skip(verify_job_id, command, reason)
             continue
         runnable_commands.append(command)
 
     results: list[dict[str, Any]] = []
     fail_fast_skipped_commands: list[str] = []
 
-    callback.on_stage_change("verify_" + nonce, VerifyStage.RUNNING)
+    def _make_output_callback(command_name: str, activity_ref: dict[str, float]) -> Callable[[str, str], None]:
+        def _emit(stream: str, chunk: str) -> None:
+            activity_ref["ts"] = time.perf_counter()
+            text = str(chunk or "")
+            truncated = len(text) > 600
+            if truncated:
+                text = text[-600:]
+            _safe_callback_call(
+                callback,
+                "on_command_output",
+                verify_job_id,
+                command_name,
+                str(stream or "stdout"),
+                text,
+                truncated=truncated,
+            )
+
+        return _emit
+
+    callback.on_stage_change(verify_job_id, VerifyStage.RUNNING)
 
     if verify_fail_fast:
         for index, command in enumerate(runnable_commands):
-            callback.on_command_start("verify_" + nonce, command, index, len(runnable_commands))
-            callback.on_progress("verify_" + nonce, index, len(runnable_commands), command)
+            callback.on_command_start(verify_job_id, command, index, len(runnable_commands))
+            callback.on_progress(verify_job_id, index, len(runnable_commands), command)
 
             cache_key: str | None = None
             if cache_enabled:
@@ -1182,30 +1254,46 @@ def run_verify_with_callback(
                         total_commands=len(runnable_commands),
                         fail_fast_skipped=fail_fast_skip_flag,
                     )
-                    callback.on_cache_hit("verify_" + nonce, command)
+                    callback.on_cache_hit(verify_job_id, command)
                     _emit_command_complete_event(
                         callback,
-                        "verify_" + nonce,
+                        verify_job_id,
                         command,
                         cached_result,
                         completed=index + 1,
                         total=len(runnable_commands),
                     )
-                    callback.on_progress("verify_" + nonce, index + 1, len(runnable_commands), "")
+                    callback.on_progress(verify_job_id, index + 1, len(runnable_commands), "")
                     if cache_failure:
                         fail_fast_skipped_commands = runnable_commands[index + 1 :]
                         break
                     continue
                 cache_misses += 1
 
+            activity_ref = {"ts": time.perf_counter()}
+            output_callback = _make_output_callback(command, activity_ref)
+            def _activity_probe(ref: dict[str, float] = activity_ref) -> float:
+                return float(ref["ts"])
             stop_tick, cmd_started, tick_thread = _start_command_tick_thread(
                 callback,
-                job_id="verify_" + nonce,
+                job_id=verify_job_id,
                 command=command,
                 timeout_seconds=per_command_timeout,
+                stall_timeout_seconds=verify_stall_timeout_seconds,
+                activity_probe=_activity_probe,
             )
             try:
-                live_result = _normalize_live_result(run_command(command, project_dir, per_command_timeout))
+                try:
+                    live_result = _normalize_live_result(
+                        run_command(
+                            command,
+                            project_dir,
+                            per_command_timeout,
+                            output_callback=output_callback,
+                        )
+                    )
+                except TypeError:
+                    live_result = _normalize_live_result(run_command(command, project_dir, per_command_timeout))
             finally:
                 stop_tick.set()
                 tick_thread.join(timeout=0.1)
@@ -1213,7 +1301,7 @@ def run_verify_with_callback(
             _safe_callback_call(
                 callback,
                 "on_heartbeat",
-                "verify_" + nonce,
+                verify_job_id,
                 cmd_elapsed,
                 max(0.0, float(per_command_timeout) - cmd_elapsed),
                 "running",
@@ -1221,10 +1309,12 @@ def run_verify_with_callback(
                 command_elapsed_sec=cmd_elapsed,
                 command_timeout_sec=float(per_command_timeout),
                 command_progress_pct=100.0,
+                stall_detected=False if verify_stall_timeout_seconds is not None else None,
+                stall_elapsed_sec=0.0 if verify_stall_timeout_seconds is not None else None,
             )
             _emit_command_complete_event(
                 callback,
-                "verify_" + nonce,
+                verify_job_id,
                 command,
                 live_result,
                 completed=index + 1,
@@ -1254,7 +1344,7 @@ def run_verify_with_callback(
                     failed_ttl_seconds=verify_cache_failed_ttl_seconds,
                 ):
                     cache_dirty = True
-            callback.on_progress("verify_" + nonce, index + 1, len(runnable_commands), "")
+            callback.on_progress(verify_job_id, index + 1, len(runnable_commands), "")
             if _is_failure(live_result):
                 fail_fast_skipped_commands = runnable_commands[index + 1 :]
                 break
@@ -1293,7 +1383,7 @@ def run_verify_with_callback(
                         total_commands=len(runnable_commands),
                         fail_fast_skipped=False,
                     )
-                    callback.on_cache_hit("verify_" + nonce, command)
+                    callback.on_cache_hit(verify_job_id, command)
                     continue
                 cache_misses += 1
             runnable_with_keys.append((command, cache_key, index))
@@ -1302,7 +1392,7 @@ def run_verify_with_callback(
             overall_start = time.perf_counter()
             max_overall_timeout = per_command_timeout * len(runnable_with_keys) * 2
 
-            callback.on_stage_change("verify_" + nonce, VerifyStage.PARALLEL)
+            callback.on_stage_change(verify_job_id, VerifyStage.PARALLEL)
 
             try:
                 with ThreadPoolExecutor(max_workers=min(verify_workers, len(runnable_with_keys))) as pool:
@@ -1310,13 +1400,19 @@ def run_verify_with_callback(
                     total_commands = len(runnable_with_keys)
                     completed_count = 0
                     for index, (command, cache_key, command_index) in enumerate(runnable_with_keys):
-                        callback.on_command_start("verify_" + nonce, command, index, total_commands)
-                        callback.on_progress("verify_" + nonce, completed_count, total_commands, command)
+                        callback.on_command_start(verify_job_id, command, index, total_commands)
+                        callback.on_progress(verify_job_id, completed_count, total_commands, command)
+                        activity_ref = {"ts": time.perf_counter()}
+                        output_callback = _make_output_callback(command, activity_ref)
+                        def _activity_probe(ref: dict[str, float] = activity_ref) -> float:
+                            return float(ref["ts"])
                         stop_tick, cmd_started, tick_thread = _start_command_tick_thread(
                             callback,
-                            job_id="verify_" + nonce,
+                            job_id=verify_job_id,
                             command=command,
                             timeout_seconds=per_command_timeout,
+                            stall_timeout_seconds=verify_stall_timeout_seconds,
+                            activity_probe=_activity_probe,
                         )
                         future = pool.submit(
                             _run_with_timeout_detection,
@@ -1325,6 +1421,7 @@ def run_verify_with_callback(
                             per_command_timeout,
                             log_path,
                             jsonl_path,
+                            output_callback,
                         )
                         future_map[future] = (command, cache_key, cmd_started, command_index, stop_tick, tick_thread)
 
@@ -1337,7 +1434,7 @@ def run_verify_with_callback(
                             _safe_callback_call(
                                 callback,
                                 "on_heartbeat",
-                                "verify_" + nonce,
+                                verify_job_id,
                                 cmd_elapsed,
                                 max(0.0, float(per_command_timeout) - cmd_elapsed),
                                 "running",
@@ -1345,10 +1442,12 @@ def run_verify_with_callback(
                                 command_elapsed_sec=cmd_elapsed,
                                 command_timeout_sec=float(per_command_timeout),
                                 command_progress_pct=100.0,
+                                stall_detected=False if verify_stall_timeout_seconds is not None else None,
+                                stall_elapsed_sec=0.0 if verify_stall_timeout_seconds is not None else None,
                             )
                             _emit_command_complete_event(
                                 callback,
-                                "verify_" + nonce,
+                                verify_job_id,
                                 command,
                                 live_result,
                                 completed=completed_count + 1,
@@ -1387,11 +1486,11 @@ def run_verify_with_callback(
                                 "stderr": f"agent-accel: ThreadPool future timeout after {per_command_timeout}s",
                                 "timed_out": True,
                             }
-                            callback.on_error("verify_" + nonce, command, "timeout")
+                            callback.on_error(verify_job_id, command, "timeout")
                             _safe_callback_call(
                                 callback,
                                 "on_heartbeat",
-                                "verify_" + nonce,
+                                verify_job_id,
                                 elapsed,
                                 0.0,
                                 "running",
@@ -1399,10 +1498,12 @@ def run_verify_with_callback(
                                 command_elapsed_sec=elapsed,
                                 command_timeout_sec=float(per_command_timeout),
                                 command_progress_pct=100.0,
+                                stall_detected=False if verify_stall_timeout_seconds is not None else None,
+                                stall_elapsed_sec=0.0 if verify_stall_timeout_seconds is not None else None,
                             )
                             _emit_command_complete_event(
                                 callback,
-                                "verify_" + nonce,
+                                verify_job_id,
                                 command,
                                 timeout_result,
                                 completed=completed_count + 1,
@@ -1432,11 +1533,11 @@ def run_verify_with_callback(
                                 "stderr": f"agent-accel: ThreadPool future error: {exc}",
                                 "timed_out": False,
                             }
-                            callback.on_error("verify_" + nonce, command, str(exc))
+                            callback.on_error(verify_job_id, command, str(exc))
                             _safe_callback_call(
                                 callback,
                                 "on_heartbeat",
-                                "verify_" + nonce,
+                                verify_job_id,
                                 elapsed,
                                 None,
                                 "running",
@@ -1444,10 +1545,12 @@ def run_verify_with_callback(
                                 command_elapsed_sec=elapsed,
                                 command_timeout_sec=float(per_command_timeout),
                                 command_progress_pct=100.0,
+                                stall_detected=False if verify_stall_timeout_seconds is not None else None,
+                                stall_elapsed_sec=0.0 if verify_stall_timeout_seconds is not None else None,
                             )
                             _emit_command_complete_event(
                                 callback,
-                                "verify_" + nonce,
+                                verify_job_id,
                                 command,
                                 error_result,
                                 completed=completed_count + 1,
@@ -1472,7 +1575,7 @@ def run_verify_with_callback(
                             tick_thread.join(timeout=0.1)
 
                         completed_count += 1
-                        callback.on_progress("verify_" + nonce, completed_count, len(runnable_with_keys), "")
+                        callback.on_progress(verify_job_id, completed_count, len(runnable_with_keys), "")
 
                         elapsed = time.perf_counter() - overall_start
                         eta = None
@@ -1483,7 +1586,7 @@ def run_verify_with_callback(
                         _safe_callback_call(
                             callback,
                             "on_heartbeat",
-                            "verify_" + nonce,
+                            verify_job_id,
                             elapsed,
                             eta,
                             "running",
@@ -1529,20 +1632,33 @@ def run_verify_with_callback(
                 elapsed = time.perf_counter() - overall_start
                 _append_line(log_path, f"THREADPOOL_ERROR ERROR={exc!r}")
                 _append_line(log_path, "FALLBACK_SEQUENTIAL_EXECUTION")
-                callback.on_stage_change("verify_" + nonce, VerifyStage.SEQUENTIAL)
+                callback.on_stage_change(verify_job_id, VerifyStage.SEQUENTIAL)
 
                 for i, (command, cache_key, command_index) in enumerate(runnable_with_keys):
                     if not any(r["command"] == command for r in results):
-                        callback.on_command_start("verify_" + nonce, command, i, len(runnable_with_keys))
+                        callback.on_command_start(verify_job_id, command, i, len(runnable_with_keys))
+                        activity_ref = {"ts": time.perf_counter()}
+                        output_callback = _make_output_callback(command, activity_ref)
+                        def _activity_probe(ref: dict[str, float] = activity_ref) -> float:
+                            return float(ref["ts"])
                         stop_tick, cmd_started, tick_thread = _start_command_tick_thread(
                             callback,
-                            job_id="verify_" + nonce,
+                            job_id=verify_job_id,
                             command=command,
                             timeout_seconds=per_command_timeout,
+                            stall_timeout_seconds=verify_stall_timeout_seconds,
+                            activity_probe=_activity_probe,
                         )
                         try:
                             live_result = _normalize_live_result(
-                                _run_with_timeout_detection(command, project_dir, per_command_timeout, log_path, jsonl_path)
+                                _run_with_timeout_detection(
+                                    command,
+                                    project_dir,
+                                    per_command_timeout,
+                                    log_path,
+                                    jsonl_path,
+                                    output_callback,
+                                )
                             )
                         finally:
                             stop_tick.set()
@@ -1551,7 +1667,7 @@ def run_verify_with_callback(
                         _safe_callback_call(
                             callback,
                             "on_heartbeat",
-                            "verify_" + nonce,
+                            verify_job_id,
                             cmd_elapsed,
                             max(0.0, float(per_command_timeout) - cmd_elapsed),
                             "running",
@@ -1559,10 +1675,12 @@ def run_verify_with_callback(
                             command_elapsed_sec=cmd_elapsed,
                             command_timeout_sec=float(per_command_timeout),
                             command_progress_pct=100.0,
+                            stall_detected=False if verify_stall_timeout_seconds is not None else None,
+                            stall_elapsed_sec=0.0 if verify_stall_timeout_seconds is not None else None,
                         )
                         _emit_command_complete_event(
                             callback,
-                            "verify_" + nonce,
+                            verify_job_id,
                             command,
                             live_result,
                             completed=i + 1,
@@ -1591,7 +1709,7 @@ def run_verify_with_callback(
                                 failed_ttl_seconds=verify_cache_failed_ttl_seconds,
                             ):
                                 cache_dirty = True
-                        callback.on_progress("verify_" + nonce, i + 1, len(runnable_with_keys), "")
+                        callback.on_progress(verify_job_id, i + 1, len(runnable_with_keys), "")
 
     if fail_fast_skipped_commands:
         for command in fail_fast_skipped_commands:
@@ -1610,9 +1728,9 @@ def run_verify_with_callback(
                     "fail_fast_skipped": True,
                 },
             )
-            callback.on_skip("verify_" + nonce, command, "fail_fast")
+            callback.on_skip(verify_job_id, command, "fail_fast")
 
-    callback.on_stage_change("verify_" + nonce, VerifyStage.CLEANUP)
+    callback.on_stage_change(verify_job_id, VerifyStage.CLEANUP)
 
     if cache_enabled and cache_dirty:
         cache_entries, _ = _prune_cache_entries(
@@ -1670,7 +1788,7 @@ def run_verify_with_callback(
         },
     )
 
-    callback.on_complete("verify_" + nonce, status, exit_code)
+    callback.on_complete(verify_job_id, status, exit_code)
 
     return {
         "status": status,

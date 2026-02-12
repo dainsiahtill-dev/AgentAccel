@@ -53,8 +53,21 @@ class VerifyProgressCallback(Protocol):
         command_elapsed_sec: float | None = None,
         command_timeout_sec: float | None = None,
         command_progress_pct: float | None = None,
+        stall_detected: bool | None = None,
+        stall_elapsed_sec: float | None = None,
     ) -> None:
         """心跳 (每 10 秒触发)"""
+
+    def on_command_output(
+        self,
+        job_id: str,
+        command: str,
+        stream: str,
+        chunk: str,
+        *,
+        truncated: bool = False,
+    ) -> None:
+        """命令输出流事件"""
 
     def on_cache_hit(self, job_id: str, command: str) -> None:
         """缓存命中"""
@@ -107,6 +120,19 @@ class NoOpCallback(VerifyProgressCallback):
         command_elapsed_sec: float | None = None,
         command_timeout_sec: float | None = None,
         command_progress_pct: float | None = None,
+        stall_detected: bool | None = None,
+        stall_elapsed_sec: float | None = None,
+    ) -> None:
+        pass
+
+    def on_command_output(
+        self,
+        job_id: str,
+        command: str,
+        stream: str,
+        chunk: str,
+        *,
+        truncated: bool = False,
     ) -> None:
         pass
 

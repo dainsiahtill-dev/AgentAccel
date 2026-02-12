@@ -1754,3 +1754,229 @@ def test_index_cancel_finalizes_running_job(tmp_path: Path, monkeypatch) -> None
 
     status = status_fn(job_id=job_id)
     assert status.get("state") == mcp_server.JobState.CANCELLED
+
+
+def test_index_progress_events_expose_file_metrics(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "index_progress_metrics_project"
+    project_dir.mkdir(parents=True)
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    def fake_tool_index_build(project: str = ".", full: bool = True, progress_callback=None):
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "stage": "scan_files",
+                    "processed_files": 2,
+                    "total_files": 8,
+                    "current_path": "src/a.py",
+                    "changed_files": 1,
+                }
+            )
+            progress_callback(
+                {
+                    "stage": "index_payloads",
+                    "processed_files": 5,
+                    "total_files": 8,
+                    "current_path": "src/b.py",
+                    "changed_files": 2,
+                }
+            )
+        time.sleep(0.05)
+        return {
+            "status": "ok",
+            "manifest": {"counts": {"files": 8}, "indexed_files": [f"src/{idx}.py" for idx in range(8)]},
+        }
+
+    monkeypatch.setattr(mcp_server, "_tool_index_build", fake_tool_index_build)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    build_fn = tools["accel_index_build"].fn
+    status_fn = tools["accel_index_status"].fn
+    events_fn = tools["accel_index_events"].fn
+
+    started = build_fn(project=str(project_dir), full=True, wait_for_completion=False)
+    job_id = str(started["job_id"])
+
+    final_status = {}
+    for _ in range(40):
+        final_status = status_fn(job_id=job_id)
+        if final_status.get("state") == mcp_server.JobState.COMPLETED:
+            break
+        time.sleep(0.05)
+
+    assert final_status.get("state") == mcp_server.JobState.COMPLETED
+    assert int(final_status.get("processed_files", 0)) >= 0
+    assert int(final_status.get("total_files", 0)) >= 0
+    assert "current_path" in final_status
+
+    events_payload = events_fn(job_id=job_id, since_seq=0, max_events=200, include_summary=True)
+    events = events_payload.get("events", [])
+    assert isinstance(events, list)
+    progress_events = [event for event in events if event.get("event") == "index_progress"]
+    assert len(progress_events) >= 1
+    assert any("processed_files" in event for event in progress_events)
+    summary = events_payload.get("summary", {})
+    assert isinstance(summary, dict)
+    progress_summary = summary.get("progress", {})
+    assert isinstance(progress_summary, dict)
+    assert "processed_files" in progress_summary
+    assert "total_files" in progress_summary
+
+
+def test_verify_events_capture_stream_output_and_stall_signal(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "verify_stream_output_project"
+    project_dir.mkdir(parents=True)
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir, cli_overrides=None: {
+            "runtime": {"accel_home": str(tmp_path / ".accel-home")},
+            "verify": {},
+        },
+    )
+
+    def fake_run_verify_with_callback(project_dir, config, changed_files=None, callback=None):
+        assert callback is not None
+        cmd = "python -c \"print('ok')\""
+        callback.on_start("verify_fake", 1)
+        callback.on_stage_change("verify_fake", mcp_server.VerifyStage.RUNNING)
+        callback.on_command_start("verify_fake", cmd, 0, 1)
+        callback.on_command_output("verify_fake", cmd, "stdout", "line-a\n", truncated=False)
+        callback.on_command_output("verify_fake", cmd, "stderr", "warn-a\n", truncated=False)
+        callback.on_heartbeat(
+            "verify_fake",
+            5.0,
+            1.0,
+            "running",
+            current_command=cmd,
+            command_elapsed_sec=5.0,
+            command_timeout_sec=8.0,
+            command_progress_pct=62.5,
+            stall_detected=True,
+            stall_elapsed_sec=2.0,
+        )
+        callback.on_command_complete(
+            "verify_fake",
+            cmd,
+            0,
+            6.0,
+            completed=1,
+            total=1,
+            stdout_tail="line-a",
+            stderr_tail="warn-a",
+        )
+        callback.on_progress("verify_fake", 1, 1, "")
+        callback.on_complete("verify_fake", "success", 0)
+        return {
+            "status": "success",
+            "exit_code": 0,
+            "nonce": "stream_output_nonce",
+            "log_path": str(tmp_path / "verify_stream.log"),
+            "jsonl_path": str(tmp_path / "verify_stream.jsonl"),
+            "commands": [cmd],
+            "results": [],
+            "degraded": False,
+            "fail_fast": False,
+            "fail_fast_skipped_commands": [],
+            "cache_enabled": False,
+            "cache_hits": 0,
+            "cache_misses": 1,
+        }
+
+    monkeypatch.setattr(mcp_server, "run_verify_with_callback", fake_run_verify_with_callback)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    start_fn = tools["accel_verify_start"].fn
+    status_fn = tools["accel_verify_status"].fn
+    events_fn = tools["accel_verify_events"].fn
+
+    started = start_fn(project=str(project_dir))
+    job_id = str(started["job_id"])
+
+    final_status = {}
+    for _ in range(30):
+        final_status = status_fn(job_id=job_id)
+        if final_status.get("state") == mcp_server.JobState.COMPLETED:
+            break
+        time.sleep(0.05)
+
+    assert final_status.get("state") == mcp_server.JobState.COMPLETED
+    recent_output = final_status.get("recent_output", [])
+    assert isinstance(recent_output, list)
+    assert len(recent_output) >= 1
+    assert bool(final_status.get("stall_detected")) is True
+
+    payload = events_fn(job_id=job_id, since_seq=0, max_events=200, include_summary=True)
+    summary = payload.get("summary", {})
+    assert isinstance(summary, dict)
+    stats = summary.get("command_stats", {})
+    assert isinstance(stats, dict)
+    assert int(stats.get("output_chunks", 0)) >= 2
+    assert int(stats.get("stall_heartbeats", 0)) >= 1
+    summary_output = summary.get("recent_output", [])
+    assert isinstance(summary_output, list)
+    assert len(summary_output) >= 1
+
+
+def test_tool_context_exposes_changed_files_detection_details(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_changed_detection_project"
+    project_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {"runtime": {"accel_home": str(tmp_path / ".accel-home"), "semantic_cache_enabled": False}},
+    )
+    monkeypatch.setattr(mcp_server, "_discover_changed_files_from_git", lambda project_dir, limit=200: ["src/a.py"])
+    monkeypatch.setattr(
+        mcp_server,
+        "_discover_changed_files_from_git_details",
+        lambda project_dir, limit=200: (
+            ["src/a.py"],
+            {
+                "provider": "git",
+                "available": True,
+                "reason": "ok",
+                "sources": ["status_porcelain", "staged_diff"],
+                "source_counts": {"status_porcelain": 1, "staged_diff": 1},
+                "confidence": 0.97,
+                "git_root": str(project_dir),
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "compile_context_pack",
+        lambda **kwargs: {
+            "version": 1,
+            "task": str(kwargs.get("task", "")),
+            "generated_at": "2026-02-12T00:00:00+00:00",
+            "budget": {"max_chars": 6000, "max_snippets": 16, "top_n_files": 6},
+            "top_files": [{"path": "src/a.py", "score": 1.0, "reasons": ["changed_file"], "signals": []}],
+            "snippets": [{"path": "src/a.py", "content": "print('ok')", "start_line": 1, "end_line": 1}],
+            "verify_plan": {"target_tests": [], "target_checks": ["pytest -q"]},
+            "meta": {"source_chars_est": 7000},
+        },
+    )
+
+    result = mcp_server._tool_context(
+        project=str(project_dir),
+        task="inspect changed files detection details",
+        changed_files=None,
+    )
+
+    assert result["status"] == "ok"
+    assert result["changed_files_source"] == "git_auto"
+    detection = result.get("changed_files_detection", {})
+    assert isinstance(detection, dict)
+    assert detection.get("provider") == "git"
+    assert float(detection.get("confidence", 0.0)) >= 0.9
+    assert "sources" in detection

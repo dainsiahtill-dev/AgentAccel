@@ -1,0 +1,41 @@
+﻿{
+  "run_id": "run_20260212_priority_iter_1246",
+  "mode": "S2",
+  "capability_matrix": {
+    "repo_read": true,
+    "repo_write": true,
+    "terminal": true,
+    "network": true
+  },
+  "contract_snapshot": {
+    "goal": "完善 agent-accel，优先落地 1+2+4+6（索引可观测性、验证实时输出、确定性变更识别、语义缓存可解释与安全失效）",
+    "acceptance_criteria": [
+      "索引阶段可观察到已扫描文件数/总文件数/当前路径/ETA",
+      "verify 任务可实时查看命令输出摘要与命令级进度，含卡顿信号",
+      "changed_files 自动识别具备 VCS 来源链与置信度说明",
+      "semantic cache 命中/失效可解释，并纳入 git 提交与文件状态安全边界"
+    ]
+  },
+  "scope": {
+    "target_modules": [
+      "accel/mcp_server.py",
+      "accel/indexers/__init__.py",
+      "accel/verify/orchestrator.py",
+      "accel/verify/runners.py",
+      "accel/verify/callbacks.py",
+      "accel/storage/semantic_cache.py",
+      "tests/unit/test_mcp_server.py",
+      "tests/unit/test_semantic_cache.py"
+    ],
+    "out_of_scope": [
+      "资源并发/CPU内存预算自动调节",
+      "质量回归指标体系",
+      "完整审计报告导出管线"
+    ]
+  },
+  "risk_notes": [
+    "回调字段扩展需保持兼容旧 callback 实现",
+    "缓存 key 变更会导致短期命中率下降（预期行为）",
+    "索引进度事件需限流避免事件风暴"
+  ]
+}

@@ -123,6 +123,9 @@ class SemanticCacheStore:
                       changed_fingerprint TEXT NOT NULL,
                       budget_fingerprint TEXT NOT NULL,
                       config_hash TEXT NOT NULL,
+                      safety_fingerprint TEXT NOT NULL DEFAULT '',
+                      git_head TEXT NOT NULL DEFAULT '',
+                      changed_files_state_json TEXT NOT NULL DEFAULT '[]',
                       payload_json TEXT NOT NULL,
                       created_utc TEXT NOT NULL,
                       expires_utc TEXT NOT NULL
@@ -143,9 +146,44 @@ class SemanticCacheStore:
                     """
                 )
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_context_expiry ON context_cache(expires_utc)")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_context_lookup ON context_cache(task_signature, budget_fingerprint, config_hash)"
+                )
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_verify_plan_expiry ON verify_plan_cache(expires_utc)")
+                self._ensure_column(
+                    conn,
+                    table_name="context_cache",
+                    column_name="safety_fingerprint",
+                    column_ddl="TEXT NOT NULL DEFAULT ''",
+                )
+                self._ensure_column(
+                    conn,
+                    table_name="context_cache",
+                    column_name="git_head",
+                    column_ddl="TEXT NOT NULL DEFAULT ''",
+                )
+                self._ensure_column(
+                    conn,
+                    table_name="context_cache",
+                    column_name="changed_files_state_json",
+                    column_ddl="TEXT NOT NULL DEFAULT '[]'",
+                )
             finally:
                 conn.close()
+
+    def _ensure_column(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        table_name: str,
+        column_name: str,
+        column_ddl: str,
+    ) -> None:
+        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        existing = {str(row[1]) for row in rows if len(row) > 1}
+        if column_name in existing:
+            return
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_ddl}")
 
     def _prune_table(self, conn: sqlite3.Connection, table_name: str, max_entries: int) -> None:
         now_text = _utc_text(_utc_now())
@@ -202,6 +240,7 @@ class SemanticCacheStore:
         budget_fingerprint: str,
         config_hash: str,
         threshold: float,
+        safety_fingerprint: str = "",
         max_candidates: int = 80,
     ) -> tuple[dict[str, Any] | None, float]:
         task_set = set(normalize_token_list(task_tokens + hint_tokens))
@@ -219,6 +258,7 @@ class SemanticCacheStore:
                     FROM context_cache
                     WHERE budget_fingerprint = ?
                       AND config_hash = ?
+                      AND safety_fingerprint = ?
                       AND expires_utc > ?
                     ORDER BY created_utc DESC
                     LIMIT ?
@@ -226,6 +266,7 @@ class SemanticCacheStore:
                     (
                         str(budget_fingerprint),
                         str(config_hash),
+                        str(safety_fingerprint or ""),
                         _utc_text(_utc_now()),
                         max(1, int(max_candidates)),
                     ),
@@ -273,9 +314,13 @@ class SemanticCacheStore:
         payload: dict[str, Any],
         ttl_seconds: int,
         max_entries: int,
+        safety_fingerprint: str = "",
+        git_head: str = "",
+        changed_files_state: list[dict[str, Any]] | None = None,
     ) -> None:
         created = _utc_now()
         expires = created + timedelta(seconds=max(1, int(ttl_seconds)))
+        changed_state_payload = changed_files_state if isinstance(changed_files_state, list) else []
         with self._lock:
             conn = self._connect()
             try:
@@ -290,10 +335,13 @@ class SemanticCacheStore:
                       changed_fingerprint,
                       budget_fingerprint,
                       config_hash,
+                      safety_fingerprint,
+                      git_head,
+                      changed_files_state_json,
                       payload_json,
                       created_utc,
                       expires_utc
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(cache_key) DO UPDATE SET
                       task_signature=excluded.task_signature,
                       task_tokens_json=excluded.task_tokens_json,
@@ -302,6 +350,9 @@ class SemanticCacheStore:
                       changed_fingerprint=excluded.changed_fingerprint,
                       budget_fingerprint=excluded.budget_fingerprint,
                       config_hash=excluded.config_hash,
+                      safety_fingerprint=excluded.safety_fingerprint,
+                      git_head=excluded.git_head,
+                      changed_files_state_json=excluded.changed_files_state_json,
                       payload_json=excluded.payload_json,
                       created_utc=excluded.created_utc,
                       expires_utc=excluded.expires_utc
@@ -315,6 +366,9 @@ class SemanticCacheStore:
                         str(changed_fingerprint),
                         str(budget_fingerprint),
                         str(config_hash),
+                        str(safety_fingerprint or ""),
+                        str(git_head or ""),
+                        json.dumps(changed_state_payload, ensure_ascii=False),
                         json.dumps(payload, ensure_ascii=False),
                         _utc_text(created),
                         _utc_text(expires),
@@ -323,6 +377,56 @@ class SemanticCacheStore:
                 self._prune_table(conn, "context_cache", max_entries=max_entries)
             finally:
                 conn.close()
+
+    def explain_context_miss(
+        self,
+        *,
+        task_signature_value: str,
+        budget_fingerprint: str,
+        config_hash: str,
+        safety_fingerprint: str,
+        changed_fingerprint: str,
+        git_head: str,
+    ) -> dict[str, Any]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT changed_fingerprint, safety_fingerprint, git_head, expires_utc
+                    FROM context_cache
+                    WHERE task_signature = ?
+                      AND budget_fingerprint = ?
+                      AND config_hash = ?
+                    ORDER BY created_utc DESC
+                    LIMIT 1
+                    """,
+                    (
+                        str(task_signature_value),
+                        str(budget_fingerprint),
+                        str(config_hash),
+                    ),
+                ).fetchone()
+            finally:
+                conn.close()
+        if row is None:
+            return {"reason": "no_prior_entry"}
+        prev_changed_fingerprint = str(row[0] or "")
+        prev_safety_fingerprint = str(row[1] or "")
+        prev_git_head = str(row[2] or "")
+        expires = _parse_utc(str(row[3]))
+        now = _utc_now()
+        if expires is not None and expires <= now:
+            return {"reason": "expired"}
+        if prev_safety_fingerprint and prev_safety_fingerprint != str(safety_fingerprint):
+            if prev_git_head and git_head and prev_git_head != str(git_head):
+                return {"reason": "git_head_changed"}
+            if prev_changed_fingerprint != str(changed_fingerprint):
+                return {"reason": "changed_files_set_changed"}
+            return {"reason": "changed_files_state_changed"}
+        if prev_changed_fingerprint != str(changed_fingerprint):
+            return {"reason": "changed_files_set_changed"}
+        return {"reason": "similarity_below_threshold_or_not_cached"}
 
     def get_verify_plan(self, cache_key: str) -> list[str] | None:
         with self._lock:
