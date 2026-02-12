@@ -258,6 +258,7 @@ Generate a budgeted context pack for a task.
 - `budget_source` / `budget_preset`: whether budget came from user input or auto policy
 - `changed_files_source`: `user` | `git_auto` | `manifest_recent` | `planner_fallback` | `index_head_fallback` | `none`
 - `token_estimator`: backend/model/encoding/calibration metadata used for estimation
+- `out_meta`: sidecar metadata file path (`*.meta.json`) containing estimator/baseline/source/audit fields
 
 #### `accel_verify`
 
@@ -290,6 +291,10 @@ Start incremental verification with runtime override options.
 | `verify_cache_ttl_seconds` | integer \| string | `null` | TTL for successful cache entries |
 | `verify_cache_failed_ttl_seconds` | integer \| string | `null` | TTL for failed cache entries (short-term) |
 | `verify_cache_max_entries` | integer \| string | `null` | Max retained command cache entries |
+| `wait_for_completion` | boolean \| string | `false` | Synchronous bounded wait for final result |
+| `sync_wait_seconds` | integer \| string | `null` | Override synchronous wait window (clamped) |
+| `sync_timeout_action` | string | `poll` | Timeout action: `poll` (default) or `cancel` |
+| `sync_cancel_grace_seconds` | number \| string | `null` | Extra grace window after auto-cancel request |
 
 **Response behavior:**
 - Returns quickly with `status=started` and `job_id` to avoid MCP 60s call timeouts.
@@ -297,6 +302,10 @@ Start incremental verification with runtime override options.
   - `accel_verify_status(job_id)`
   - `accel_verify_events(job_id, since_seq, max_events=30, include_summary=true)` (recommended compact mode)
 - For compatibility, a bounded synchronous wait mode is still available internally.
+- If `wait_for_completion=true` and timeout occurs:
+  - `sync_timeout_action=poll`: return `timed_out=true` and keep job running for async polling.
+  - `sync_timeout_action=cancel`: request auto-cancel and return cancelled timeout payload (no hanging job by default path).
+- `fast_loop=true` now defaults `verify_cache_failed_results=true` unless explicitly overridden, reducing repeat-failure cost in rapid loops.
 
 #### `accel_verify_events` (compact recommendations)
 
@@ -321,6 +330,8 @@ Tokenizer estimation runtime knobs (via `accel.local.yaml` runtime or env):
 - `token_estimator_model`: optional model name for encoder resolution
 - `token_estimator_calibration`: positive float multiplier (default `1.0`)
 - `token_estimator_fallback_chars_per_token`: fallback ratio when tokenizer is unavailable (default `4.0`)
+- `sync_verify_timeout_action`: `poll` | `cancel` (default `poll`)
+- `sync_verify_cancel_grace_seconds`: grace period after auto-cancel request (default `5.0`)
 
 ### Running MCP Server
 

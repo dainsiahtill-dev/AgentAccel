@@ -22,7 +22,7 @@ DEFAULT_PROJECT_CONFIG: dict[str, Any] = {
         "max_snippets": 60,
     },
     "verify": {
-        "python": ["python -m pytest -q", "python -m ruff check .", "python -m mypy ."],
+        "python": ["python -m pytest -q", "python -m ruff check .", "python -m mypy --explicit-package-bases ."],
         "node": ["npm test --silent", "npm run lint", "npm run typecheck"],
     },
 }
@@ -42,6 +42,8 @@ DEFAULT_LOCAL_CONFIG: dict[str, Any] = {
         "verify_cache_ttl_seconds": 900,
         "verify_cache_failed_ttl_seconds": 120,
         "verify_cache_max_entries": 400,
+        "sync_verify_timeout_action": "poll",
+        "sync_verify_cancel_grace_seconds": 5.0,
         "token_estimator_backend": "auto",
         "token_estimator_encoding": "cl100k_base",
         "token_estimator_model": "",
@@ -171,6 +173,14 @@ def _normalize_bool(value: Any, default_value: bool = False) -> bool:
     return text in {"1", "true", "yes", "on"}
 
 
+def _normalize_timeout_action(value: Any, default_value: str = "poll") -> str:
+    token = str(value or default_value).strip().lower()
+    if token in {"poll", "cancel"}:
+        return token
+    fallback = str(default_value or "poll").strip().lower()
+    return fallback if fallback in {"poll", "cancel"} else "poll"
+
+
 def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
     runtime = dict(config.get("runtime", {}))
     gpu = dict(config.get("gpu", {}))
@@ -257,6 +267,16 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
             os.environ["ACCEL_CONTEXT_REQUIRE_CHANGED_FILES"],
             bool(runtime.get("context_require_changed_files", False)),
         )
+    if os.environ.get("ACCEL_SYNC_VERIFY_TIMEOUT_ACTION"):
+        runtime["sync_verify_timeout_action"] = _normalize_timeout_action(
+            os.environ["ACCEL_SYNC_VERIFY_TIMEOUT_ACTION"],
+            str(runtime.get("sync_verify_timeout_action", "poll")),
+        )
+    if os.environ.get("ACCEL_SYNC_VERIFY_CANCEL_GRACE_SECONDS"):
+        runtime["sync_verify_cancel_grace_seconds"] = _normalize_positive_float(
+            os.environ["ACCEL_SYNC_VERIFY_CANCEL_GRACE_SECONDS"],
+            float(runtime.get("sync_verify_cancel_grace_seconds", 5.0)),
+        )
     if os.environ.get("ACCEL_GPU_ENABLED") is not None:
         gpu["enabled"] = _normalize_bool(os.environ["ACCEL_GPU_ENABLED"], False)
     if os.environ.get("ACCEL_LOCAL_CONFIG"):
@@ -338,6 +358,14 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
     runtime["context_require_changed_files"] = _normalize_bool(
         runtime.get("context_require_changed_files", False),
         default_value=False,
+    )
+    runtime["sync_verify_timeout_action"] = _normalize_timeout_action(
+        runtime.get("sync_verify_timeout_action", "poll"),
+        default_value="poll",
+    )
+    runtime["sync_verify_cancel_grace_seconds"] = _normalize_positive_float(
+        runtime.get("sync_verify_cancel_grace_seconds", 5.0),
+        default_value=5.0,
     )
 
     accel_home = runtime.get("accel_home")

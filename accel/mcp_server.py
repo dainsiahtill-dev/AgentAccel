@@ -45,6 +45,7 @@ _sync_verify_wait_seconds = int(os.environ.get("ACCEL_MCP_SYNC_VERIFY_WAIT_SECON
 _sync_verify_poll_seconds = float(os.environ.get("ACCEL_MCP_SYNC_VERIFY_POLL_SECONDS", "0.2"))
 _FALSE_LITERALS = {"", "0", "false", "no", "off", "none", "null", "undefined", "pydanticundefined"}
 _TRUE_LITERALS = {"1", "true", "yes", "on"}
+_SYNC_TIMEOUT_ACTIONS = {"poll", "cancel"}
 
 def _signal_handler(signum: int, frame) -> None:
     """Handle shutdown signals gracefully."""
@@ -171,6 +172,36 @@ def _coerce_optional_int(value: Any) -> int | None:
     return None
 
 
+def _coerce_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        token = value.strip()
+        if not token:
+            return None
+        if token.lower() in _FALSE_LITERALS:
+            return None
+        try:
+            return float(token)
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_sync_timeout_action(value: Any, default: str = "poll") -> str:
+    token = str(value or "").strip().lower()
+    if token in _SYNC_TIMEOUT_ACTIONS:
+        return token
+    fallback = str(default or "poll").strip().lower()
+    if fallback in _SYNC_TIMEOUT_ACTIONS:
+        return fallback
+    return "poll"
+
+
 def _coerce_events_limit(value: Any, default_value: int = 30, max_value: int = 500) -> int:
     parsed = _coerce_optional_int(value)
     if parsed is None:
@@ -238,6 +269,49 @@ def _build_context_output_pack(
     if not include_metadata:
         output.pop("meta", None)
     return output
+
+
+def _write_context_metadata_sidecar(out_path: Path, payload: JSONDict) -> Path:
+    sidecar_path = out_path.with_suffix(".meta.json")
+    token_reduction_payload = payload.get("token_reduction", {})
+    token_estimator_payload = payload.get("token_estimator", {})
+    sidecar_payload: JSONDict = {
+        "version": 1,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "out": str(out_path),
+        "output_mode": payload.get("output_mode", "full"),
+        "include_metadata": bool(payload.get("include_metadata", True)),
+        "budget": {
+            "source": payload.get("budget_source", "auto"),
+            "preset": payload.get("budget_preset", "small"),
+            "reason": payload.get("budget_reason", ""),
+            "effective": payload.get("budget_effective", {}),
+        },
+        "scope": {
+            "changed_files_source": payload.get("changed_files_source", "none"),
+            "changed_files_count": int(payload.get("changed_files_count", 0) or 0),
+            "changed_files_used": list(payload.get("changed_files_used", [])),
+            "fallback_confidence": float(payload.get("fallback_confidence", 0.0) or 0.0),
+            "strict_changed_files": bool(payload.get("strict_changed_files", False)),
+        },
+        "estimates": {
+            "context_chars": int(payload.get("context_chars", 0) or 0),
+            "source_chars": int(payload.get("source_chars", 0) or 0),
+            "estimated_tokens": int(payload.get("estimated_tokens", 0) or 0),
+            "estimated_source_tokens": int(payload.get("estimated_source_tokens", 0) or 0),
+            "estimated_changed_files_tokens": int(payload.get("estimated_changed_files_tokens", 0) or 0),
+            "estimated_snippets_only_tokens": int(payload.get("estimated_snippets_only_tokens", 0) or 0),
+            "compression_ratio": float(payload.get("compression_ratio", 1.0) or 1.0),
+            "token_reduction_ratio": float(payload.get("token_reduction_ratio", 0.0) or 0.0),
+            "token_reduction": token_reduction_payload if isinstance(token_reduction_payload, dict) else {},
+            "token_estimator": token_estimator_payload if isinstance(token_estimator_payload, dict) else {},
+        },
+        "selected_tests_count": int(payload.get("selected_tests_count", 0) or 0),
+        "selected_checks_count": int(payload.get("selected_checks_count", 0) or 0),
+        "warnings": list(payload.get("warnings", [])),
+    }
+    sidecar_path.write_text(json.dumps(sidecar_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return sidecar_path
 
 
 def _summarize_verify_events(events: list[dict[str, Any]], status: JSONDict) -> JSONDict:
@@ -376,15 +450,17 @@ def _wait_for_verify_job_result(
         time.sleep(poll)
 
 
-def _sync_verify_timeout_payload(job_id: str, wait_seconds: float) -> JSONDict:
+def _sync_verify_timeout_payload(job_id: str, wait_seconds: float, *, timeout_action: str = "poll") -> JSONDict:
     jm = JobManager()
     job = jm.get_job(job_id)
     status = job.to_status() if job is not None else {}
+    action = _coerce_sync_timeout_action(timeout_action, default="poll")
     return {
         "status": "running",
         "exit_code": 124,
         "timed_out": True,
         "job_id": job_id,
+        "timeout_action": action,
         "message": (
             f"accel_verify exceeded synchronous wait window ({wait_seconds:.1f}s); "
             "use accel_verify_status/accel_verify_events to continue polling."
@@ -395,6 +471,69 @@ def _sync_verify_timeout_payload(job_id: str, wait_seconds: float) -> JSONDict:
         "progress": status.get("progress", 0.0),
         "elapsed_sec": status.get("elapsed_sec", 0.0),
     }
+
+
+def _resolve_sync_timeout_defaults(project_dir: Path) -> tuple[str, float]:
+    action = "poll"
+    grace_seconds = 5.0
+    try:
+        config = resolve_effective_config(project_dir)
+        runtime_cfg = config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {}
+        action = _coerce_sync_timeout_action(runtime_cfg.get("sync_verify_timeout_action"), default="poll")
+        grace_value = _coerce_optional_float(runtime_cfg.get("sync_verify_cancel_grace_seconds"))
+        if grace_value is not None:
+            grace_seconds = grace_value
+    except Exception:
+        action = "poll"
+        grace_seconds = 5.0
+    grace_seconds = max(0.2, min(30.0, float(grace_seconds)))
+    return action, grace_seconds
+
+
+def _timeout_cancel_payload(
+    *,
+    job_id: str,
+    wait_seconds: float,
+    cancel_requested: bool,
+) -> JSONDict:
+    jm = JobManager()
+    job = jm.get_job(job_id)
+    status = job.to_status() if job is not None else {}
+    state = str(status.get("state", JobState.CANCELLED))
+    stage = str(status.get("stage", JobState.CANCELLED))
+    if cancel_requested and state != JobState.CANCELLED:
+        state = JobState.CANCELLED
+        stage = JobState.CANCELLED
+    return {
+        "status": "cancelled" if cancel_requested else "running",
+        "exit_code": 130 if cancel_requested else 124,
+        "timed_out": True,
+        "job_id": job_id,
+        "timeout_action": "cancel",
+        "auto_cancel_requested": bool(cancel_requested),
+        "message": (
+            f"accel_verify exceeded synchronous wait window ({wait_seconds:.1f}s); auto-cancel requested."
+            if cancel_requested
+            else f"accel_verify exceeded synchronous wait window ({wait_seconds:.1f}s); auto-cancel request failed."
+        ),
+        "poll_interval_sec": 1.0,
+        "state": state,
+        "stage": stage,
+        "progress": status.get("progress", 0.0),
+        "elapsed_sec": status.get("elapsed_sec", 0.0),
+    }
+
+
+def _finalize_job_cancel(job: VerifyJob, *, reason: str) -> bool:
+    if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+        return False
+    jm = JobManager()
+    jm.cancel_job(job.job_id)
+    job.add_event("job_cancel_requested", {"reason": reason})
+    job.mark_cancelled()
+    job.add_event("job_cancelled_finalized", {"reason": reason})
+    return True
+
 
 def _with_timeout(func, timeout_seconds: int = 300):
     """Wrapper to add timeout to MCP tool functions."""
@@ -526,47 +665,76 @@ def _to_budget_override(value: dict[str, int] | str | None) -> dict[str, int]:
 
 
 def _discover_changed_files_from_git(project_dir: Path, limit: int = 200) -> list[str]:
+    def _extract_status_path(raw_line: str) -> str:
+        text = str(raw_line or "").rstrip()
+        if len(text) < 4:
+            return ""
+        payload = text[3:].strip()
+        if not payload:
+            return ""
+        if " -> " in payload:
+            payload = payload.split(" -> ", 1)[1].strip()
+        return payload.replace("\\", "/")
+
+    def _run_git_cmd(cmd: list[str], timeout_seconds: float) -> list[str]:
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except Exception:
+            return []
+        if int(proc.returncode) != 0:
+            return []
+        return [line for line in proc.stdout.splitlines() if str(line).strip()]
+
     discovered: list[str] = []
     lock = threading.Lock()
 
     def _collect() -> None:
-        commands = [
-            ["git", "-C", str(project_dir), "diff", "--name-only", "--relative", "HEAD"],
-            ["git", "-C", str(project_dir), "diff", "--name-only", "--relative", "--cached"],
-        ]
         seen: set[str] = set()
         output: list[str] = []
-        for cmd in commands:
-            try:
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=2,
-                    check=False,
-                )
-            except Exception:
+        status_lines = _run_git_cmd(
+            ["git", "-C", str(project_dir), "status", "--porcelain", "--untracked-files=normal"],
+            2.0,
+        )
+        for raw_line in status_lines:
+            rel = _extract_status_path(raw_line)
+            if not rel or rel in seen:
                 continue
-            if int(proc.returncode) != 0:
-                continue
-            for raw_line in proc.stdout.splitlines():
-                rel = str(raw_line).strip().replace("\\", "/")
-                if not rel or rel in seen:
-                    continue
-                seen.add(rel)
-                output.append(rel)
-                if len(output) >= limit:
-                    break
+            seen.add(rel)
+            output.append(rel)
             if len(output) >= limit:
                 break
+        if len(output) < limit:
+            diff_commands = [
+                ["git", "-C", str(project_dir), "diff", "--name-only", "--relative", "HEAD"],
+                ["git", "-C", str(project_dir), "diff", "--name-only", "--relative", "--cached"],
+                ["git", "-C", str(project_dir), "diff", "--name-only", "--relative"],
+            ]
+            for cmd in diff_commands:
+                for raw_line in _run_git_cmd(cmd, 1.5):
+                    rel = str(raw_line).strip().replace("\\", "/")
+                    if not rel or rel in seen:
+                        continue
+                    seen.add(rel)
+                    output.append(rel)
+                    if len(output) >= limit:
+                        break
+                if len(output) >= limit:
+                    break
+
         with lock:
-            discovered.extend(output)
+            discovered.extend(output[:limit])
 
     worker = threading.Thread(target=_collect, daemon=True)
     worker.start()
-    worker.join(timeout=2.5)
+    worker.join(timeout=4.0)
     if worker.is_alive():
         _debug_log("_discover_changed_files_from_git timed out; fallback to empty changed_files")
         return []
@@ -994,6 +1162,9 @@ def _tool_context(
     if include_pack_flag:
         payload["pack"] = pack_for_output
 
+    sidecar_path = _write_context_metadata_sidecar(out_path, payload)
+    payload["out_meta"] = str(sidecar_path)
+
     _debug_log(
         f"accel_context completed: {len(pack_for_output.get('top_files', []))} files, {len(pack_for_output.get('snippets', []))} snippets"
     )
@@ -1046,6 +1217,8 @@ def _tool_verify(
     elif fast_loop and not evidence_run:
         runtime_overrides["verify_fail_fast"] = True
         runtime_overrides["verify_cache_enabled"] = True
+        if verify_cache_failed_results is None:
+            runtime_overrides["verify_cache_failed_results"] = True
 
     if verify_fail_fast is not None:
         runtime_overrides["verify_fail_fast"] = bool(verify_fail_fast)
@@ -1185,6 +1358,8 @@ def create_server() -> FastMCP:
         elif fast_loop_normalized and not evidence_run_normalized:
             runtime_overrides["verify_fail_fast"] = True
             runtime_overrides["verify_cache_enabled"] = True
+            if verify_cache_failed_results_normalized is None:
+                runtime_overrides["verify_cache_failed_results"] = True
 
         if verify_fail_fast_normalized is not None:
             runtime_overrides["verify_fail_fast"] = bool(verify_fail_fast_normalized)
@@ -1286,9 +1461,12 @@ def create_server() -> FastMCP:
         verify_cache_failed_ttl_seconds: Any = None,
         wait_for_completion: Any = False,
         sync_wait_seconds: Any = None,
+        sync_timeout_action: Any = None,
+        sync_cancel_grace_seconds: Any = None,
     ) -> JSONDict:
         try:
             wait_flag = _coerce_bool(wait_for_completion, False)
+            project_dir = _normalize_project_dir(project)
             job = _start_verify_job(
                 project=project,
                 changed_files=changed_files,
@@ -1325,6 +1503,13 @@ def create_server() -> FastMCP:
                 sync_wait_seconds_value if sync_wait_seconds_value is not None else _effective_sync_verify_wait_seconds()
             )
             wait_seconds = max(1.0, min(55.0, wait_seconds))
+            default_timeout_action, default_cancel_grace = _resolve_sync_timeout_defaults(project_dir)
+            timeout_action_value = _coerce_sync_timeout_action(sync_timeout_action, default=default_timeout_action)
+            cancel_grace_value = _coerce_optional_float(sync_cancel_grace_seconds)
+            cancel_grace_seconds = (
+                float(cancel_grace_value) if cancel_grace_value is not None else float(default_cancel_grace)
+            )
+            cancel_grace_seconds = max(0.2, min(30.0, cancel_grace_seconds))
             result = _wait_for_verify_job_result(
                 job_id,
                 max_wait_seconds=wait_seconds,
@@ -1332,7 +1517,24 @@ def create_server() -> FastMCP:
             )
             if result is None:
                 _debug_log(f"accel_verify sync wait timeout for job_id={job_id}")
-                return _sync_verify_timeout_payload(job_id, wait_seconds)
+                if timeout_action_value == "cancel":
+                    jm = JobManager()
+                    cancel_requested = False
+                    job_for_cancel = jm.get_job(job_id)
+                    if job_for_cancel is not None:
+                        cancel_requested = _finalize_job_cancel(job_for_cancel, reason="sync_timeout_auto_cancel")
+                    if cancel_requested:
+                        _wait_for_verify_job_result(
+                            job_id,
+                            max_wait_seconds=cancel_grace_seconds,
+                            poll_seconds=0.1,
+                        )
+                    return _timeout_cancel_payload(
+                        job_id=job_id,
+                        wait_seconds=wait_seconds,
+                        cancel_requested=cancel_requested,
+                    )
+                return _sync_verify_timeout_payload(job_id, wait_seconds, timeout_action=timeout_action_value)
             return result
         except Exception as exc:
             _debug_log(f"accel_verify failed: {exc!r}")
@@ -1571,11 +1773,7 @@ def create_server() -> FastMCP:
                 return {"error": "job_not_found", "job_id": job_id}
             if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
                 return {"job_id": job_id, "status": job.state, "cancelled": False, "message": "Job already in terminal state"}
-            jm.cancel_job(job_id)
-            job.add_event("job_cancel_requested", {"reason": "user_request"})
-            # Finalize state immediately so status polling converges deterministically.
-            job.mark_cancelled()
-            job.add_event("job_cancelled_finalized", {"reason": "user_request"})
+            _finalize_job_cancel(job, reason="user_request")
             return {"job_id": job_id, "status": JobState.CANCELLED, "cancelled": True, "message": "Cancellation requested and finalized"}
         except Exception as exc:
             _debug_log(f"accel_verify_cancel failed: {exc!r}")

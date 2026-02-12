@@ -1,19 +1,33 @@
-{
-  "ts": "2026-02-12T00:47:53.734031+00:00",
-  "task": "all_recommendations_fullfix",
+﻿{
+  "ts": "2026-02-12T01:26:56.9151613Z",
+  "task": "mcp_timeout_context_metadata_fullfix",
+  "contract_snapshot": {
+    "goal": "进一步完善 agent-accel MCP 当前实测暴露的问题，提升同步 verify 行为可控性、context 缩面稳定性、审计可观测性。",
+    "acceptance_criteria": [
+      "accel_verify 支持可配置同步等待超时动作（轮询继续或自动取消）并避免悬挂资源",
+      "accel_context 自动 changed_files 推断优先使用 git 变更并降低 fallback 偏差",
+      "accel_context 的 out 产物具备伴随元数据（token 估算/缩面比/来源）便于离线审计",
+      "补齐对应单测并给出实时验证证据"
+    ],
+    "risk": "若仅看可用性而不看状态收敛/元数据完整性，会高估稳定性与可审计性。"
+  },
   "capability_matrix": {
     "repo": "read/write",
     "terminal": true,
     "network": true
   },
+  "mode": "S2",
   "findings": [
-    "Implemented accel_context strict_changed_files/fallback_confidence plus snippets_only/include_metadata lightweight output controls.",
-    "Added three-baseline token reduction metrics (vs_full_index, vs_changed_files, vs_snippets_only) with explicit baseline token counters.",
-    "Added verify failed-result cache controls (verify_cache_failed_results + verify_cache_failed_ttl_seconds) and extended verify jsonl structured fields (mode/fail_fast/cache_hits/cache_misses/fail_fast_skipped/command_index).",
-    "Touched-scope gates passed (ruff + pytest on mcp_server/orchestrator tests); full-repo gates still fail due pre-existing baseline issues unrelated to this change."
+    "Added accel_verify sync timeout controls: wait_for_completion + sync_wait_seconds + sync_timeout_action(poll|cancel) + sync_cancel_grace_seconds.",
+    "Added deterministic auto-cancel finalization path to avoid timed_out hanging jobs.",
+    "Improved auto changed_files discovery to prioritize git status porcelain (including untracked/rename), fallback to diff only when needed.",
+    "Added context sidecar metadata output (*.meta.json) with estimator/reduction/scope/budget audit fields and returned out_meta.",
+    "Enabled fast_loop default verify_cache_failed_results=true when not explicitly overridden.",
+    "Adjusted default mypy verify command to use --explicit-package-bases to reduce duplicate-module baseline conflicts."
   ],
   "verification": {
-    "log": ".harborpilot/logs/verification_all_recommendations_fullfix_20260212_02.log",
+    "log": ".harborpilot/logs/verification_mcp_timeout_context_metadata_fullfix_20260212_02.log",
     "status": "verified-pending"
   }
 }
+

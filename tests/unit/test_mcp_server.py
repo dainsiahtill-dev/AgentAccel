@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -368,6 +369,36 @@ def test_tool_context_default_allows_missing_changed_files(tmp_path: Path, monke
     assert isinstance(warnings, list) and len(warnings) >= 1
 
 
+def test_discover_changed_files_from_git_prefers_status_and_parses_untracked(monkeypatch, tmp_path: Path) -> None:
+    project_dir = tmp_path / "git_changed_files_project"
+    project_dir.mkdir(parents=True)
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, capture_output, text, encoding, errors, timeout, check):
+        calls.append(list(cmd))
+        if "status" in cmd:
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=" M src/a.py\n?? src/new.py\nR  old.py -> src/renamed.py\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="src/a.py\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(mcp_server.subprocess, "run", fake_run)
+
+    changed = mcp_server._discover_changed_files_from_git(project_dir, limit=10)
+    assert changed[:3] == ["src/a.py", "src/new.py", "src/renamed.py"]
+    assert len(changed) == len(set(changed))
+    assert any("status" in cmd for cmd in calls)
+
+
 def test_tool_context_uses_manifest_recent_changed_files_fallback(tmp_path: Path, monkeypatch) -> None:
     project_dir = tmp_path / "context_manifest_fallback_project"
     project_dir.mkdir(parents=True)
@@ -567,6 +598,19 @@ def test_tool_context_snippets_only_and_include_metadata_controls_output(tmp_pat
     assert "top_files" not in persisted
     assert "meta" not in persisted
 
+    out_meta = result.get("out_meta")
+    assert isinstance(out_meta, str) and out_meta.endswith(".meta.json")
+    sidecar = Path(out_meta)
+    assert sidecar.is_file()
+    sidecar_payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert sidecar_payload.get("out") == str(out_path)
+    estimates = sidecar_payload.get("estimates", {})
+    assert isinstance(estimates, dict)
+    assert int(estimates.get("estimated_tokens", 0)) > 0
+    scope = sidecar_payload.get("scope", {})
+    assert isinstance(scope, dict)
+    assert scope.get("changed_files_source") == "git_auto"
+
 
 def test_tool_verify_runs_with_evidence_mode(tmp_path: Path) -> None:
     project_dir = tmp_path / "verify_project"
@@ -595,6 +639,40 @@ def test_tool_verify_runs_with_evidence_mode(tmp_path: Path) -> None:
 
     assert result["status"] in {"success", "degraded"}
     assert int(result["exit_code"]) in {0, 2}
+
+
+def test_tool_verify_fast_loop_defaults_cache_failed_results(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "verify_fast_loop_defaults_project"
+    project_dir.mkdir(parents=True)
+
+    captured: dict[str, object] = {}
+
+    def fake_resolve_effective_config(project_dir, cli_overrides=None):
+        captured["cli_overrides"] = cli_overrides
+        return {"runtime": {"accel_home": str(tmp_path / ".accel-home")}}
+
+    monkeypatch.setattr(mcp_server, "resolve_effective_config", fake_resolve_effective_config)
+    monkeypatch.setattr(
+        mcp_server,
+        "run_verify",
+        lambda project_dir, config, changed_files=None: {"status": "success", "exit_code": 0, "commands": [], "results": []},
+    )
+
+    result = mcp_server._tool_verify(
+        project=str(project_dir),
+        changed_files=["src/a.py"],
+        fast_loop=True,
+        evidence_run=False,
+    )
+
+    assert result["status"] == "success"
+    overrides = captured.get("cli_overrides")
+    assert isinstance(overrides, dict)
+    runtime = overrides.get("runtime", {})
+    assert isinstance(runtime, dict)
+    assert bool(runtime.get("verify_fail_fast")) is True
+    assert bool(runtime.get("verify_cache_enabled")) is True
+    assert bool(runtime.get("verify_cache_failed_results")) is True
 
 
 def test_verify_starts_async_by_default(tmp_path: Path, monkeypatch) -> None:
@@ -1047,6 +1125,7 @@ def test_sync_verify_returns_running_when_wait_window_exceeded(tmp_path: Path, m
     assert elapsed < 1.3
     assert result["status"] == "running"
     assert bool(result["timed_out"]) is True
+    assert result.get("timeout_action") == "poll"
     job_id = str(result["job_id"])
 
     final_status = {}
@@ -1057,6 +1136,70 @@ def test_sync_verify_returns_running_when_wait_window_exceeded(tmp_path: Path, m
         time.sleep(0.1)
 
     assert final_status.get("state") == mcp_server.JobState.COMPLETED
+
+
+def test_sync_verify_timeout_action_cancel_finalizes_job(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "sync_timeout_cancel_project"
+    project_dir.mkdir(parents=True)
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(mcp_server, "_sync_verify_wait_seconds", 1)
+    monkeypatch.setattr(mcp_server, "_sync_verify_poll_seconds", 0.05)
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir, cli_overrides=None: {
+            "runtime": {
+                "accel_home": str(tmp_path / ".accel-home"),
+                "sync_verify_timeout_action": "cancel",
+                "sync_verify_cancel_grace_seconds": 0.5,
+            }
+        },
+    )
+
+    def fake_run_verify_with_callback(project_dir, config, changed_files=None, callback=None):
+        time.sleep(1.4)
+        return {
+            "status": "success",
+            "exit_code": 0,
+            "nonce": "late_nonce",
+            "log_path": str(tmp_path / "verify.log"),
+            "jsonl_path": str(tmp_path / "verify.jsonl"),
+            "commands": [],
+            "results": [],
+            "degraded": False,
+            "fail_fast": False,
+            "fail_fast_skipped_commands": [],
+            "cache_enabled": False,
+            "cache_hits": 0,
+            "cache_misses": 0,
+        }
+
+    monkeypatch.setattr(mcp_server, "run_verify_with_callback", fake_run_verify_with_callback)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    verify_fn = tools["accel_verify"].fn
+    status_fn = tools["accel_verify_status"].fn
+
+    result = verify_fn(
+        project=str(project_dir),
+        wait_for_completion=True,
+        sync_wait_seconds=1,
+        sync_timeout_action="cancel",
+        sync_cancel_grace_seconds=0.5,
+    )
+    assert result["status"] == "cancelled"
+    assert int(result["exit_code"]) == 130
+    assert bool(result["timed_out"]) is True
+    assert result.get("timeout_action") == "cancel"
+    assert bool(result.get("auto_cancel_requested")) is True
+
+    job_id = str(result["job_id"])
+    status = status_fn(job_id=job_id)
+    assert status.get("state") == mcp_server.JobState.CANCELLED
 
 
 def test_verify_start_accepts_string_runtime_overrides(tmp_path: Path, monkeypatch) -> None:
@@ -1121,6 +1264,55 @@ def test_verify_start_accepts_string_runtime_overrides(tmp_path: Path, monkeypat
             break
         time.sleep(0.05)
     assert final_status.get("state") == mcp_server.JobState.COMPLETED
+
+
+def test_verify_start_fast_loop_defaults_cache_failed_results(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "verify_start_fastloop_defaults_project"
+    project_dir.mkdir(parents=True)
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    captured: dict[str, object] = {}
+
+    def fake_resolve_effective_config(project_dir, cli_overrides=None):
+        captured["cli_overrides"] = cli_overrides
+        return {"runtime": {"accel_home": str(tmp_path / ".accel-home")}, "verify": {}}
+
+    monkeypatch.setattr(mcp_server, "resolve_effective_config", fake_resolve_effective_config)
+    monkeypatch.setattr(
+        mcp_server,
+        "run_verify_with_callback",
+        lambda project_dir, config, changed_files=None, callback=None: {
+            "status": "success",
+            "exit_code": 0,
+            "nonce": "start_fastloop_nonce",
+            "log_path": str(tmp_path / "verify.log"),
+            "jsonl_path": str(tmp_path / "verify.jsonl"),
+            "commands": [],
+            "results": [],
+            "degraded": False,
+            "fail_fast": True,
+            "fail_fast_skipped_commands": [],
+            "cache_enabled": True,
+            "cache_hits": 0,
+            "cache_misses": 0,
+        },
+    )
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    start_fn = tools["accel_verify_start"].fn
+    started = start_fn(project=str(project_dir), fast_loop=True, evidence_run=False)
+    assert started["status"] == "started"
+
+    overrides = captured.get("cli_overrides")
+    assert isinstance(overrides, dict)
+    runtime = overrides.get("runtime", {})
+    assert isinstance(runtime, dict)
+    assert bool(runtime.get("verify_fail_fast")) is True
+    assert bool(runtime.get("verify_cache_enabled")) is True
+    assert bool(runtime.get("verify_cache_failed_results")) is True
 
 
 def test_sync_verify_returns_completed_result_for_fast_job(tmp_path: Path, monkeypatch) -> None:
