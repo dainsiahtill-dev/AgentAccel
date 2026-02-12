@@ -210,9 +210,17 @@ def _normalize_timeout_action(value: Any, default_value: str = "poll") -> str:
 
 def _normalize_constraint_mode(value: Any, default_value: str = "warn") -> str:
     token = str(value or default_value).strip().lower()
+    if token in {"enforce", "error", "errors"}:
+        token = "strict"
+    elif token in {"on", "default"}:
+        token = "warn"
     if token in {"off", "warn", "strict"}:
         return token
     fallback = str(default_value or "warn").strip().lower()
+    if fallback in {"enforce", "error", "errors"}:
+        fallback = "strict"
+    elif fallback in {"on", "default"}:
+        fallback = "warn"
     return fallback if fallback in {"off", "warn", "strict"} else "warn"
 
 

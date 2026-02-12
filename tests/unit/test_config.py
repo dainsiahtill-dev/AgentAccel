@@ -64,3 +64,11 @@ def test_runtime_workspace_and_preflight_env_overrides(tmp_path: Path, monkeypat
     assert bool(cfg["runtime"]["verify_workspace_routing_enabled"]) is False
     assert bool(cfg["runtime"]["verify_preflight_enabled"]) is False
     assert int(cfg["runtime"]["verify_preflight_timeout_seconds"]) == 9
+
+
+def test_constraint_mode_alias_normalization(tmp_path: Path, monkeypatch) -> None:
+    init_project(tmp_path)
+    monkeypatch.setenv("ACCEL_CONSTRAINT_MODE", "enforce")
+
+    cfg = resolve_effective_config(tmp_path)
+    assert str(cfg["runtime"]["constraint_mode"]) == "strict"

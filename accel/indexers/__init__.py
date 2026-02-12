@@ -273,6 +273,15 @@ def collect_source_files(project_dir: Path, config: dict[str, Any]) -> list[Path
                 excludes=excludes,
                 max_size=max_size,
             )
+            if not filtered and scope_mode == "auto" and includes != ["**/*"]:
+                # In auto mode, never let a project-specific include pattern collapse scope to zero.
+                filtered = _filter_source_candidates(
+                    project_dir=project_dir,
+                    candidates=git_candidates,
+                    includes=["**/*"],
+                    excludes=excludes,
+                    max_size=max_size,
+                )
             elapsed = time.perf_counter() - start_time
             _log_deadlock_info(
                 f"collect_source_files used git scope ({scope_mode}); "
@@ -326,7 +335,19 @@ def collect_source_files(project_dir: Path, config: dict[str, Any]) -> list[Path
     
     elapsed = time.perf_counter() - start_time
     _log_deadlock_info(f"File scan completed: {files_scanned} files scanned, {len(files)} files selected in {elapsed:.1f}s")
-    
+    if not files and scope_mode == "auto" and includes != ["**/*"]:
+        _log_deadlock_info("File scan selected zero files under configured include; retrying with include='**/*' for auto mode")
+        return collect_source_files(
+            project_dir,
+            {
+                **config,
+                "index": {
+                    **index_cfg,
+                    "include": ["**/*"],
+                },
+            },
+        )
+
     return sorted(files, key=lambda item: _normalize_rel_path(item.relative_to(project_dir)))
 
 

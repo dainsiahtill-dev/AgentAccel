@@ -251,3 +251,25 @@ def test_index_auto_scope_covers_non_src_workspace(tmp_path: Path, monkeypatch) 
 
     assert "frontend/src/app.ts" in indexed_files
     assert "backend/api.py" in indexed_files
+
+
+def test_index_auto_scope_retries_when_configured_include_matches_nothing(tmp_path: Path, monkeypatch) -> None:
+    _write(tmp_path / "backend" / "service.py", "def run() -> int:\n    return 1\n")
+
+    init_project(tmp_path)
+    monkeypatch.setenv("ACCEL_HOME", str(tmp_path / ".accel-home"))
+
+    cfg = resolve_effective_config(
+        tmp_path,
+        cli_overrides={
+            "index": {
+                "scope_mode": "auto",
+                "include": ["nonexistent_scope/**"],
+            }
+        },
+    )
+    manifest = build_or_update_indexes(project_dir=tmp_path, config=cfg, mode="build", full=True)
+    indexed_files = set(manifest.get("indexed_files", []))
+
+    assert "backend/service.py" in indexed_files
+    assert int(manifest.get("counts", {}).get("files", 0)) >= 1

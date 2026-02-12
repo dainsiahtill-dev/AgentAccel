@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import os
@@ -57,9 +58,15 @@ _shutdown_requested = False
 # Keep sync verify bounded so a single call cannot monopolize MCP request handling.
 _sync_verify_wait_seconds = int(os.environ.get("ACCEL_MCP_SYNC_VERIFY_WAIT_SECONDS", "45"))
 _sync_verify_poll_seconds = float(os.environ.get("ACCEL_MCP_SYNC_VERIFY_POLL_SECONDS", "0.2"))
+_sync_index_wait_seconds = int(os.environ.get("ACCEL_MCP_SYNC_INDEX_WAIT_SECONDS", "45"))
+_sync_index_poll_seconds = float(os.environ.get("ACCEL_MCP_SYNC_INDEX_POLL_SECONDS", "0.2"))
 _FALSE_LITERALS = {"", "0", "false", "no", "off", "none", "null", "undefined", "pydanticundefined"}
 _TRUE_LITERALS = {"1", "true", "yes", "on"}
 _SYNC_TIMEOUT_ACTIONS = {"poll", "cancel"}
+_SEMANTIC_CACHE_MODE_ALIASES = {
+    "readwrite": "hybrid",
+    "rw": "hybrid",
+}
 
 def _signal_handler(signum: int, frame) -> None:
     """Handle shutdown signals gracefully."""
@@ -127,6 +134,14 @@ def _effective_sync_verify_poll_seconds() -> float:
     return max(0.05, float(_sync_verify_poll_seconds))
 
 
+def _effective_sync_index_wait_seconds() -> int:
+    return max(1, min(50, int(_sync_index_wait_seconds)))
+
+
+def _effective_sync_index_poll_seconds() -> float:
+    return max(0.05, float(_sync_index_poll_seconds))
+
+
 def _coerce_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
@@ -159,6 +174,29 @@ def _coerce_optional_bool(value: Any) -> bool | None:
             return True
         return None
     return None
+
+
+def _resolve_semantic_cache_mode(value: Any, *, default_mode: str) -> str:
+    if value is None:
+        token = str(default_mode or "hybrid").strip().lower() or "hybrid"
+    else:
+        token = str(value).strip().lower()
+    token = _SEMANTIC_CACHE_MODE_ALIASES.get(token, token)
+    if token in {"exact", "hybrid"}:
+        return token
+    if value is None:
+        return "hybrid"
+    raise ValueError("semantic_cache_mode must be one of exact|hybrid (aliases: readwrite|rw)")
+
+
+def _resolve_constraint_mode(value: Any, *, default_mode: str = "warn") -> str:
+    normalized = normalize_constraint_mode(value if value is not None else default_mode, default_mode=default_mode)
+    if value is None:
+        return normalized
+    raw = str(value).strip().lower()
+    if raw in {"off", "warn", "strict", "enforce", "error", "errors", "on", "default"}:
+        return normalized
+    raise ValueError("constraint_mode must be one of off|warn|strict (alias: enforce)")
 
 
 def _coerce_optional_int(value: Any) -> int | None:
@@ -736,6 +774,172 @@ def _finalize_job_cancel(job: VerifyJob, *, reason: str) -> bool:
     return True
 
 
+def _wait_for_index_job_result(
+    job_id: str,
+    *,
+    max_wait_seconds: float,
+    poll_seconds: float,
+) -> JSONDict | None:
+    jm = JobManager()
+    deadline = time.perf_counter() + max(0.0, max_wait_seconds)
+    poll = max(0.05, poll_seconds)
+
+    while True:
+        job = jm.get_job(job_id)
+        if job is None:
+            return {
+                "status": "failed",
+                "exit_code": 1,
+                "job_id": job_id,
+                "error": "job_not_found",
+            }
+
+        if job.state == JobState.COMPLETED:
+            if isinstance(job.result, dict) and job.result:
+                payload = dict(job.result)
+            else:
+                payload = {"status": "ok", "exit_code": 0}
+            payload.setdefault("job_id", job_id)
+            payload.setdefault("timed_out", False)
+            return payload
+
+        if job.state == JobState.FAILED:
+            return {
+                "status": "failed",
+                "exit_code": 1,
+                "job_id": job_id,
+                "error": str(job.error or "index job failed"),
+                "timed_out": False,
+            }
+
+        if job.state == JobState.CANCELLED:
+            return {
+                "status": "cancelled",
+                "exit_code": 130,
+                "job_id": job_id,
+                "timed_out": False,
+            }
+
+        if time.perf_counter() >= deadline:
+            return None
+        time.sleep(poll)
+
+
+def _sync_index_timeout_payload(job_id: str, wait_seconds: float) -> JSONDict:
+    jm = JobManager()
+    job = jm.get_job(job_id)
+    status = job.to_status() if job is not None else {}
+    return {
+        "status": "running",
+        "exit_code": 124,
+        "timed_out": True,
+        "job_id": job_id,
+        "message": (
+            f"accel_index_build exceeded synchronous wait window ({wait_seconds:.1f}s); "
+            "use accel_index_status/accel_index_events to continue polling."
+        ),
+        "poll_interval_sec": 1.0,
+        "state": status.get("state", "running"),
+        "stage": status.get("stage", "running"),
+        "progress": status.get("progress", 0.0),
+        "elapsed_sec": status.get("elapsed_sec", 0.0),
+    }
+
+
+def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
+    project_dir = _normalize_project_dir(project)
+    mode_value = str(mode).strip().lower()
+    if mode_value not in {"build", "update"}:
+        raise ValueError("index mode must be build|update")
+    full_value = bool(full)
+
+    jm = JobManager()
+    job = jm.create_job(prefix="index")
+    job.add_event(
+        "index_queued",
+        {
+            "project": str(project_dir),
+            "mode": mode_value,
+            "full": bool(full_value),
+        },
+    )
+
+    def _run_index_thread(job_id: str) -> None:
+        current = jm.get_job(job_id)
+        if current is None:
+            return
+        try:
+            current.mark_running("indexing")
+            current.add_event(
+                "index_started",
+                {
+                    "project": str(project_dir),
+                    "mode": mode_value,
+                    "full": bool(full_value),
+                },
+            )
+            if mode_value == "build":
+                result = _tool_index_build(project=str(project_dir), full=full_value)
+            else:
+                result = _tool_index_update(project=str(project_dir))
+            if current.state in (JobState.CANCELLING, JobState.CANCELLED):
+                if current.state != JobState.CANCELLED:
+                    current.mark_cancelled()
+                current.add_event("job_cancelled_finalized", {"reason": "index_worker_observed_cancel"})
+                return
+            payload: JSONDict = {
+                "status": "ok",
+                "exit_code": 0,
+                "manifest": dict(result.get("manifest", {})) if isinstance(result.get("manifest"), dict) else {},
+                "mode": mode_value,
+                "full": bool(full_value),
+                "timed_out": False,
+            }
+            current.mark_completed("ok", 0, payload)
+            manifest_payload = payload.get("manifest", {})
+            files = 0
+            if isinstance(manifest_payload, dict):
+                files = int(manifest_payload.get("counts", {}).get("files", 0) or 0)
+            current.add_event("index_completed", {"files": files, "mode": mode_value})
+        except Exception as exc:
+            if current.state in (JobState.CANCELLING, JobState.CANCELLED):
+                if current.state != JobState.CANCELLED:
+                    current.mark_cancelled()
+                current.add_event("job_cancelled_finalized", {"reason": "index_worker_exception_after_cancel"})
+                return
+            current.mark_failed(str(exc))
+            current.add_event("index_failed", {"error": str(exc)})
+
+    thread = threading.Thread(target=_run_index_thread, args=(job.job_id,), daemon=True)
+    thread.start()
+
+    def _heartbeat_thread(job_id: str) -> None:
+        while True:
+            current = jm.get_job(job_id)
+            if current is None:
+                return
+            status = current.to_status()
+            state = str(status.get("state", ""))
+            if state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}:
+                return
+            appended = current.add_live_event(
+                "heartbeat",
+                {
+                    "elapsed_sec": float(status.get("elapsed_sec", 0.0)),
+                    "state": state or JobState.RUNNING,
+                    "stage": status.get("stage", "indexing"),
+                    "progress": float(status.get("progress", 0.0)),
+                },
+            )
+            if not appended:
+                return
+            time.sleep(1.0)
+
+    hb = threading.Thread(target=_heartbeat_thread, args=(job.job_id,), daemon=True)
+    hb.start()
+    return job
+
+
 def _with_timeout(func, timeout_seconds: int = 300):
     """Wrapper to add timeout to MCP tool functions."""
     def wrapper(*args, **kwargs):
@@ -1111,6 +1315,24 @@ def _tool_index_build(project: str = ".", full: bool = True) -> JSONDict:
         mode="build",
         full=bool(full),
     )
+    file_count = int(manifest.get("counts", {}).get("files", 0) or 0)
+    if file_count <= 0:
+        retry_config = copy.deepcopy(config)
+        retry_index_cfg = dict(retry_config.get("index", {}))
+        retry_index_cfg["scope_mode"] = "all"
+        retry_index_cfg["include"] = ["**/*"]
+        retry_config["index"] = retry_index_cfg
+        retry_manifest = build_or_update_indexes(
+            project_dir=project_dir,
+            config=retry_config,
+            mode="build",
+            full=bool(full),
+        )
+        retry_file_count = int(retry_manifest.get("counts", {}).get("files", 0) or 0)
+        if retry_file_count > file_count:
+            retry_manifest["scope_retry_used"] = True
+            retry_manifest["scope_retry_reason"] = "initial_scope_selected_zero_files"
+            manifest = retry_manifest
     _debug_log(f"accel_index_build completed: {len(manifest.get('indexed_files', []))} files indexed")
     return {"status": "ok", "manifest": manifest}
 
@@ -1125,6 +1347,24 @@ def _tool_index_update(project: str = ".") -> JSONDict:
         mode="update",
         full=False,
     )
+    file_count = int(manifest.get("counts", {}).get("files", 0) or 0)
+    if file_count <= 0:
+        retry_config = copy.deepcopy(config)
+        retry_index_cfg = dict(retry_config.get("index", {}))
+        retry_index_cfg["scope_mode"] = "all"
+        retry_index_cfg["include"] = ["**/*"]
+        retry_config["index"] = retry_index_cfg
+        retry_manifest = build_or_update_indexes(
+            project_dir=project_dir,
+            config=retry_config,
+            mode="update",
+            full=False,
+        )
+        retry_file_count = int(retry_manifest.get("counts", {}).get("files", 0) or 0)
+        if retry_file_count > file_count:
+            retry_manifest["scope_retry_used"] = True
+            retry_manifest["scope_retry_reason"] = "initial_scope_selected_zero_files"
+            manifest = retry_manifest
     _debug_log(f"accel_index_update completed: {len(manifest.get('changed_files', []))} files updated")
     return {"status": "ok", "manifest": manifest}
 
@@ -1172,11 +1412,12 @@ def _tool_context(
     semantic_cache_default = bool(runtime_cfg.get("semantic_cache_enabled", True))
     semantic_cache_enabled = _coerce_bool(semantic_cache, semantic_cache_default)
     semantic_cache_mode_default = str(runtime_cfg.get("semantic_cache_mode", "hybrid")).strip().lower()
-    semantic_cache_mode_value = str(semantic_cache_mode or semantic_cache_mode_default).strip().lower()
-    if semantic_cache_mode_value not in {"exact", "hybrid"}:
-        semantic_cache_mode_value = "hybrid"
-    constraint_mode_value = normalize_constraint_mode(
-        constraint_mode if constraint_mode is not None else runtime_cfg.get("constraint_mode", "warn"),
+    semantic_cache_mode_value = _resolve_semantic_cache_mode(
+        semantic_cache_mode,
+        default_mode=semantic_cache_mode_default,
+    )
+    constraint_mode_value = _resolve_constraint_mode(
+        constraint_mode,
         default_mode=str(runtime_cfg.get("constraint_mode", "warn")),
     )
 
@@ -1543,8 +1784,7 @@ def _tool_context(
         token_estimator_payload = payload.get("token_estimator")
         if isinstance(token_estimator_payload, dict):
             token_estimator_payload["fallback_reason"] = fallback_reason
-    if warnings:
-        payload["warnings"] = warnings
+    payload["warnings"] = list(warnings)
     if include_pack_flag:
         payload["pack"] = pack_for_output
 
@@ -1616,7 +1856,7 @@ def _tool_verify(
     if command_plan_cache_enabled is not None:
         runtime_overrides["command_plan_cache_enabled"] = _coerce_bool(command_plan_cache_enabled, True)
     if constraint_mode is not None:
-        runtime_overrides["constraint_mode"] = normalize_constraint_mode(constraint_mode, default_mode="warn")
+        runtime_overrides["constraint_mode"] = _resolve_constraint_mode(constraint_mode, default_mode="warn")
 
     if evidence_run and not fast_loop:
         runtime_overrides["verify_fail_fast"] = False
@@ -1661,24 +1901,199 @@ def create_server() -> FastMCP:
 
     @server.tool(
         name="accel_index_build",
-        description="Build indexes for the target project.",
+        description="Build indexes for the target project (bounded synchronous wait with async fallback).",
     )
-    def accel_index_build(project: str = ".", full: bool = True) -> JSONDict:
+    def accel_index_build(
+        project: str = ".",
+        full: Any = True,
+        wait_for_completion: Any = True,
+        sync_wait_seconds: Any = None,
+    ) -> JSONDict:
         try:
-            return _with_timeout(_tool_index_build, timeout_seconds=600)(project=project, full=full)
+            full_flag = _coerce_bool(full, True)
+            wait_flag = _coerce_bool(wait_for_completion, True)
+            job = _start_index_job(project=project, mode="build", full=full_flag)
+            job_id = str(job.job_id).strip()
+
+            if not wait_flag:
+                status_payload = job.to_status()
+                return {
+                    "status": "started",
+                    "exit_code": 0,
+                    "timed_out": False,
+                    "job_id": job_id,
+                    "mode": "build",
+                    "full": bool(full_flag),
+                    "message": "Index build started asynchronously. Use accel_index_status/events for live progress.",
+                    "poll_interval_sec": 1.0,
+                    "state": status_payload.get("state", "pending"),
+                    "stage": status_payload.get("stage", "indexing"),
+                    "progress": status_payload.get("progress", 0.0),
+                    "elapsed_sec": status_payload.get("elapsed_sec", 0.0),
+                }
+
+            sync_wait_seconds_value = _coerce_optional_int(sync_wait_seconds)
+            wait_seconds = float(
+                sync_wait_seconds_value if sync_wait_seconds_value is not None else _effective_sync_index_wait_seconds()
+            )
+            wait_seconds = max(1.0, min(55.0, wait_seconds))
+            result = _wait_for_index_job_result(
+                job_id,
+                max_wait_seconds=wait_seconds,
+                poll_seconds=_effective_sync_index_poll_seconds(),
+            )
+            if result is not None:
+                return result
+            return _sync_index_timeout_payload(job_id, wait_seconds)
         except Exception as exc:
             _debug_log(f"accel_index_build failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
 
     @server.tool(
         name="accel_index_update",
-        description="Incrementally update indexes for changed files.",
+        description="Incrementally update indexes for changed files (bounded synchronous wait with async fallback).",
     )
-    def accel_index_update(project: str = ".") -> JSONDict:
+    def accel_index_update(
+        project: str = ".",
+        wait_for_completion: Any = True,
+        sync_wait_seconds: Any = None,
+    ) -> JSONDict:
         try:
-            return _with_timeout(_tool_index_update, timeout_seconds=300)(project=project)
+            wait_flag = _coerce_bool(wait_for_completion, True)
+            job = _start_index_job(project=project, mode="update", full=False)
+            job_id = str(job.job_id).strip()
+
+            if not wait_flag:
+                status_payload = job.to_status()
+                return {
+                    "status": "started",
+                    "exit_code": 0,
+                    "timed_out": False,
+                    "job_id": job_id,
+                    "mode": "update",
+                    "full": False,
+                    "message": "Index update started asynchronously. Use accel_index_status/events for live progress.",
+                    "poll_interval_sec": 1.0,
+                    "state": status_payload.get("state", "pending"),
+                    "stage": status_payload.get("stage", "indexing"),
+                    "progress": status_payload.get("progress", 0.0),
+                    "elapsed_sec": status_payload.get("elapsed_sec", 0.0),
+                }
+
+            sync_wait_seconds_value = _coerce_optional_int(sync_wait_seconds)
+            wait_seconds = float(
+                sync_wait_seconds_value if sync_wait_seconds_value is not None else _effective_sync_index_wait_seconds()
+            )
+            wait_seconds = max(1.0, min(55.0, wait_seconds))
+            result = _wait_for_index_job_result(
+                job_id,
+                max_wait_seconds=wait_seconds,
+                poll_seconds=_effective_sync_index_poll_seconds(),
+            )
+            if result is not None:
+                return result
+            return _sync_index_timeout_payload(job_id, wait_seconds)
         except Exception as exc:
             _debug_log(f"accel_index_update failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_index_status",
+        description="Get current status of an async index build/update job.",
+    )
+    def accel_index_status(job_id: str) -> JSONDict:
+        try:
+            jm = JobManager()
+            job = jm.get_job(job_id)
+            if job is None or not str(job_id).strip().lower().startswith("index_"):
+                return {"error": "job_not_found", "job_id": job_id}
+            status_payload = job.to_status()
+            status_payload["state_source"] = "job_state"
+            return status_payload
+        except Exception as exc:
+            _debug_log(f"accel_index_status failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_index_events",
+        description="Get index job events with optional summary and tail clipping.",
+    )
+    def accel_index_events(
+        job_id: str,
+        since_seq: int = 0,
+        max_events: Any = 30,
+        include_summary: Any = True,
+    ) -> JSONDict:
+        try:
+            jm = JobManager()
+            job = jm.get_job(job_id)
+            if job is None or not str(job_id).strip().lower().startswith("index_"):
+                return {"error": "job_not_found", "job_id": job_id}
+
+            since_seq_value = int(_coerce_optional_int(since_seq) or 0)
+            limit = _coerce_events_limit(max_events, default_value=30, max_value=500)
+            include_summary_flag = _coerce_bool(include_summary, True)
+
+            events_all = job.get_events(since_seq_value)
+            total_available = len(events_all)
+            truncated = False
+            if total_available > limit:
+                events = events_all[-limit:]
+                truncated = True
+            else:
+                events = events_all
+
+            payload: JSONDict = {
+                "job_id": job_id,
+                "events": events,
+                "count": len(events),
+                "total_available": total_available,
+                "truncated": truncated,
+                "max_events": limit,
+                "since_seq": since_seq_value,
+            }
+            if include_summary_flag:
+                status_payload = job.to_status()
+                event_type_counts: JSONDict = {}
+                first_seq = 0
+                last_seq = 0
+                for item in events_all:
+                    event_name = str(item.get("event", "")).strip().lower() or "unknown"
+                    event_type_counts[event_name] = int(event_type_counts.get(event_name, 0)) + 1
+                    seq = int(item.get("seq", 0) or 0)
+                    if seq > 0:
+                        if first_seq == 0:
+                            first_seq = seq
+                        last_seq = seq
+                payload["summary"] = {
+                    "latest_state": str(status_payload.get("state", "")),
+                    "latest_stage": str(status_payload.get("stage", "")),
+                    "state_source": "job_state",
+                    "event_type_counts": event_type_counts,
+                    "seq_range": {"first": int(first_seq), "last": int(last_seq)},
+                    "constraint_repair_count": 0,
+                }
+            return payload
+        except Exception as exc:
+            _debug_log(f"accel_index_events failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_index_cancel",
+        description="Cancel a running async index job.",
+    )
+    def accel_index_cancel(job_id: str) -> JSONDict:
+        try:
+            jm = JobManager()
+            job = jm.get_job(job_id)
+            if job is None or not str(job_id).strip().lower().startswith("index_"):
+                return {"error": "job_not_found", "job_id": job_id}
+            if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+                return {"job_id": job_id, "status": job.state, "cancelled": False, "message": "Job already in terminal state"}
+            _finalize_job_cancel(job, reason="user_request")
+            return {"job_id": job_id, "status": JobState.CANCELLED, "cancelled": True, "message": "Cancellation requested and finalized"}
+        except Exception as exc:
+            _debug_log(f"accel_index_cancel failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
 
     @server.tool(
@@ -1770,7 +2185,7 @@ def create_server() -> FastMCP:
         if command_plan_cache_enabled_normalized is not None:
             runtime_overrides["command_plan_cache_enabled"] = bool(command_plan_cache_enabled_normalized)
         if constraint_mode is not None:
-            runtime_overrides["constraint_mode"] = normalize_constraint_mode(constraint_mode, default_mode="warn")
+            runtime_overrides["constraint_mode"] = _resolve_constraint_mode(constraint_mode, default_mode="warn")
 
         if evidence_run_normalized and not fast_loop_normalized:
             runtime_overrides["verify_fail_fast"] = False
@@ -2302,11 +2717,13 @@ def main() -> None:
     
     try:
         _debug_log(f"Running FastMCP server with transport: {args.transport}")
+        if bool(args.show_banner):
+            _debug_log("Ignoring --show-banner for stdio transport to preserve MCP framing")
         
         # Run server with timeout monitoring
         # Note: FastMCP's server.run() is blocking, so we can't directly add timeout here
         # But we have runtime checks in tool wrappers
-        server.run(transport=args.transport, show_banner=bool(args.show_banner))
+        server.run(transport=args.transport, show_banner=False)
         
     except KeyboardInterrupt:
         _debug_log("Server interrupted by user")

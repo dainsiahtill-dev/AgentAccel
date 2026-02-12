@@ -22,6 +22,9 @@ def test_create_server_registers_core_tools_and_resources() -> None:
 
     assert "accel_index_build" in tool_names
     assert "accel_index_update" in tool_names
+    assert "accel_index_status" in tool_names
+    assert "accel_index_events" in tool_names
+    assert "accel_index_cancel" in tool_names
     assert "accel_context" in tool_names
     assert "accel_verify" in tool_names
     assert "agent-accel://status" in resource_uris
@@ -241,6 +244,80 @@ def test_tool_context_semantic_cache_hit_on_repeat(tmp_path: Path, monkeypatch) 
     assert bool(first.get("semantic_cache_hit")) is False
     assert bool(second.get("semantic_cache_hit")) is True
     assert str(second.get("semantic_cache_mode_used", "")) == "exact"
+
+
+def test_tool_context_rejects_invalid_semantic_cache_mode(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_semantic_mode_validation"
+    project_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {"runtime": {"accel_home": str(tmp_path / ".accel-home"), "semantic_cache_mode": "hybrid"}},
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "compile_context_pack",
+        lambda **kwargs: {
+            "version": 1,
+            "task": str(kwargs.get("task", "")),
+            "generated_at": "2026-02-12T00:00:00+00:00",
+            "budget": {"max_chars": 6000, "max_snippets": 16, "top_n_files": 6},
+            "top_files": [],
+            "snippets": [],
+            "verify_plan": {"target_tests": [], "target_checks": []},
+            "meta": {"source_chars_est": 6000},
+        },
+    )
+
+    try:
+        mcp_server._tool_context(
+            project=str(project_dir),
+            task="validate semantic mode",
+            changed_files="src/a.py",
+            semantic_cache_mode="invalid_mode",
+        )
+    except ValueError as exc:
+        assert "semantic_cache_mode must be one of" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for invalid semantic_cache_mode")
+
+
+def test_tool_context_constraint_mode_enforce_alias_maps_to_strict(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_constraint_alias"
+    project_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {"runtime": {"accel_home": str(tmp_path / ".accel-home"), "constraint_mode": "warn"}},
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "compile_context_pack",
+        lambda **kwargs: {
+            "version": 1,
+            "task": str(kwargs.get("task", "")),
+            "generated_at": "2026-02-12T00:00:00+00:00",
+            "budget": {"max_chars": 6000, "max_snippets": 16, "top_n_files": 6},
+            "top_files": [{"path": "src/a.py", "score": 1.0, "reasons": ["changed_file"], "signals": []}],
+            "snippets": [{"path": "src/a.py", "start_line": 1, "end_line": 1, "symbol": "", "reason": "", "content": "print('ok')"}],
+            "verify_plan": {"target_tests": [], "target_checks": ["pytest -q"]},
+            "meta": {"source_chars_est": 6000},
+        },
+    )
+
+    result = mcp_server._tool_context(
+        project=str(project_dir),
+        task="validate constraint alias",
+        changed_files="src/a.py",
+        constraint_mode="enforce",
+    )
+
+    assert result["status"] == "ok"
+    assert result["constraint_mode"] == "strict"
+    assert isinstance(result.get("warnings", []), list)
+    assert not any("warnings must be list" in str(item) for item in result.get("constraint_warnings", []))
 
 
 def test_tool_context_accepts_non_string_budget_value(tmp_path: Path, monkeypatch) -> None:
@@ -1576,3 +1653,104 @@ def test_sync_verify_returns_completed_result_for_fast_job(tmp_path: Path, monke
     assert int(result["exit_code"]) == 0
     assert result["nonce"] == "fast_nonce"
     assert "job_id" in result
+
+
+def test_sync_index_timeout_returns_running_then_completes(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "sync_index_timeout_project"
+    project_dir.mkdir(parents=True)
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(mcp_server, "_sync_index_wait_seconds", 1)
+    monkeypatch.setattr(mcp_server, "_sync_index_poll_seconds", 0.05)
+
+    def fake_tool_index_build(project: str = ".", full: bool = True):
+        time.sleep(1.3)
+        return {"status": "ok", "manifest": {"counts": {"files": 2}, "indexed_files": ["a.py", "b.py"]}}
+
+    monkeypatch.setattr(mcp_server, "_tool_index_build", fake_tool_index_build)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    build_fn = tools["accel_index_build"].fn
+    status_fn = tools["accel_index_status"].fn
+
+    started_at = time.perf_counter()
+    result = build_fn(project=str(project_dir), full=True, wait_for_completion=True)
+    elapsed = time.perf_counter() - started_at
+
+    assert elapsed < 1.3
+    assert result["status"] == "running"
+    assert bool(result["timed_out"]) is True
+    job_id = str(result["job_id"])
+    assert job_id.startswith("index_")
+
+    final_status = {}
+    for _ in range(40):
+        final_status = status_fn(job_id=job_id)
+        if final_status.get("state") == mcp_server.JobState.COMPLETED:
+            break
+        time.sleep(0.1)
+    assert final_status.get("state") == mcp_server.JobState.COMPLETED
+
+
+def test_sync_index_returns_manifest_for_fast_job(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "sync_index_fast_project"
+    project_dir.mkdir(parents=True)
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(mcp_server, "_sync_index_wait_seconds", 3)
+    monkeypatch.setattr(mcp_server, "_sync_index_poll_seconds", 0.05)
+    monkeypatch.setattr(
+        mcp_server,
+        "_tool_index_build",
+        lambda project=".", full=True: {
+            "status": "ok",
+            "manifest": {"counts": {"files": 3}, "indexed_files": ["x.py", "y.py", "z.py"]},
+        },
+    )
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    build_fn = tools["accel_index_build"].fn
+
+    result = build_fn(project=str(project_dir), full=True, wait_for_completion=True)
+    assert result["status"] == "ok"
+    assert bool(result["timed_out"]) is False
+    assert int(result["manifest"]["counts"]["files"]) == 3
+    assert str(result["job_id"]).startswith("index_")
+
+
+def test_index_cancel_finalizes_running_job(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "index_cancel_project"
+    project_dir.mkdir(parents=True)
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    def fake_tool_index_update(project: str = "."):
+        time.sleep(2.0)
+        return {"status": "ok", "manifest": {"counts": {"files": 1}}}
+
+    monkeypatch.setattr(mcp_server, "_tool_index_update", fake_tool_index_update)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    update_fn = tools["accel_index_update"].fn
+    cancel_fn = tools["accel_index_cancel"].fn
+    status_fn = tools["accel_index_status"].fn
+
+    started = update_fn(project=str(project_dir), wait_for_completion=False)
+    assert started["status"] == "started"
+    job_id = str(started["job_id"])
+    assert job_id.startswith("index_")
+
+    cancelled = cancel_fn(job_id=job_id)
+    assert bool(cancelled.get("cancelled")) is True
+    assert cancelled.get("status") == mcp_server.JobState.CANCELLED
+
+    status = status_fn(job_id=job_id)
+    assert status.get("state") == mcp_server.JobState.CANCELLED

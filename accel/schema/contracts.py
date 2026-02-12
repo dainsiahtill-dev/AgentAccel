@@ -4,13 +4,22 @@ from typing import Any
 
 
 _CONSTRAINT_MODES = {"off", "warn", "strict"}
+_CONSTRAINT_MODE_ALIASES = {
+    "enforce": "strict",
+    "error": "strict",
+    "errors": "strict",
+    "on": "warn",
+    "default": "warn",
+}
 
 
 def normalize_constraint_mode(value: Any, default_mode: str = "warn") -> str:
     token = str(value or default_mode).strip().lower()
+    token = _CONSTRAINT_MODE_ALIASES.get(token, token)
     if token in _CONSTRAINT_MODES:
         return token
     fallback = str(default_mode or "warn").strip().lower()
+    fallback = _CONSTRAINT_MODE_ALIASES.get(fallback, fallback)
     return fallback if fallback in _CONSTRAINT_MODES else "warn"
 
 

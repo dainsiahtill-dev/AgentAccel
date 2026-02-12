@@ -179,8 +179,9 @@ class JobManager:
         self._lock = threading.Lock()
         self._initialized = True
 
-    def create_job(self) -> VerifyJob:
-        job_id = f"verify_{uuid4().hex[:12]}"
+    def create_job(self, prefix: str = "verify") -> VerifyJob:
+        safe_prefix = str(prefix or "verify").strip().lower() or "verify"
+        job_id = f"{safe_prefix}_{uuid4().hex[:12]}"
         job = VerifyJob(job_id=job_id)
         with self._lock:
             if len(self._jobs) >= self.MAX_JOBS:

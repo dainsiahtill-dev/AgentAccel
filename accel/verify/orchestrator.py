@@ -369,6 +369,24 @@ def _normalize_cached_result(command: str, entry: dict[str, Any]) -> dict[str, A
     }
 
 
+def _cache_entry_is_failure(entry: dict[str, Any]) -> bool:
+    cache_kind = str(entry.get("cache_kind", "success") or "success").strip().lower()
+    if cache_kind == "failure":
+        return True
+    stored = entry.get("result", {})
+    if not isinstance(stored, dict):
+        return False
+    if bool(stored.get("timed_out", False)):
+        return True
+    return int(stored.get("exit_code", 0)) != 0
+
+
+def _can_use_cached_entry(entry: dict[str, Any], *, allow_failed: bool) -> bool:
+    if allow_failed:
+        return True
+    return not _cache_entry_is_failure(entry)
+
+
 def _safe_callback_call(callback: VerifyProgressCallback, method_name: str, *args: Any, **kwargs: Any) -> None:
     method = getattr(callback, method_name, None)
     if method is None:
@@ -646,7 +664,10 @@ def run_verify(
                     changed_fingerprint=changed_fingerprint,
                 )
                 cached_entry = cache_entries.get(cache_key)
-                if cached_entry is not None:
+                if cached_entry is not None and _can_use_cached_entry(
+                    cached_entry,
+                    allow_failed=verify_cache_failed_results,
+                ):
                     cache_hits += 1
                     cached_result = _normalize_cached_result(command=command, entry=cached_entry)
                     results.append(cached_result)
@@ -714,7 +735,10 @@ def run_verify(
                     changed_fingerprint=changed_fingerprint,
                 )
                 cached_entry = cache_entries.get(cache_key)
-                if cached_entry is not None:
+                if cached_entry is not None and _can_use_cached_entry(
+                    cached_entry,
+                    allow_failed=verify_cache_failed_results,
+                ):
                     cache_hits += 1
                     cached_result = _normalize_cached_result(command=command, entry=cached_entry)
                     results.append(cached_result)
@@ -1132,7 +1156,10 @@ def run_verify_with_callback(
                     changed_fingerprint=changed_fingerprint,
                 )
                 cached_entry = cache_entries.get(cache_key)
-                if cached_entry is not None:
+                if cached_entry is not None and _can_use_cached_entry(
+                    cached_entry,
+                    allow_failed=verify_cache_failed_results,
+                ):
                     cache_hits += 1
                     cached_result = _normalize_cached_result(command=command, entry=cached_entry)
                     results.append(cached_result)
@@ -1242,7 +1269,10 @@ def run_verify_with_callback(
                     changed_fingerprint=changed_fingerprint,
                 )
                 cached_entry = cache_entries.get(cache_key)
-                if cached_entry is not None:
+                if cached_entry is not None and _can_use_cached_entry(
+                    cached_entry,
+                    allow_failed=verify_cache_failed_results,
+                ):
                     cache_hits += 1
                     cached_result = _normalize_cached_result(command=command, entry=cached_entry)
                     results.append(cached_result)

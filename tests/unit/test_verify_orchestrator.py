@@ -278,6 +278,45 @@ def test_run_verify_caches_failed_results_when_enabled(tmp_path: Path, monkeypat
     assert str(second["results"][0]["cache_kind"]) == "failure"
 
 
+def test_run_verify_does_not_reuse_failed_cache_when_disabled(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "repo_failed_cache_disabled"
+    (project_dir / "src").mkdir(parents=True, exist_ok=True)
+    changed_file = project_dir / "src" / "foo.py"
+    changed_file.write_text("x = 1\n", encoding="utf-8")
+
+    command = "python -m mypy ."
+    calls: list[str] = []
+
+    def fake_select_verify_commands(config, changed_files=None):
+        return [command]
+
+    def fake_run_command(current_command: str, cwd: Path, timeout_seconds: int):
+        calls.append(current_command)
+        return {
+            "command": current_command,
+            "exit_code": 1,
+            "duration_seconds": 0.01,
+            "stdout": "",
+            "stderr": "mypy failed",
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr(orchestrator, "select_verify_commands", fake_select_verify_commands)
+    monkeypatch.setattr(orchestrator, "run_command", fake_run_command)
+
+    cfg_cached = _base_config(tmp_path, fail_fast=False, cache_enabled=True, cache_failed_results=True)
+    first = run_verify(project_dir=project_dir, config=cfg_cached, changed_files=["src/foo.py"])
+    assert first["status"] == "failed"
+    assert len(calls) == 1
+
+    cfg_no_failed_cache = _base_config(tmp_path, fail_fast=False, cache_enabled=True, cache_failed_results=False)
+    second = run_verify(project_dir=project_dir, config=cfg_no_failed_cache, changed_files=["src/foo.py"])
+
+    assert second["status"] == "failed"
+    assert len(calls) == 2
+    assert bool(second["results"][0]["cached"]) is False
+
+
 def test_run_verify_jsonl_command_result_includes_structured_fields(tmp_path: Path, monkeypatch) -> None:
     project_dir = tmp_path / "repo_jsonl_fields"
     (project_dir / "src").mkdir(parents=True, exist_ok=True)
