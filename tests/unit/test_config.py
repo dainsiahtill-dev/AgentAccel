@@ -59,11 +59,17 @@ def test_runtime_workspace_and_preflight_env_overrides(tmp_path: Path, monkeypat
     monkeypatch.setenv("ACCEL_VERIFY_WORKSPACE_ROUTING_ENABLED", "0")
     monkeypatch.setenv("ACCEL_VERIFY_PREFLIGHT_ENABLED", "0")
     monkeypatch.setenv("ACCEL_VERIFY_PREFLIGHT_TIMEOUT_SECONDS", "9")
+    monkeypatch.setenv("ACCEL_VERIFY_STALL_TIMEOUT_SECONDS", "7")
+    monkeypatch.setenv("ACCEL_VERIFY_AUTO_CANCEL_ON_STALL", "1")
+    monkeypatch.setenv("ACCEL_VERIFY_MAX_WALL_TIME_SECONDS", "88")
 
     cfg = resolve_effective_config(tmp_path)
     assert bool(cfg["runtime"]["verify_workspace_routing_enabled"]) is False
     assert bool(cfg["runtime"]["verify_preflight_enabled"]) is False
     assert int(cfg["runtime"]["verify_preflight_timeout_seconds"]) == 9
+    assert float(cfg["runtime"]["verify_stall_timeout_seconds"]) == 7.0
+    assert bool(cfg["runtime"]["verify_auto_cancel_on_stall"]) is True
+    assert float(cfg["runtime"]["verify_max_wall_time_seconds"]) == 88.0
 
 
 def test_constraint_mode_alias_normalization(tmp_path: Path, monkeypatch) -> None:

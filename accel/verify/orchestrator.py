@@ -155,9 +155,55 @@ def _normalize_bool(value: Any, default_value: bool = False) -> bool:
     return text in {"1", "true", "yes", "on"}
 
 
+def _normalize_optional_positive_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return float(parsed)
+
+
 def _resolve_verify_workers(runtime_cfg: dict[str, Any]) -> int:
     fallback = _normalize_positive_int(runtime_cfg.get("max_workers", 8), 8)
     return _normalize_positive_int(runtime_cfg.get("verify_workers", fallback), fallback)
+
+
+def _invoke_run_command(
+    command: str,
+    project_dir: Path,
+    timeout_seconds: int,
+    *,
+    output_callback: Callable[[str, str], None] | None = None,
+    cancel_event: threading.Event | None = None,
+    stall_timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    if output_callback is not None:
+        kwargs["output_callback"] = output_callback
+    if cancel_event is not None:
+        kwargs["cancel_event"] = cancel_event
+    if stall_timeout_seconds is not None:
+        kwargs["stall_timeout_seconds"] = stall_timeout_seconds
+    if kwargs:
+        try:
+            return run_command(command, project_dir, timeout_seconds, **kwargs)
+        except TypeError:
+            # Backward-compatible path for monkeypatched runners that do not accept newer kwargs.
+            if output_callback is not None:
+                try:
+                    return run_command(
+                        command,
+                        project_dir,
+                        timeout_seconds,
+                        output_callback=output_callback,
+                    )
+                except TypeError:
+                    pass
+    return run_command(command, project_dir, timeout_seconds)
 
 
 def _run_with_timeout_detection(
@@ -167,23 +213,20 @@ def _run_with_timeout_detection(
     log_path: Path,
     jsonl_path: Path,
     output_callback: Callable[[str, str], None] | None = None,
+    cancel_event: threading.Event | None = None,
+    stall_timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Run command with enhanced timeout detection and logging."""
     start_time = time.perf_counter()
     try:
-        if output_callback is None:
-            result = run_command(command, project_dir, timeout_seconds)
-        else:
-            try:
-                result = run_command(
-                    command,
-                    project_dir,
-                    timeout_seconds,
-                    output_callback=output_callback,
-                )
-            except TypeError:
-                # Backward-compatible path for monkeypatched runners that do not accept output_callback.
-                result = run_command(command, project_dir, timeout_seconds)
+        result = _invoke_run_command(
+            command,
+            project_dir,
+            timeout_seconds,
+            output_callback=output_callback,
+            cancel_event=cancel_event,
+            stall_timeout_seconds=stall_timeout_seconds,
+        )
         elapsed = time.perf_counter() - start_time
         _append_line(log_path, f"COMMAND_COMPLETE {command} DURATION={elapsed:.3f}s")
         return result
@@ -205,6 +248,9 @@ def _run_with_timeout_detection(
             "stdout": "",
             "stderr": f"agent-accel error: {exc}",
             "timed_out": False,
+            "cancelled": False,
+            "stalled": False,
+            "cancel_reason": "",
         }
 
 
@@ -361,6 +407,9 @@ def _normalize_live_result(result: dict[str, Any]) -> dict[str, Any]:
     normalized["stdout"] = str(result.get("stdout", ""))
     normalized["stderr"] = str(result.get("stderr", ""))
     normalized["timed_out"] = bool(result.get("timed_out", False))
+    normalized["cancelled"] = bool(result.get("cancelled", False))
+    normalized["stalled"] = bool(result.get("stalled", False))
+    normalized["cancel_reason"] = str(result.get("cancel_reason", ""))
     normalized["cached"] = False
     return normalized
 
@@ -377,6 +426,9 @@ def _normalize_cached_result(command: str, entry: dict[str, Any]) -> dict[str, A
         "stdout": str(stored.get("stdout", "")),
         "stderr": str(stored.get("stderr", "")),
         "timed_out": bool(stored.get("timed_out", False)),
+        "cancelled": bool(stored.get("cancelled", False)),
+        "stalled": bool(stored.get("stalled", False)),
+        "cancel_reason": str(stored.get("cancel_reason", "")),
         "cached": True,
         "cache_kind": cache_kind,
     }
@@ -418,6 +470,46 @@ def _tail_output_text(value: Any, limit: int = 600) -> str:
     return text[-limit:]
 
 
+def _remaining_wall_time_seconds(
+    *,
+    started_at: float,
+    max_wall_time_seconds: float | None,
+) -> float | None:
+    if max_wall_time_seconds is None:
+        return None
+    elapsed = max(0.0, time.perf_counter() - started_at)
+    return max(0.0, float(max_wall_time_seconds) - elapsed)
+
+
+def _timeboxed_command_timeout(
+    *,
+    per_command_timeout: int,
+    remaining_wall_time: float | None,
+) -> int:
+    timeout_seconds = int(max(1, int(per_command_timeout)))
+    if remaining_wall_time is None:
+        return timeout_seconds
+    if remaining_wall_time < 1.0:
+        return 0
+    return int(max(1, min(timeout_seconds, int(remaining_wall_time))))
+
+
+def _append_unfinished_entries(
+    *,
+    unfinished_items: list[dict[str, Any]],
+    commands: list[str],
+    reason: str,
+) -> None:
+    reason_text = str(reason or "").strip() or "unfinished"
+    existing: set[str] = {str(item.get("command", "")) for item in unfinished_items}
+    for command in commands:
+        command_text = str(command or "")
+        if not command_text or command_text in existing:
+            continue
+        unfinished_items.append({"command": command_text, "reason": reason_text})
+        existing.add(command_text)
+
+
 def _emit_command_complete_event(
     callback: VerifyProgressCallback,
     job_id: str,
@@ -449,6 +541,9 @@ def _start_command_tick_thread(
     timeout_seconds: int,
     stall_timeout_seconds: float | None = None,
     activity_probe: Callable[[], float] | None = None,
+    auto_cancel_on_stall: bool = False,
+    cancel_event: threading.Event | None = None,
+    on_stall_auto_cancel: Callable[[float], None] | None = None,
 ) -> tuple[threading.Event, float, threading.Thread]:
     stop_event = threading.Event()
     started = time.perf_counter()
@@ -456,8 +551,10 @@ def _start_command_tick_thread(
     stall_timeout = None
     if stall_timeout_seconds is not None:
         stall_timeout = max(1.0, float(stall_timeout_seconds))
+    auto_cancel_triggered = False
 
     def _ticker() -> None:
+        nonlocal auto_cancel_triggered
         while not stop_event.wait(1.0):
             elapsed = max(0.0, time.perf_counter() - started)
             progress_pct = min(99.0, (elapsed / timeout_sec) * 100.0)
@@ -474,6 +571,19 @@ def _start_command_tick_thread(
                 idle_sec = max(0.0, time.perf_counter() - last_activity)
                 stall_detected = idle_sec >= stall_timeout
                 stall_elapsed = max(0.0, idle_sec - stall_timeout)
+                if (
+                    stall_detected
+                    and auto_cancel_on_stall
+                    and cancel_event is not None
+                    and not auto_cancel_triggered
+                ):
+                    cancel_event.set()
+                    auto_cancel_triggered = True
+                    if on_stall_auto_cancel is not None:
+                        try:
+                            on_stall_auto_cancel(idle_sec)
+                        except Exception:
+                            pass
             _safe_callback_call(
                 callback,
                 "on_heartbeat",
@@ -519,6 +629,9 @@ def _store_cache_result(
             "stdout": str(result.get("stdout", "")),
             "stderr": str(result.get("stderr", "")),
             "timed_out": bool(result.get("timed_out", False)),
+            "cancelled": bool(result.get("cancelled", False)),
+            "stalled": bool(result.get("stalled", False)),
+            "cancel_reason": str(result.get("cancel_reason", "")),
         },
     }
     return True
@@ -552,6 +665,9 @@ def _log_command_result(
             "exit_code": result["exit_code"],
             "duration_seconds": result["duration_seconds"],
             "timed_out": result["timed_out"],
+            "cancelled": bool(result.get("cancelled", False)),
+            "stalled": bool(result.get("stalled", False)),
+            "cancel_reason": str(result.get("cancel_reason", "")),
             "cached": bool(result.get("cached", False)),
             "cache_kind": str(result.get("cache_kind", "success")),
             "mode": str(mode),
@@ -600,6 +716,12 @@ def run_verify(
         verify_stall_timeout_seconds = None
     else:
         verify_stall_timeout_seconds = min(float(per_command_timeout), max(1.0, stall_timeout_raw))
+    verify_max_wall_time_seconds = _normalize_optional_positive_float(
+        runtime_cfg.get("verify_max_wall_time_seconds", runtime_cfg.get("total_verify_timeout_seconds"))
+    )
+    verify_auto_cancel_on_stall = _normalize_bool(runtime_cfg.get("verify_auto_cancel_on_stall", False), False)
+    if verify_stall_timeout_seconds is None:
+        verify_auto_cancel_on_stall = False
     workspace_routing_enabled = _normalize_bool(runtime_cfg.get("verify_workspace_routing_enabled", True), True)
     verify_mode = "fail_fast" if verify_fail_fast else ("parallel" if verify_workers > 1 else "sequential")
 
@@ -622,6 +744,10 @@ def run_verify(
             "cache_failed_ttl_seconds": int(verify_cache_failed_ttl_seconds),
             "preflight_enabled": bool(verify_preflight_enabled),
             "stall_timeout_seconds": float(verify_stall_timeout_seconds) if verify_stall_timeout_seconds is not None else None,
+            "auto_cancel_on_stall": bool(verify_auto_cancel_on_stall),
+            "max_wall_time_seconds": (
+                float(verify_max_wall_time_seconds) if verify_max_wall_time_seconds is not None else None
+            ),
             "workspace_routing_enabled": bool(workspace_routing_enabled),
         },
     )
@@ -695,9 +821,34 @@ def run_verify(
 
     results: list[dict[str, Any]] = []
     fail_fast_skipped_commands: list[str] = []
+    unfinished_items: list[dict[str, Any]] = []
+    termination_reason = ""
+    verify_started_at = time.perf_counter()
 
     if verify_fail_fast:
         for index, command in enumerate(runnable_commands):
+            remaining_wall_time = _remaining_wall_time_seconds(
+                started_at=verify_started_at,
+                max_wall_time_seconds=verify_max_wall_time_seconds,
+            )
+            command_timeout_budget = _timeboxed_command_timeout(
+                per_command_timeout=per_command_timeout,
+                remaining_wall_time=remaining_wall_time,
+            )
+            if command_timeout_budget <= 0:
+                if not termination_reason:
+                    termination_reason = "max_wall_time_exceeded"
+                    _append_line(
+                        log_path,
+                        f"MAX_WALL_TIME_EXCEEDED elapsed={time.perf_counter() - verify_started_at:.3f}s "
+                        f"limit={float(verify_max_wall_time_seconds or 0.0):.3f}s",
+                    )
+                _append_unfinished_entries(
+                    unfinished_items=unfinished_items,
+                    commands=runnable_commands[index:],
+                    reason=termination_reason,
+                )
+                break
             cache_key: str | None = None
             if cache_enabled:
                 cache_key = _cache_key(
@@ -738,7 +889,16 @@ def run_verify(
                     continue
                 cache_misses += 1
 
-            live_result = _normalize_live_result(run_command(command, project_dir, per_command_timeout))
+            live_result = _normalize_live_result(
+                _invoke_run_command(
+                    command,
+                    project_dir,
+                    command_timeout_budget,
+                    stall_timeout_seconds=(
+                        verify_stall_timeout_seconds if verify_auto_cancel_on_stall else None
+                    ),
+                )
+            )
             results.append(live_result)
             fail_fast_skip_flag = bool(_is_failure(live_result) and (index < (len(runnable_commands) - 1)))
             _log_command_result(
@@ -763,12 +923,44 @@ def run_verify(
                     failed_ttl_seconds=verify_cache_failed_ttl_seconds,
                 ):
                     cache_dirty = True
+            if bool(live_result.get("stalled", False)) and verify_auto_cancel_on_stall:
+                if not termination_reason:
+                    termination_reason = "stall_auto_cancel"
+                    _append_line(log_path, f"STALL_AUTO_CANCEL {command} idle_sec=unknown")
+                _append_unfinished_entries(
+                    unfinished_items=unfinished_items,
+                    commands=runnable_commands[index + 1 :],
+                    reason=termination_reason,
+                )
+                break
             if _is_failure(live_result):
                 fail_fast_skipped_commands = runnable_commands[index + 1 :]
                 break
     else:
         runnable_with_keys: list[tuple[str, str | None, int]] = []
         for index, command in enumerate(runnable_commands):
+            remaining_wall_time = _remaining_wall_time_seconds(
+                started_at=verify_started_at,
+                max_wall_time_seconds=verify_max_wall_time_seconds,
+            )
+            command_timeout_budget = _timeboxed_command_timeout(
+                per_command_timeout=per_command_timeout,
+                remaining_wall_time=remaining_wall_time,
+            )
+            if command_timeout_budget <= 0:
+                if not termination_reason:
+                    termination_reason = "max_wall_time_exceeded"
+                    _append_line(
+                        log_path,
+                        f"MAX_WALL_TIME_EXCEEDED elapsed={time.perf_counter() - verify_started_at:.3f}s "
+                        f"limit={float(verify_max_wall_time_seconds or 0.0):.3f}s",
+                    )
+                _append_unfinished_entries(
+                    unfinished_items=unfinished_items,
+                    commands=runnable_commands[index:],
+                    reason=termination_reason,
+                )
+                break
             cache_key = None
             if cache_enabled:
                 cache_key = _cache_key(
@@ -974,6 +1166,39 @@ def run_verify(
                 },
             )
 
+    if termination_reason:
+        executed_commands = {str(item.get("command", "")) for item in results}
+        deferred_commands = [
+            command
+            for command in runnable_commands
+            if command not in executed_commands and command not in fail_fast_skipped_commands
+        ]
+        _append_unfinished_entries(
+            unfinished_items=unfinished_items,
+            commands=deferred_commands,
+            reason=termination_reason,
+        )
+        for item in unfinished_items:
+            command = str(item.get("command", "")).strip()
+            reason = str(item.get("reason", termination_reason)).strip() or termination_reason
+            if not command:
+                continue
+            _append_line(log_path, f"SKIP {command} ({reason})")
+            _append_jsonl(
+                jsonl_path,
+                {
+                    "event": "command_skipped",
+                    "command": command,
+                    "reason": reason,
+                    "ts": _utc_now(),
+                    "mode": verify_mode,
+                    "fail_fast": bool(verify_fail_fast),
+                    "cache_hits": int(cache_hits),
+                    "cache_misses": int(cache_misses),
+                    "fail_fast_skipped": False,
+                },
+            )
+
     if cache_enabled and cache_dirty:
         cache_entries, _ = _prune_cache_entries(
             cache_entries,
@@ -991,7 +1216,14 @@ def run_verify(
         if reason_text not in degrade_reasons:
             degrade_reasons.append(reason_text)
     has_failure = any(_is_failure(item) for item in results)
-    if has_failure:
+    partial = bool(termination_reason or unfinished_items)
+    if partial:
+        if termination_reason == "stall_auto_cancel":
+            exit_code = 130
+        else:
+            exit_code = 124
+        status = "partial"
+    elif has_failure:
         exit_code = 3
         status = "failed"
     elif degraded:
@@ -1027,6 +1259,9 @@ def run_verify(
             "fail_fast_skipped": int(len(fail_fast_skipped_commands)),
             "cache_failed_results": bool(verify_cache_failed_results),
             "cache_failed_ttl_seconds": int(verify_cache_failed_ttl_seconds),
+            "partial": bool(partial),
+            "partial_reason": str(termination_reason),
+            "unfinished_count": int(len(unfinished_items)),
         },
     )
 
@@ -1047,6 +1282,13 @@ def run_verify(
         "mode": verify_mode,
         "cache_failed_results": verify_cache_failed_results,
         "cache_failed_ttl_seconds": verify_cache_failed_ttl_seconds,
+        "partial": bool(partial),
+        "partial_reason": str(termination_reason),
+        "unfinished_items": unfinished_items,
+        "unfinished_commands": [str(item.get("command", "")) for item in unfinished_items if str(item.get("command", "")).strip()],
+        "max_wall_time_seconds": float(verify_max_wall_time_seconds) if verify_max_wall_time_seconds is not None else None,
+        "auto_cancel_on_stall": bool(verify_auto_cancel_on_stall),
+        "timed_out": bool(termination_reason == "max_wall_time_exceeded"),
     }
 
 
@@ -1089,6 +1331,12 @@ def run_verify_with_callback(
         verify_stall_timeout_seconds = None
     else:
         verify_stall_timeout_seconds = min(float(per_command_timeout), max(1.0, stall_timeout_raw))
+    verify_max_wall_time_seconds = _normalize_optional_positive_float(
+        runtime_cfg.get("verify_max_wall_time_seconds", runtime_cfg.get("total_verify_timeout_seconds"))
+    )
+    verify_auto_cancel_on_stall = _normalize_bool(runtime_cfg.get("verify_auto_cancel_on_stall", False), False)
+    if verify_stall_timeout_seconds is None:
+        verify_auto_cancel_on_stall = False
     workspace_routing_enabled = _normalize_bool(runtime_cfg.get("verify_workspace_routing_enabled", True), True)
     verify_mode = "fail_fast" if verify_fail_fast else ("parallel" if verify_workers > 1 else "sequential")
 
@@ -1097,6 +1345,7 @@ def run_verify_with_callback(
     log_path = paths["verify"] / f"verify_{nonce}.log"
     jsonl_path = paths["verify"] / f"verify_{nonce}.jsonl"
     commands = select_verify_commands(config=config, changed_files=changed_files)
+    verify_started_at = time.perf_counter()
 
     callback.on_start(verify_job_id, len(commands))
 
@@ -1114,6 +1363,10 @@ def run_verify_with_callback(
             "cache_failed_ttl_seconds": int(verify_cache_failed_ttl_seconds),
             "preflight_enabled": bool(verify_preflight_enabled),
             "stall_timeout_seconds": float(verify_stall_timeout_seconds) if verify_stall_timeout_seconds is not None else None,
+            "auto_cancel_on_stall": bool(verify_auto_cancel_on_stall),
+            "max_wall_time_seconds": (
+                float(verify_max_wall_time_seconds) if verify_max_wall_time_seconds is not None else None
+            ),
             "workspace_routing_enabled": bool(workspace_routing_enabled),
         },
     )
@@ -1193,6 +1446,8 @@ def run_verify_with_callback(
 
     results: list[dict[str, Any]] = []
     fail_fast_skipped_commands: list[str] = []
+    unfinished_items: list[dict[str, Any]] = []
+    termination_reason = ""
 
     def _make_output_callback(command_name: str, activity_ref: dict[str, float]) -> Callable[[str, str], None]:
         def _emit(stream: str, chunk: str) -> None:
@@ -1217,6 +1472,28 @@ def run_verify_with_callback(
 
     if verify_fail_fast:
         for index, command in enumerate(runnable_commands):
+            remaining_wall_time = _remaining_wall_time_seconds(
+                started_at=verify_started_at,
+                max_wall_time_seconds=verify_max_wall_time_seconds,
+            )
+            command_timeout_budget = _timeboxed_command_timeout(
+                per_command_timeout=per_command_timeout,
+                remaining_wall_time=remaining_wall_time,
+            )
+            if command_timeout_budget <= 0:
+                termination_reason = "max_wall_time_exceeded"
+                _append_line(
+                    log_path,
+                    f"MAX_WALL_TIME_EXCEEDED elapsed={time.perf_counter() - verify_started_at:.3f}s "
+                    f"limit={float(verify_max_wall_time_seconds or 0.0):.3f}s",
+                )
+                _append_unfinished_entries(
+                    unfinished_items=unfinished_items,
+                    commands=runnable_commands[index:],
+                    reason=termination_reason,
+                )
+                break
+
             callback.on_command_start(verify_job_id, command, index, len(runnable_commands))
             callback.on_progress(verify_job_id, index, len(runnable_commands), command)
 
@@ -1272,28 +1549,45 @@ def run_verify_with_callback(
 
             activity_ref = {"ts": time.perf_counter()}
             output_callback = _make_output_callback(command, activity_ref)
+
             def _activity_probe(ref: dict[str, float] = activity_ref) -> float:
                 return float(ref["ts"])
+
+            cancel_event = threading.Event()
+
+            def _on_stall_auto_cancel(idle_sec: float, command_name: str = command) -> None:
+                nonlocal termination_reason
+                if not termination_reason:
+                    termination_reason = "stall_auto_cancel"
+                    _append_line(
+                        log_path,
+                        f"STALL_AUTO_CANCEL {command_name} idle_sec={idle_sec:.3f}",
+                    )
+
             stop_tick, cmd_started, tick_thread = _start_command_tick_thread(
                 callback,
                 job_id=verify_job_id,
                 command=command,
-                timeout_seconds=per_command_timeout,
+                timeout_seconds=command_timeout_budget,
                 stall_timeout_seconds=verify_stall_timeout_seconds,
                 activity_probe=_activity_probe,
+                auto_cancel_on_stall=verify_auto_cancel_on_stall,
+                cancel_event=cancel_event,
+                on_stall_auto_cancel=_on_stall_auto_cancel,
             )
             try:
-                try:
-                    live_result = _normalize_live_result(
-                        run_command(
-                            command,
-                            project_dir,
-                            per_command_timeout,
-                            output_callback=output_callback,
-                        )
+                live_result = _normalize_live_result(
+                    _invoke_run_command(
+                        command,
+                        project_dir,
+                        command_timeout_budget,
+                        output_callback=output_callback,
+                        cancel_event=cancel_event,
+                        stall_timeout_seconds=(
+                            verify_stall_timeout_seconds if verify_auto_cancel_on_stall else None
+                        ),
                     )
-                except TypeError:
-                    live_result = _normalize_live_result(run_command(command, project_dir, per_command_timeout))
+                )
             finally:
                 stop_tick.set()
                 tick_thread.join(timeout=0.1)
@@ -1303,11 +1597,11 @@ def run_verify_with_callback(
                 "on_heartbeat",
                 verify_job_id,
                 cmd_elapsed,
-                max(0.0, float(per_command_timeout) - cmd_elapsed),
+                max(0.0, float(command_timeout_budget) - cmd_elapsed),
                 "running",
                 current_command=command,
                 command_elapsed_sec=cmd_elapsed,
-                command_timeout_sec=float(per_command_timeout),
+                command_timeout_sec=float(command_timeout_budget),
                 command_progress_pct=100.0,
                 stall_detected=False if verify_stall_timeout_seconds is not None else None,
                 stall_elapsed_sec=0.0 if verify_stall_timeout_seconds is not None else None,
@@ -1345,12 +1639,44 @@ def run_verify_with_callback(
                 ):
                     cache_dirty = True
             callback.on_progress(verify_job_id, index + 1, len(runnable_commands), "")
+            if bool(live_result.get("stalled", False)) and verify_auto_cancel_on_stall:
+                if not termination_reason:
+                    termination_reason = "stall_auto_cancel"
+                    _append_line(log_path, f"STALL_AUTO_CANCEL {command} idle_sec=unknown")
+                _append_unfinished_entries(
+                    unfinished_items=unfinished_items,
+                    commands=runnable_commands[index + 1 :],
+                    reason=termination_reason,
+                )
+                break
             if _is_failure(live_result):
                 fail_fast_skipped_commands = runnable_commands[index + 1 :]
                 break
     else:
-        runnable_with_keys: list[tuple[str, str | None, int]] = []
+        runnable_with_keys: list[tuple[str, str | None, int, int]] = []
         for index, command in enumerate(runnable_commands):
+            remaining_wall_time = _remaining_wall_time_seconds(
+                started_at=verify_started_at,
+                max_wall_time_seconds=verify_max_wall_time_seconds,
+            )
+            command_timeout_budget = _timeboxed_command_timeout(
+                per_command_timeout=per_command_timeout,
+                remaining_wall_time=remaining_wall_time,
+            )
+            if command_timeout_budget <= 0:
+                if not termination_reason:
+                    termination_reason = "max_wall_time_exceeded"
+                    _append_line(
+                        log_path,
+                        f"MAX_WALL_TIME_EXCEEDED elapsed={time.perf_counter() - verify_started_at:.3f}s "
+                        f"limit={float(verify_max_wall_time_seconds or 0.0):.3f}s",
+                    )
+                _append_unfinished_entries(
+                    unfinished_items=unfinished_items,
+                    commands=runnable_commands[index:],
+                    reason=termination_reason,
+                )
+                break
             cache_key = None
             if cache_enabled:
                 cache_key = _cache_key(
@@ -1386,61 +1712,92 @@ def run_verify_with_callback(
                     callback.on_cache_hit(verify_job_id, command)
                     continue
                 cache_misses += 1
-            runnable_with_keys.append((command, cache_key, index))
+            runnable_with_keys.append((command, cache_key, index, command_timeout_budget))
 
         if runnable_with_keys:
             overall_start = time.perf_counter()
-            max_overall_timeout = per_command_timeout * len(runnable_with_keys) * 2
+            max_overall_timeout = float(per_command_timeout * len(runnable_with_keys) * 2)
+            if verify_max_wall_time_seconds is not None:
+                max_overall_timeout = min(
+                    float(max_overall_timeout),
+                    float(verify_max_wall_time_seconds) + max(5.0, 2.0 * float(per_command_timeout)),
+                )
 
             callback.on_stage_change(verify_job_id, VerifyStage.PARALLEL)
 
             try:
                 with ThreadPoolExecutor(max_workers=min(verify_workers, len(runnable_with_keys))) as pool:
-                    future_map: dict[Any, tuple[str, str | None, float, int, threading.Event, threading.Thread]] = {}
+                    future_map: dict[Any, tuple[str, str | None, float, int, int, threading.Event, threading.Thread, threading.Event]] = {}
                     total_commands = len(runnable_with_keys)
                     completed_count = 0
-                    for index, (command, cache_key, command_index) in enumerate(runnable_with_keys):
+                    for index, (command, cache_key, command_index, command_timeout_budget) in enumerate(runnable_with_keys):
                         callback.on_command_start(verify_job_id, command, index, total_commands)
                         callback.on_progress(verify_job_id, completed_count, total_commands, command)
                         activity_ref = {"ts": time.perf_counter()}
                         output_callback = _make_output_callback(command, activity_ref)
+
                         def _activity_probe(ref: dict[str, float] = activity_ref) -> float:
                             return float(ref["ts"])
+
+                        cancel_event = threading.Event()
+
+                        def _on_stall_auto_cancel(idle_sec: float, command_name: str = command) -> None:
+                            nonlocal termination_reason
+                            if not termination_reason:
+                                termination_reason = "stall_auto_cancel"
+                                _append_line(
+                                    log_path,
+                                    f"STALL_AUTO_CANCEL {command_name} idle_sec={idle_sec:.3f}",
+                                )
                         stop_tick, cmd_started, tick_thread = _start_command_tick_thread(
                             callback,
                             job_id=verify_job_id,
                             command=command,
-                            timeout_seconds=per_command_timeout,
+                            timeout_seconds=command_timeout_budget,
                             stall_timeout_seconds=verify_stall_timeout_seconds,
                             activity_probe=_activity_probe,
+                            auto_cancel_on_stall=verify_auto_cancel_on_stall,
+                            cancel_event=cancel_event,
+                            on_stall_auto_cancel=_on_stall_auto_cancel,
                         )
                         future = pool.submit(
                             _run_with_timeout_detection,
                             command,
                             project_dir,
-                            per_command_timeout,
+                            command_timeout_budget,
                             log_path,
                             jsonl_path,
                             output_callback,
+                            cancel_event,
+                            verify_stall_timeout_seconds if verify_auto_cancel_on_stall else None,
                         )
-                        future_map[future] = (command, cache_key, cmd_started, command_index, stop_tick, tick_thread)
+                        future_map[future] = (
+                            command,
+                            cache_key,
+                            cmd_started,
+                            command_index,
+                            command_timeout_budget,
+                            stop_tick,
+                            tick_thread,
+                            cancel_event,
+                        )
 
                     for future in as_completed(future_map, timeout=max_overall_timeout):
-                        command, cache_key, started_at, command_index, stop_tick, tick_thread = future_map[future]
+                        command, cache_key, started_at, command_index, command_timeout_budget, stop_tick, tick_thread, cancel_event = future_map[future]
 
                         try:
-                            live_result = _normalize_live_result(future.result(timeout=per_command_timeout))
+                            live_result = _normalize_live_result(future.result(timeout=command_timeout_budget))
                             cmd_elapsed = max(0.0, time.perf_counter() - started_at)
                             _safe_callback_call(
                                 callback,
                                 "on_heartbeat",
                                 verify_job_id,
                                 cmd_elapsed,
-                                max(0.0, float(per_command_timeout) - cmd_elapsed),
+                                max(0.0, float(command_timeout_budget) - cmd_elapsed),
                                 "running",
                                 current_command=command,
                                 command_elapsed_sec=cmd_elapsed,
-                                command_timeout_sec=float(per_command_timeout),
+                                command_timeout_sec=float(command_timeout_budget),
                                 command_progress_pct=100.0,
                                 stall_detected=False if verify_stall_timeout_seconds is not None else None,
                                 stall_elapsed_sec=0.0 if verify_stall_timeout_seconds is not None else None,
@@ -1483,8 +1840,11 @@ def run_verify_with_callback(
                                 "exit_code": 124,
                                 "duration_seconds": elapsed,
                                 "stdout": "",
-                                "stderr": f"agent-accel: ThreadPool future timeout after {per_command_timeout}s",
+                                "stderr": f"agent-accel: ThreadPool future timeout after {command_timeout_budget}s",
                                 "timed_out": True,
+                                "cancelled": False,
+                                "stalled": False,
+                                "cancel_reason": "",
                             }
                             callback.on_error(verify_job_id, command, "timeout")
                             _safe_callback_call(
@@ -1496,7 +1856,7 @@ def run_verify_with_callback(
                                 "running",
                                 current_command=command,
                                 command_elapsed_sec=elapsed,
-                                command_timeout_sec=float(per_command_timeout),
+                                command_timeout_sec=float(command_timeout_budget),
                                 command_progress_pct=100.0,
                                 stall_detected=False if verify_stall_timeout_seconds is not None else None,
                                 stall_elapsed_sec=0.0 if verify_stall_timeout_seconds is not None else None,
@@ -1532,6 +1892,9 @@ def run_verify_with_callback(
                                 "stdout": "",
                                 "stderr": f"agent-accel: ThreadPool future error: {exc}",
                                 "timed_out": False,
+                                "cancelled": False,
+                                "stalled": False,
+                                "cancel_reason": "",
                             }
                             callback.on_error(verify_job_id, command, str(exc))
                             _safe_callback_call(
@@ -1577,6 +1940,36 @@ def run_verify_with_callback(
                         completed_count += 1
                         callback.on_progress(verify_job_id, completed_count, len(runnable_with_keys), "")
 
+                        if bool(live_result.get("stalled", False)) and verify_auto_cancel_on_stall:
+                            if not termination_reason:
+                                termination_reason = "stall_auto_cancel"
+                                _append_line(log_path, f"STALL_AUTO_CANCEL {command} idle_sec=unknown")
+                            for pending_future, pending_meta in future_map.items():
+                                if pending_future is future:
+                                    continue
+                                if pending_future.done():
+                                    continue
+                                pending_meta[-1].set()
+
+                        remaining_wall_time = _remaining_wall_time_seconds(
+                            started_at=verify_started_at,
+                            max_wall_time_seconds=verify_max_wall_time_seconds,
+                        )
+                        if remaining_wall_time is not None and remaining_wall_time <= 0:
+                            if not termination_reason:
+                                termination_reason = "max_wall_time_exceeded"
+                                _append_line(
+                                    log_path,
+                                    f"MAX_WALL_TIME_EXCEEDED elapsed={time.perf_counter() - verify_started_at:.3f}s "
+                                    f"limit={float(verify_max_wall_time_seconds or 0.0):.3f}s",
+                                )
+                            for pending_future, pending_meta in future_map.items():
+                                if pending_future is future:
+                                    continue
+                                if pending_future.done():
+                                    continue
+                                pending_meta[-1].set()
+
                         elapsed = time.perf_counter() - overall_start
                         eta = None
                         if completed_count > 0:
@@ -1597,36 +1990,24 @@ def run_verify_with_callback(
                         )
 
             except TimeoutError:
-                for _future, (_command, _cache_key_value, _started_at, _index, stop_tick, tick_thread) in future_map.items():
+                for _future, (_command, _cache_key_value, _started_at, _index, _timeout_budget, stop_tick, tick_thread, cancel_event) in future_map.items():
+                    cancel_event.set()
                     stop_tick.set()
                     tick_thread.join(timeout=0.1)
                 elapsed = time.perf_counter() - overall_start
                 _append_line(log_path, f"THREADPOOL_TIMEOUT overall_timeout={max_overall_timeout}s elapsed={elapsed:.3f}s")
-                for command, cache_key, command_index in runnable_with_keys:
+                if not termination_reason and verify_max_wall_time_seconds is not None:
+                    termination_reason = "max_wall_time_exceeded"
+                for command, cache_key, command_index, _timeout_budget in runnable_with_keys:
                     if not any(r["command"] == command for r in results):
-                        timeout_result = {
-                            "command": command,
-                            "exit_code": 124,
-                            "duration_seconds": elapsed,
-                            "stdout": "",
-                            "stderr": f"agent-accel: ThreadPool overall timeout after {max_overall_timeout}s",
-                            "timed_out": True,
-                        }
-                        results.append(timeout_result)
-                        _log_command_result(
-                            log_path,
-                            jsonl_path,
-                            timeout_result,
-                            mode=verify_mode,
-                            fail_fast=verify_fail_fast,
-                            cache_hits=cache_hits,
-                            cache_misses=cache_misses,
-                            command_index=command_index + 1,
-                            total_commands=len(runnable_commands),
-                            fail_fast_skipped=False,
+                        _append_unfinished_entries(
+                            unfinished_items=unfinished_items,
+                            commands=[command],
+                            reason=termination_reason or "parallel_timeout",
                         )
             except Exception as exc:
-                for _future, (_command, _cache_key_value, _started_at, _index, stop_tick, tick_thread) in future_map.items():
+                for _future, (_command, _cache_key_value, _started_at, _index, _timeout_budget, stop_tick, tick_thread, cancel_event) in future_map.items():
+                    cancel_event.set()
                     stop_tick.set()
                     tick_thread.join(timeout=0.1)
                 elapsed = time.perf_counter() - overall_start
@@ -1634,30 +2015,41 @@ def run_verify_with_callback(
                 _append_line(log_path, "FALLBACK_SEQUENTIAL_EXECUTION")
                 callback.on_stage_change(verify_job_id, VerifyStage.SEQUENTIAL)
 
-                for i, (command, cache_key, command_index) in enumerate(runnable_with_keys):
+                for i, (command, cache_key, command_index, command_timeout_budget) in enumerate(runnable_with_keys):
                     if not any(r["command"] == command for r in results):
                         callback.on_command_start(verify_job_id, command, i, len(runnable_with_keys))
                         activity_ref = {"ts": time.perf_counter()}
                         output_callback = _make_output_callback(command, activity_ref)
                         def _activity_probe(ref: dict[str, float] = activity_ref) -> float:
                             return float(ref["ts"])
+                        cancel_event = threading.Event()
+                        def _on_stall_auto_cancel(idle_sec: float, command_name: str = command) -> None:
+                            nonlocal termination_reason
+                            if not termination_reason:
+                                termination_reason = "stall_auto_cancel"
+                                _append_line(log_path, f"STALL_AUTO_CANCEL {command_name} idle_sec={idle_sec:.3f}")
                         stop_tick, cmd_started, tick_thread = _start_command_tick_thread(
                             callback,
                             job_id=verify_job_id,
                             command=command,
-                            timeout_seconds=per_command_timeout,
+                            timeout_seconds=command_timeout_budget,
                             stall_timeout_seconds=verify_stall_timeout_seconds,
                             activity_probe=_activity_probe,
+                            auto_cancel_on_stall=verify_auto_cancel_on_stall,
+                            cancel_event=cancel_event,
+                            on_stall_auto_cancel=_on_stall_auto_cancel,
                         )
                         try:
                             live_result = _normalize_live_result(
                                 _run_with_timeout_detection(
                                     command,
                                     project_dir,
-                                    per_command_timeout,
+                                    command_timeout_budget,
                                     log_path,
                                     jsonl_path,
                                     output_callback,
+                                    cancel_event,
+                                    verify_stall_timeout_seconds if verify_auto_cancel_on_stall else None,
                                 )
                             )
                         finally:
@@ -1669,11 +2061,11 @@ def run_verify_with_callback(
                             "on_heartbeat",
                             verify_job_id,
                             cmd_elapsed,
-                            max(0.0, float(per_command_timeout) - cmd_elapsed),
+                            max(0.0, float(command_timeout_budget) - cmd_elapsed),
                             "running",
                             current_command=command,
                             command_elapsed_sec=cmd_elapsed,
-                            command_timeout_sec=float(per_command_timeout),
+                            command_timeout_sec=float(command_timeout_budget),
                             command_progress_pct=100.0,
                             stall_detected=False if verify_stall_timeout_seconds is not None else None,
                             stall_elapsed_sec=0.0 if verify_stall_timeout_seconds is not None else None,
@@ -1711,6 +2103,18 @@ def run_verify_with_callback(
                                 cache_dirty = True
                         callback.on_progress(verify_job_id, i + 1, len(runnable_with_keys), "")
 
+        if termination_reason:
+            executed_commands = {str(row.get("command", "")) for row in results}
+            pending_commands = [
+                command for command, _cache_key, _command_index, _timeout_budget in runnable_with_keys
+                if command not in executed_commands
+            ]
+            _append_unfinished_entries(
+                unfinished_items=unfinished_items,
+                commands=pending_commands,
+                reason=termination_reason,
+            )
+
     if fail_fast_skipped_commands:
         for command in fail_fast_skipped_commands:
             _append_line(log_path, f"SKIP {command} (fail-fast)")
@@ -1729,6 +2133,42 @@ def run_verify_with_callback(
                 },
             )
             callback.on_skip(verify_job_id, command, "fail_fast")
+
+    if termination_reason:
+        executed_commands = {str(item.get("command", "")) for item in results}
+        deferred_commands = [
+            command
+            for command in runnable_commands
+            if command not in executed_commands and command not in fail_fast_skipped_commands
+        ]
+        _append_unfinished_entries(
+            unfinished_items=unfinished_items,
+            commands=deferred_commands,
+            reason=termination_reason,
+        )
+        emitted_unfinished: set[str] = set()
+        for item in unfinished_items:
+            command = str(item.get("command", "")).strip()
+            reason = str(item.get("reason", termination_reason)).strip() or termination_reason
+            if not command or command in emitted_unfinished:
+                continue
+            emitted_unfinished.add(command)
+            _append_line(log_path, f"SKIP {command} ({reason})")
+            _append_jsonl(
+                jsonl_path,
+                {
+                    "event": "command_skipped",
+                    "command": command,
+                    "reason": reason,
+                    "ts": _utc_now(),
+                    "mode": verify_mode,
+                    "fail_fast": bool(verify_fail_fast),
+                    "cache_hits": int(cache_hits),
+                    "cache_misses": int(cache_misses),
+                    "fail_fast_skipped": False,
+                },
+            )
+            callback.on_skip(verify_job_id, command, reason)
 
     callback.on_stage_change(verify_job_id, VerifyStage.CLEANUP)
 
@@ -1749,7 +2189,14 @@ def run_verify_with_callback(
         if reason_text not in degrade_reasons:
             degrade_reasons.append(reason_text)
     has_failure = any(_is_failure(item) for item in results)
-    if has_failure:
+    partial = bool(termination_reason or unfinished_items)
+    if partial:
+        if termination_reason == "stall_auto_cancel":
+            exit_code = 130
+        else:
+            exit_code = 124
+        status = "partial"
+    elif has_failure:
         exit_code = 3
         status = "failed"
     elif degraded:
@@ -1785,6 +2232,9 @@ def run_verify_with_callback(
             "fail_fast_skipped": int(len(fail_fast_skipped_commands)),
             "cache_failed_results": bool(verify_cache_failed_results),
             "cache_failed_ttl_seconds": int(verify_cache_failed_ttl_seconds),
+            "partial": bool(partial),
+            "partial_reason": str(termination_reason),
+            "unfinished_count": int(len(unfinished_items)),
         },
     )
 
@@ -1807,4 +2257,11 @@ def run_verify_with_callback(
         "mode": verify_mode,
         "cache_failed_results": verify_cache_failed_results,
         "cache_failed_ttl_seconds": verify_cache_failed_ttl_seconds,
+        "partial": bool(partial),
+        "partial_reason": str(termination_reason),
+        "unfinished_items": unfinished_items,
+        "unfinished_commands": [str(item.get("command", "")) for item in unfinished_items if str(item.get("command", "")).strip()],
+        "max_wall_time_seconds": float(verify_max_wall_time_seconds) if verify_max_wall_time_seconds is not None else None,
+        "auto_cancel_on_stall": bool(verify_auto_cancel_on_stall),
+        "timed_out": bool(termination_reason == "max_wall_time_exceeded"),
     }

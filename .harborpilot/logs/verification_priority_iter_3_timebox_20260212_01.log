@@ -1,0 +1,27 @@
+﻿VERIFICATION_START priority_iter_3_timebox_20260212_01 2026-02-12T07:01:59Z
+ENV branch=main commit=3c6cd05a2b86d771439102fc0ba0593374ce3afc python='Python 3.14.2'
+CMD: $env:PYTHONPATH='.'; pytest -q tests/unit/test_verify_orchestrator.py
+EXIT: 0
+SUMMARY: 15 passed in 0.49s.
+CMD: $env:PYTHONPATH='.'; pytest -q tests/unit/test_config.py
+EXIT: 0
+SUMMARY: 5 passed in 0.13s.
+CMD: $env:PYTHONPATH='.'; pytest -q tests/unit/test_mcp_server.py -k "verify and (timebox or stall or partial or override)"
+EXIT: 0
+SUMMARY: 5 passed, 38 deselected in 1.45s.
+CMD: ruff check .
+EXIT: 0
+SUMMARY: All checks passed.
+CMD: mypy .
+EXIT: 0
+SUMMARY: Success: no issues found in 36 source files.
+CMD: $env:PYTHONPATH='.'; pytest -q tests/unit
+EXIT: 0
+SUMMARY: 95 passed in 12.23s.
+CMD: $env:PYTHONPATH='.'; pytest -q
+EXIT: 1
+SUMMARY: collection error in test_tool_api.py (module-level script expects accel_verify_start attribute).
+DEGRADE_REASON: full-repo pytest includes legacy script-level collection failure in test_tool_api.py outside this change scope
+RISK: regressions in non-unit script tests may go undetected until that legacy test harness is fixed
+BACKFILL_PLAN: owner=user commands="fix/isolate test_tool_api.py then rerun $env:PYTHONPATH='.'; pytest -q" deadline_utc=2026-02-13T07:01:59Z
+VERIFICATION_END priority_iter_3_timebox_20260212_01 2026-02-12T07:01:59Z

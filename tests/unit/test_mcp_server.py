@@ -962,6 +962,41 @@ def test_tool_verify_fast_loop_defaults_cache_failed_results(tmp_path: Path, mon
     assert bool(runtime.get("verify_cache_failed_results")) is True
 
 
+def test_tool_verify_accepts_timebox_and_stall_overrides(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "verify_timebox_override_project"
+    project_dir.mkdir(parents=True)
+
+    captured: dict[str, object] = {}
+
+    def fake_resolve_effective_config(project_dir, cli_overrides=None):
+        captured["cli_overrides"] = cli_overrides
+        return {"runtime": {"accel_home": str(tmp_path / ".accel-home")}}
+
+    monkeypatch.setattr(mcp_server, "resolve_effective_config", fake_resolve_effective_config)
+    monkeypatch.setattr(
+        mcp_server,
+        "run_verify",
+        lambda project_dir, config, changed_files=None: {"status": "partial", "exit_code": 124, "commands": [], "results": []},
+    )
+
+    result = mcp_server._tool_verify(
+        project=str(project_dir),
+        changed_files=["src/a.py"],
+        verify_stall_timeout_seconds=6.0,
+        verify_max_wall_time_seconds=45.0,
+        verify_auto_cancel_on_stall=True,
+    )
+
+    assert result["status"] == "partial"
+    overrides = captured.get("cli_overrides")
+    assert isinstance(overrides, dict)
+    runtime = overrides.get("runtime", {})
+    assert isinstance(runtime, dict)
+    assert float(runtime.get("verify_stall_timeout_seconds", 0.0)) == 6.0
+    assert float(runtime.get("verify_max_wall_time_seconds", 0.0)) == 45.0
+    assert bool(runtime.get("verify_auto_cancel_on_stall")) is True
+
+
 def test_verify_starts_async_by_default(tmp_path: Path, monkeypatch) -> None:
     project_dir = tmp_path / "sync_wait_project"
     project_dir.mkdir(parents=True)
@@ -1557,6 +1592,77 @@ def test_verify_start_accepts_string_runtime_overrides(tmp_path: Path, monkeypat
     assert final_status.get("state") == mcp_server.JobState.COMPLETED
 
 
+def test_verify_start_accepts_timebox_runtime_overrides(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "verify_timebox_overrides_project"
+    project_dir.mkdir(parents=True)
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    captured: dict[str, object] = {}
+
+    def fake_resolve_effective_config(project_dir, cli_overrides=None):
+        captured["cli_overrides"] = cli_overrides
+        return {
+            "runtime": {"accel_home": str(tmp_path / ".accel-home")},
+            "verify": {},
+        }
+
+    monkeypatch.setattr(mcp_server, "resolve_effective_config", fake_resolve_effective_config)
+    monkeypatch.setattr(
+        mcp_server,
+        "run_verify_with_callback",
+        lambda project_dir, config, changed_files=None, callback=None: {
+            "status": "partial",
+            "exit_code": 124,
+            "nonce": "timebox_override_nonce",
+            "log_path": str(tmp_path / "verify.log"),
+            "jsonl_path": str(tmp_path / "verify.jsonl"),
+            "commands": [],
+            "results": [],
+            "degraded": False,
+            "fail_fast": False,
+            "fail_fast_skipped_commands": [],
+            "cache_enabled": False,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "partial": True,
+            "partial_reason": "max_wall_time_exceeded",
+            "unfinished_items": [],
+            "unfinished_commands": [],
+            "timed_out": True,
+        },
+    )
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    start_fn = tools["accel_verify_start"].fn
+    status_fn = tools["accel_verify_status"].fn
+
+    started = start_fn(
+        project=str(project_dir),
+        verify_stall_timeout_seconds="9",
+        verify_max_wall_time_seconds="77",
+        verify_auto_cancel_on_stall="true",
+    )
+    assert started["status"] == "started"
+
+    job_id = str(started["job_id"])
+    for _ in range(30):
+        status = status_fn(job_id=job_id)
+        if status.get("state") == mcp_server.JobState.COMPLETED:
+            break
+        time.sleep(0.05)
+
+    overrides = captured.get("cli_overrides")
+    assert isinstance(overrides, dict)
+    runtime = overrides.get("runtime", {})
+    assert isinstance(runtime, dict)
+    assert float(runtime.get("verify_stall_timeout_seconds", 0.0)) == 9.0
+    assert float(runtime.get("verify_max_wall_time_seconds", 0.0)) == 77.0
+    assert bool(runtime.get("verify_auto_cancel_on_stall")) is True
+
+
 def test_verify_start_fast_loop_defaults_cache_failed_results(tmp_path: Path, monkeypatch) -> None:
     project_dir = tmp_path / "verify_start_fastloop_defaults_project"
     project_dir.mkdir(parents=True)
@@ -1653,6 +1759,36 @@ def test_sync_verify_returns_completed_result_for_fast_job(tmp_path: Path, monke
     assert int(result["exit_code"]) == 0
     assert result["nonce"] == "fast_nonce"
     assert "job_id" in result
+
+
+def test_verify_status_exposes_partial_fields_from_completed_result() -> None:
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+    job = jm.create_job()
+    job.mark_running("running")
+    job.mark_completed(
+        status="partial",
+        exit_code=124,
+        result={
+            "status": "partial",
+            "exit_code": 124,
+            "partial": True,
+            "partial_reason": "max_wall_time_exceeded",
+            "unfinished_commands": ["pytest -q tests/test_a.py"],
+            "timed_out": True,
+        },
+    )
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    status_fn = tools["accel_verify_status"].fn
+    payload = status_fn(job_id=job.job_id)
+
+    assert payload.get("state") == mcp_server.JobState.COMPLETED
+    assert payload.get("status") == "partial"
+    assert bool(payload.get("partial")) is True
+    assert payload.get("partial_reason") == "max_wall_time_exceeded"
+    assert isinstance(payload.get("unfinished_commands"), list)
 
 
 def test_sync_index_timeout_returns_running_then_completes(tmp_path: Path, monkeypatch) -> None:

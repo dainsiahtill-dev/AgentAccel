@@ -122,6 +122,7 @@ def _read_pipe_stream(
     stream_name: str,
     chunks: list[str],
     output_callback: Callable[[str, str], None] | None,
+    activity_ref: list[float] | None = None,
 ) -> None:
     if pipe is None:
         return
@@ -134,6 +135,8 @@ def _read_pipe_stream(
             if not text:
                 continue
             chunks.append(text)
+            if activity_ref is not None:
+                activity_ref[0] = time.perf_counter()
             if output_callback is not None:
                 try:
                     output_callback(stream_name, text)
@@ -153,6 +156,8 @@ def run_command(
     cwd: Path,
     timeout_seconds: int,
     output_callback: Callable[[str, str], None] | None = None,
+    cancel_event: threading.Event | None = None,
+    stall_timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Run a command with enhanced timeout handling and process cleanup."""
     started = time.perf_counter()
@@ -161,6 +166,15 @@ def run_command(
     stderr_chunks: list[str] = []
     stdout_thread: threading.Thread | None = None
     stderr_thread: threading.Thread | None = None
+    timeout_value = max(1.0, float(timeout_seconds))
+    stall_timeout_value: float | None = None
+    try:
+        if stall_timeout_seconds is not None:
+            parsed_stall = float(stall_timeout_seconds)
+            if parsed_stall > 0:
+                stall_timeout_value = max(1.0, parsed_stall)
+    except (TypeError, ValueError):
+        stall_timeout_value = None
     
     try:
         # Create process with enhanced settings for better timeout handling
@@ -179,25 +193,52 @@ def run_command(
             preexec_fn=_resolve_preexec_fn(),
         )
 
+        activity_ref = [started]
         stdout_thread = threading.Thread(
             target=_read_pipe_stream,
-            args=(process.stdout, "stdout", stdout_chunks, output_callback),
+            args=(process.stdout, "stdout", stdout_chunks, output_callback, activity_ref),
             daemon=True,
         )
         stderr_thread = threading.Thread(
             target=_read_pipe_stream,
-            args=(process.stderr, "stderr", stderr_chunks, output_callback),
+            args=(process.stderr, "stderr", stderr_chunks, output_callback, activity_ref),
             daemon=True,
         )
         stdout_thread.start()
         stderr_thread.start()
 
         timed_out = False
-        try:
-            process.wait(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            _kill_process_tree(process)
+        cancelled = False
+        stalled = False
+        cancel_reason = ""
+        deadline = started + timeout_value
+        while True:
+            if process.poll() is not None:
+                break
+            now = time.perf_counter()
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                cancel_reason = "external_cancel"
+                _kill_process_tree(process)
+                break
+            if stall_timeout_value is not None and (now - float(activity_ref[0])) >= stall_timeout_value:
+                cancelled = True
+                stalled = True
+                cancel_reason = "stall_timeout"
+                _kill_process_tree(process)
+                break
+            if now >= deadline:
+                timed_out = True
+                _kill_process_tree(process)
+                break
+            wait_budget = min(0.2, max(0.02, deadline - now))
+            try:
+                process.wait(timeout=wait_budget)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+
+        if timed_out or cancelled:
             try:
                 process.wait(timeout=5)
             except (subprocess.TimeoutExpired, OSError):
@@ -210,6 +251,19 @@ def run_command(
 
         stdout_text = "".join(stdout_chunks)
         stderr_text = "".join(stderr_chunks)
+        if cancelled:
+            elapsed = time.perf_counter() - started
+            return {
+                "command": command,
+                "exit_code": 130,
+                "duration_seconds": round(elapsed, 3),
+                "stdout": _normalize_output(stdout_text)[-OUTPUT_TAIL_LIMIT:],
+                "stderr": _normalize_output(stderr_text)[-OUTPUT_TAIL_LIMIT:],
+                "timed_out": False,
+                "cancelled": True,
+                "stalled": bool(stalled),
+                "cancel_reason": cancel_reason,
+            }
         if timed_out:
             elapsed = time.perf_counter() - started
             return {
@@ -219,6 +273,9 @@ def run_command(
                 "stdout": _normalize_output(stdout_text)[-OUTPUT_TAIL_LIMIT:],
                 "stderr": _normalize_output(stderr_text)[-OUTPUT_TAIL_LIMIT:],
                 "timed_out": True,
+                "cancelled": False,
+                "stalled": False,
+                "cancel_reason": "",
             }
         
         # Normal completion
@@ -230,6 +287,9 @@ def run_command(
             "stdout": _normalize_output("".join(stdout_chunks))[-OUTPUT_TAIL_LIMIT:],
             "stderr": _normalize_output("".join(stderr_chunks))[-OUTPUT_TAIL_LIMIT:],
             "timed_out": False,
+            "cancelled": False,
+            "stalled": False,
+            "cancel_reason": "",
         }
         
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
@@ -242,6 +302,9 @@ def run_command(
             "stdout": "",
             "stderr": f"agent-accel process error: {exc}",
             "timed_out": False,
+            "cancelled": False,
+            "stalled": False,
+            "cancel_reason": "",
         }
     finally:
         if stdout_thread is not None and stdout_thread.is_alive():

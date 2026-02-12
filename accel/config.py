@@ -59,6 +59,9 @@ DEFAULT_LOCAL_CONFIG: dict[str, Any] = {
         "verify_workspace_routing_enabled": True,
         "verify_preflight_enabled": True,
         "verify_preflight_timeout_seconds": 5,
+        "verify_stall_timeout_seconds": 20.0,
+        "verify_auto_cancel_on_stall": False,
+        "verify_max_wall_time_seconds": 3600.0,
         "sync_verify_timeout_action": "poll",
         "sync_verify_cancel_grace_seconds": 5.0,
         "token_estimator_backend": "auto",
@@ -304,6 +307,25 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
             os.environ["ACCEL_VERIFY_PREFLIGHT_TIMEOUT_SECONDS"],
             int(runtime.get("verify_preflight_timeout_seconds", 5)),
         )
+    if os.environ.get("ACCEL_VERIFY_STALL_TIMEOUT_SECONDS"):
+        runtime["verify_stall_timeout_seconds"] = _normalize_positive_float(
+            os.environ["ACCEL_VERIFY_STALL_TIMEOUT_SECONDS"],
+            float(runtime.get("verify_stall_timeout_seconds", 20.0)),
+        )
+    if os.environ.get("ACCEL_VERIFY_AUTO_CANCEL_ON_STALL") is not None:
+        runtime["verify_auto_cancel_on_stall"] = _normalize_bool(
+            os.environ["ACCEL_VERIFY_AUTO_CANCEL_ON_STALL"],
+            bool(runtime.get("verify_auto_cancel_on_stall", False)),
+        )
+    if os.environ.get("ACCEL_VERIFY_MAX_WALL_TIME_SECONDS"):
+        default_wall_time = _normalize_positive_float(
+            runtime.get("verify_max_wall_time_seconds", runtime.get("total_verify_timeout_seconds", 3600.0)),
+            3600.0,
+        )
+        runtime["verify_max_wall_time_seconds"] = _normalize_positive_float(
+            os.environ["ACCEL_VERIFY_MAX_WALL_TIME_SECONDS"],
+            default_wall_time,
+        )
     if os.environ.get("ACCEL_TOKEN_ESTIMATOR_BACKEND"):
         runtime["token_estimator_backend"] = str(os.environ["ACCEL_TOKEN_ESTIMATOR_BACKEND"]).strip().lower()
     if os.environ.get("ACCEL_TOKEN_ESTIMATOR_ENCODING"):
@@ -482,6 +504,18 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
     runtime["verify_preflight_timeout_seconds"] = _normalize_positive_int(
         runtime.get("verify_preflight_timeout_seconds", 5),
         default_value=5,
+    )
+    runtime["verify_stall_timeout_seconds"] = _normalize_positive_float(
+        runtime.get("verify_stall_timeout_seconds", 20.0),
+        default_value=20.0,
+    )
+    runtime["verify_auto_cancel_on_stall"] = _normalize_bool(
+        runtime.get("verify_auto_cancel_on_stall", False),
+        default_value=False,
+    )
+    runtime["verify_max_wall_time_seconds"] = _normalize_positive_float(
+        runtime.get("verify_max_wall_time_seconds", runtime.get("total_verify_timeout_seconds", 3600.0)),
+        default_value=float(runtime.get("total_verify_timeout_seconds", 3600.0)),
     )
     runtime["token_estimator_backend"] = str(runtime.get("token_estimator_backend", "auto")).strip().lower() or "auto"
     if runtime["token_estimator_backend"] not in {"auto", "tiktoken", "heuristic"}:

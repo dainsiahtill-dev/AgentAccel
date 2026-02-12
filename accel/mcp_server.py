@@ -2166,6 +2166,9 @@ def _tool_verify(
     fast_loop: bool = False,
     verify_workers: int | None = None,
     per_command_timeout_seconds: int | None = None,
+    verify_stall_timeout_seconds: float | None = None,
+    verify_max_wall_time_seconds: float | None = None,
+    verify_auto_cancel_on_stall: bool | str | None = None,
     verify_fail_fast: bool | str | None = None,
     verify_cache_enabled: bool | str | None = None,
     verify_cache_failed_results: bool | str | None = None,
@@ -2184,6 +2187,9 @@ def _tool_verify(
     verify_fail_fast = _coerce_optional_bool(verify_fail_fast)
     verify_cache_enabled = _coerce_optional_bool(verify_cache_enabled)
     verify_cache_failed_results = _coerce_optional_bool(verify_cache_failed_results)
+    verify_auto_cancel_on_stall = _coerce_optional_bool(verify_auto_cancel_on_stall)
+    verify_stall_timeout_value = _coerce_optional_float(verify_stall_timeout_seconds)
+    verify_max_wall_time_value = _coerce_optional_float(verify_max_wall_time_seconds)
     
     _debug_log(f"accel_verify called: project={project}, changed_files={len(changed_files or [])}, evidence_run={evidence_run}")
     project_dir = _normalize_project_dir(project)
@@ -2193,6 +2199,10 @@ def _tool_verify(
         runtime_overrides["verify_workers"] = int(verify_workers)
     if per_command_timeout_seconds is not None:
         runtime_overrides["per_command_timeout_seconds"] = int(per_command_timeout_seconds)
+    if verify_stall_timeout_value is not None:
+        runtime_overrides["verify_stall_timeout_seconds"] = float(verify_stall_timeout_value)
+    if verify_max_wall_time_value is not None:
+        runtime_overrides["verify_max_wall_time_seconds"] = float(verify_max_wall_time_value)
     if verify_cache_ttl_seconds is not None:
         runtime_overrides["verify_cache_ttl_seconds"] = int(verify_cache_ttl_seconds)
     if verify_cache_max_entries is not None:
@@ -2219,6 +2229,8 @@ def _tool_verify(
         runtime_overrides["verify_cache_enabled"] = bool(verify_cache_enabled)
     if verify_cache_failed_results is not None:
         runtime_overrides["verify_cache_failed_results"] = bool(verify_cache_failed_results)
+    if verify_auto_cancel_on_stall is not None:
+        runtime_overrides["verify_auto_cancel_on_stall"] = bool(verify_auto_cancel_on_stall)
 
     cli_overrides = {"runtime": runtime_overrides} if runtime_overrides else None
     config = resolve_effective_config(project_dir, cli_overrides=cli_overrides)
@@ -2506,6 +2518,9 @@ def create_server() -> FastMCP:
         fast_loop: Any = False,
         verify_workers: Any = None,
         per_command_timeout_seconds: Any = None,
+        verify_stall_timeout_seconds: Any = None,
+        verify_max_wall_time_seconds: Any = None,
+        verify_auto_cancel_on_stall: bool | str | None = None,
         verify_fail_fast: bool | str | None = None,
         verify_cache_enabled: bool | str | None = None,
         verify_cache_failed_results: bool | str | None = None,
@@ -2522,8 +2537,11 @@ def create_server() -> FastMCP:
         verify_fail_fast_normalized = _coerce_optional_bool(verify_fail_fast)
         verify_cache_enabled_normalized = _coerce_optional_bool(verify_cache_enabled)
         verify_cache_failed_results_normalized = _coerce_optional_bool(verify_cache_failed_results)
+        verify_auto_cancel_on_stall_normalized = _coerce_optional_bool(verify_auto_cancel_on_stall)
         verify_workers_value = _coerce_optional_int(verify_workers)
         per_command_timeout_value = _coerce_optional_int(per_command_timeout_seconds)
+        verify_stall_timeout_value = _coerce_optional_float(verify_stall_timeout_seconds)
+        verify_max_wall_time_value = _coerce_optional_float(verify_max_wall_time_seconds)
         verify_cache_ttl_value = _coerce_optional_int(verify_cache_ttl_seconds)
         verify_cache_max_entries_value = _coerce_optional_int(verify_cache_max_entries)
         verify_cache_failed_ttl_value = _coerce_optional_int(verify_cache_failed_ttl_seconds)
@@ -2537,6 +2555,10 @@ def create_server() -> FastMCP:
             runtime_overrides["verify_workers"] = int(verify_workers_value)
         if per_command_timeout_value is not None:
             runtime_overrides["per_command_timeout_seconds"] = int(per_command_timeout_value)
+        if verify_stall_timeout_value is not None:
+            runtime_overrides["verify_stall_timeout_seconds"] = float(verify_stall_timeout_value)
+        if verify_max_wall_time_value is not None:
+            runtime_overrides["verify_max_wall_time_seconds"] = float(verify_max_wall_time_value)
         if verify_cache_ttl_value is not None:
             runtime_overrides["verify_cache_ttl_seconds"] = int(verify_cache_ttl_value)
         if verify_cache_max_entries_value is not None:
@@ -2563,6 +2585,8 @@ def create_server() -> FastMCP:
             runtime_overrides["verify_cache_enabled"] = bool(verify_cache_enabled_normalized)
         if verify_cache_failed_results_normalized is not None:
             runtime_overrides["verify_cache_failed_results"] = bool(verify_cache_failed_results_normalized)
+        if verify_auto_cancel_on_stall_normalized is not None:
+            runtime_overrides["verify_auto_cancel_on_stall"] = bool(verify_auto_cancel_on_stall_normalized)
 
         cli_overrides = {"runtime": runtime_overrides} if runtime_overrides else None
         config = resolve_effective_config(project_dir, cli_overrides=cli_overrides)
@@ -2649,6 +2673,9 @@ def create_server() -> FastMCP:
         fast_loop: Any = False,
         verify_workers: Any = None,
         per_command_timeout_seconds: Any = None,
+        verify_stall_timeout_seconds: Any = None,
+        verify_max_wall_time_seconds: Any = None,
+        verify_auto_cancel_on_stall: Any = None,
         verify_fail_fast: bool | str | None = None,
         verify_cache_enabled: bool | str | None = None,
         verify_cache_failed_results: bool | str | None = None,
@@ -2672,6 +2699,9 @@ def create_server() -> FastMCP:
                 fast_loop=fast_loop,
                 verify_workers=verify_workers,
                 per_command_timeout_seconds=per_command_timeout_seconds,
+                verify_stall_timeout_seconds=verify_stall_timeout_seconds,
+                verify_max_wall_time_seconds=verify_max_wall_time_seconds,
+                verify_auto_cancel_on_stall=verify_auto_cancel_on_stall,
                 verify_fail_fast=verify_fail_fast,
                 verify_cache_enabled=verify_cache_enabled,
                 verify_cache_failed_results=verify_cache_failed_results,
@@ -2899,6 +2929,9 @@ def create_server() -> FastMCP:
         fast_loop: Any = False,
         verify_workers: Any = None,
         per_command_timeout_seconds: Any = None,
+        verify_stall_timeout_seconds: Any = None,
+        verify_max_wall_time_seconds: Any = None,
+        verify_auto_cancel_on_stall: Any = None,
         verify_fail_fast: bool | str | None = None,
         verify_cache_enabled: bool | str | None = None,
         verify_cache_failed_results: bool | str | None = None,
@@ -2916,6 +2949,9 @@ def create_server() -> FastMCP:
                 fast_loop=fast_loop,
                 verify_workers=verify_workers,
                 per_command_timeout_seconds=per_command_timeout_seconds,
+                verify_stall_timeout_seconds=verify_stall_timeout_seconds,
+                verify_max_wall_time_seconds=verify_max_wall_time_seconds,
+                verify_auto_cancel_on_stall=verify_auto_cancel_on_stall,
                 verify_fail_fast=verify_fail_fast,
                 verify_cache_enabled=verify_cache_enabled,
                 verify_cache_failed_results=verify_cache_failed_results,
@@ -2944,6 +2980,20 @@ def create_server() -> FastMCP:
             if job is None:
                 return {"error": "job_not_found", "job_id": job_id}
             status_payload = job.to_status()
+            if job.state == JobState.COMPLETED and isinstance(job.result, dict):
+                for key in (
+                    "status",
+                    "exit_code",
+                    "partial",
+                    "partial_reason",
+                    "unfinished_commands",
+                    "unfinished_items",
+                    "timed_out",
+                    "max_wall_time_seconds",
+                    "auto_cancel_on_stall",
+                ):
+                    if key in job.result:
+                        status_payload[key] = job.result.get(key)
             tail_events = job.get_events(0)[-40:]
             recent_output: list[JSONDict] = []
             stall_detected = False

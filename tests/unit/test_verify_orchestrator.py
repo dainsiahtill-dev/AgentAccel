@@ -402,3 +402,125 @@ def test_run_verify_collects_missing_python_dependency_degrade_reason(tmp_path: 
     assert bool(result["degraded"]) is True
     log_text = Path(result["log_path"]).read_text(encoding="utf-8")
     assert "missing python dependencies: termcolor" in log_text
+
+
+def test_run_verify_with_callback_marks_partial_when_max_wall_time_exceeded(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "repo_wall_time"
+    (project_dir / "src").mkdir(parents=True, exist_ok=True)
+    (project_dir / "src" / "foo.py").write_text("x = 1\n", encoding="utf-8")
+
+    commands = [
+        'python -c "print(\'slow\')"',
+        'python -c "print(\'late\')"',
+    ]
+
+    def fake_select_verify_commands(config, changed_files=None):
+        return list(commands)
+
+    def fake_run_command(
+        command: str,
+        cwd: Path,
+        timeout_seconds: int,
+        output_callback=None,
+        cancel_event=None,
+        stall_timeout_seconds=None,
+    ):
+        if "slow" in command:
+            time.sleep(1.05)
+        return {
+            "command": command,
+            "exit_code": 0,
+            "duration_seconds": 0.05,
+            "stdout": "ok",
+            "stderr": "",
+            "timed_out": False,
+            "cancelled": False,
+            "stalled": False,
+            "cancel_reason": "",
+        }
+
+    monkeypatch.setattr(orchestrator, "select_verify_commands", fake_select_verify_commands)
+    monkeypatch.setattr(orchestrator, "run_command", fake_run_command)
+
+    cfg = _base_config(tmp_path, fail_fast=False, cache_enabled=False)
+    cfg_runtime = cfg["runtime"]
+    assert isinstance(cfg_runtime, dict)
+    cfg_runtime["verify_workers"] = 1
+    cfg_runtime["verify_max_wall_time_seconds"] = 1.0
+    result = run_verify_with_callback(
+        project_dir=project_dir,
+        config=cfg,
+        changed_files=["src/foo.py"],
+    )
+
+    assert result["status"] == "partial"
+    assert str(result.get("partial_reason", "")) == "max_wall_time_exceeded"
+    unfinished = result.get("unfinished_commands", [])
+    assert isinstance(unfinished, list)
+    assert commands[1] in unfinished
+
+
+def test_run_verify_with_callback_marks_partial_when_stall_auto_cancel_enabled(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "repo_stall_cancel"
+    (project_dir / "src").mkdir(parents=True, exist_ok=True)
+    (project_dir / "src" / "foo.py").write_text("x = 1\n", encoding="utf-8")
+
+    commands = [
+        'python -c "print(\'stalled\')"',
+        'python -c "print(\'next\')"',
+    ]
+
+    def fake_select_verify_commands(config, changed_files=None):
+        return list(commands)
+
+    def fake_run_command(
+        command: str,
+        cwd: Path,
+        timeout_seconds: int,
+        output_callback=None,
+        cancel_event=None,
+        stall_timeout_seconds=None,
+    ):
+        if "stalled" in command:
+            return {
+                "command": command,
+                "exit_code": 130,
+                "duration_seconds": 0.02,
+                "stdout": "",
+                "stderr": "stall timeout",
+                "timed_out": False,
+                "cancelled": True,
+                "stalled": True,
+                "cancel_reason": "stall_timeout",
+            }
+        return {
+            "command": command,
+            "exit_code": 0,
+            "duration_seconds": 0.02,
+            "stdout": "ok",
+            "stderr": "",
+            "timed_out": False,
+            "cancelled": False,
+            "stalled": False,
+            "cancel_reason": "",
+        }
+
+    monkeypatch.setattr(orchestrator, "select_verify_commands", fake_select_verify_commands)
+    monkeypatch.setattr(orchestrator, "run_command", fake_run_command)
+
+    cfg = _base_config(tmp_path, fail_fast=True, cache_enabled=False)
+    cfg_runtime = cfg["runtime"]
+    assert isinstance(cfg_runtime, dict)
+    cfg_runtime["verify_auto_cancel_on_stall"] = True
+    cfg_runtime["verify_stall_timeout_seconds"] = 1.0
+    result = run_verify_with_callback(
+        project_dir=project_dir,
+        config=cfg,
+        changed_files=["src/foo.py"],
+    )
+
+    assert result["status"] == "partial"
+    assert str(result.get("partial_reason", "")) == "stall_auto_cancel"
+    unfinished = result.get("unfinished_commands", [])
+    assert isinstance(unfinished, list)
+    assert commands[1] in unfinished
