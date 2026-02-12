@@ -13,6 +13,8 @@
   <a href="#installation">Installation</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#mcp-server">MCP Server</a> •
+  <a href="#benchmark-harness">Benchmark Harness</a> •
+  <a href="#schema-contracts--versioning">Schema Contracts</a> •
   <a href="#architecture">Architecture</a> •
   <a href="#configuration">Configuration</a>
 </p>
@@ -671,6 +673,72 @@ accel-pre-hook
 # Post-execution: Run verification
 accel-post-hook
 ```
+
+---
+
+## 📊 Benchmark Harness
+
+`agent-accel` includes a reproducible benchmark runner to validate token savings, context quality, and optional verification outcomes.
+
+### Inputs
+
+- Task suite: `examples/benchmarks/tasks.sample.json`
+- Runner: `scripts/run_benchmarks.py`
+- Task fields: `id`, `task`, `changed_files`, `hints`, `expected_top_files`
+
+### Run
+
+```bash
+python scripts/run_benchmarks.py \
+  --project . \
+  --tasks examples/benchmarks/tasks.sample.json \
+  --index-mode update \
+  --out examples/benchmarks/results_local.json
+```
+
+Optional verify metrics:
+
+```bash
+python scripts/run_benchmarks.py \
+  --project . \
+  --tasks examples/benchmarks/tasks.sample.json \
+  --index-mode update \
+  --run-verify \
+  --out examples/benchmarks/results_with_verify.json
+```
+
+### Metrics
+
+- Token metrics:
+  - `context_tokens`
+  - `token_reduction_vs_full_index`
+  - `token_reduction_vs_changed_files`
+- Quality metric:
+  - `top_file_recall`
+- Latency metrics:
+  - `context_build_seconds`
+  - `verify_seconds` (if `--run-verify`)
+
+Benchmark details are documented in `examples/benchmarks/README.md`.
+
+---
+
+## 🧩 Schema Contracts & Versioning
+
+Formal JSON schemas are shipped in `accel/schema/` and enforced by `accel/schema/contracts.py`:
+
+- `context_pack.schema.json`
+- `index_manifest.schema.json`
+- `mcp_context_response.schema.json`
+- `mcp_verify_events.schema.json`
+
+Contract enforcement modes:
+
+- `off`: skip contract checks
+- `warn`: repair and return warnings
+- `strict`: fail fast on schema violations
+
+Versioning and breaking-change policy is documented in `docs/schema_versioning.md`.
 
 ---
 

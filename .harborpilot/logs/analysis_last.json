@@ -1,36 +1,38 @@
 ﻿{
-    "run_id":  "run_20260212_cross_agent_stability_fix",
-    "ts":  "2026-02-12T11:55:50.7180473Z",
-    "mode":  "S2",
-    "capabilities":  {
-                         "repo_read":  true,
-                         "repo_write":  true,
-                         "terminal":  true,
-                         "network":  true
-                     },
-    "contract":  {
-                     "goal":  "彻底降低跨 Codex/Agent 集成回归：避免 60s 超时、提升参数兼容、杜绝 verify 零命令假阳性、修复 context 终态观测不一致。",
-                     "acceptance_criteria":  [
-                                                 "sync index/update/context 在默认调用下不再因 \u003e60s 阻塞导致 MCP tool_timeout",
-                                                 "semantic_cache_mode 接受 read_write 风格别名",
-                                                 "verify commands=0 不再返回 success，必须显式降级/告警",
-                                                 "context_events summary 在出现 context_completed/context_failed 后输出一致终态"
-                                             ],
-                     "constraints":  [
-                                         "仅修复 agent-accel 内部逻辑，不依赖调用端约束",
-                                         "保持接口兼容，新增字段优先，避免删除既有字段"
-                                     ]
-                 },
-    "scope":  [
-                  "accel/mcp_server.py",
-                  "accel/verify/orchestrator.py",
-                  "tests/unit/test_mcp_server.py",
-                  "tests/unit/test_verify_orchestrator.py",
-                  "README.md"
-              ],
-    "budget":  {
-                   "touched_files_max":  15,
-                   "changed_loc_max":  900,
-                   "deps":  "no new deps"
-               }
+  "run_id": "run_20260212_schema_benchmark_no_security",
+  "ts": "2026-02-12T14:54:50.2239827Z",
+  "mode": "S2",
+  "capabilities": {
+    "repo_read": true,
+    "repo_write": true,
+    "terminal": true,
+    "network": true
+  },
+  "contract": {
+    "goal": "除去安全边界全部推进（即推进 Schema 与 Benchmark harness，跳过安全边界改造）。",
+    "acceptance_criteria": [
+      "补齐正式 Schema：context pack + MCP 输出（重点 accel_verify_events 事件结构）并接入契约校验。",
+      "新增可复现 benchmark harness（任务集输入、指标产出、结果文件输出），覆盖 token/时延/质量相关指标。",
+      "补齐版本治理说明（schema versioning & breaking change policy）。",
+      "不实现安全边界项（allowlist/sandbox/dry-run 注入防护等不在本轮范围）。",
+      "质量门禁通过：python -m pytest -q、ruff check .、mypy .。"
+    ],
+    "constraints": [
+      "按用户要求跳过安全边界功能改造",
+      "保持现有对外接口兼容，不新增第三方依赖"
+    ]
+  },
+  "scope": [
+    "accel/schema/*",
+    "accel/mcp_server.py",
+    "README.md",
+    "scripts/run_benchmarks.py",
+    "examples/benchmarks/*",
+    "tests/unit/test_output_constraints.py"
+  ],
+  "budget": {
+    "touched_files_max": 25,
+    "changed_loc_max": 1500,
+    "deps": "no new deps"
+  }
 }

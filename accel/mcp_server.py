@@ -32,6 +32,7 @@ from .storage.semantic_cache import (
 from .schema.contracts import (
     enforce_context_pack_contract,
     enforce_context_payload_contract,
+    enforce_verify_events_payload_contract,
     enforce_verify_summary_contract,
     normalize_constraint_mode,
 )
@@ -39,6 +40,15 @@ from .token_estimator import estimate_tokens_for_text, estimate_tokens_from_char
 from .verify.orchestrator import run_verify, run_verify_with_callback
 from .verify.callbacks import VerifyProgressCallback, VerifyStage
 from .verify.job_manager import JobManager, JobState, VerifyJob
+from .mcp_context_utils import (
+    _apply_strict_changed_files_scope,
+    _build_context_output_pack,
+    _clamp_float,
+    _ensure_strict_changed_files_presence,
+    _estimate_changed_files_chars,
+    _token_reduction_ratio,
+    _write_context_metadata_sidecar,
+)
 
 
 JSONDict = dict[str, Any]
@@ -52,17 +62,41 @@ _debug_logger: logging.Logger | None = None
 
 # Global server timeout protection
 _server_start_time = 0.0
-_server_max_runtime = int(os.environ.get("ACCEL_MCP_MAX_RUNTIME", "3600"))  # 1 hour default
+_server_max_runtime = int(
+    os.environ.get("ACCEL_MCP_MAX_RUNTIME", "3600")
+)  # 1 hour default
 _shutdown_requested = False
 
 # Keep sync verify bounded so a single call cannot monopolize MCP request handling.
-_sync_verify_wait_seconds = int(os.environ.get("ACCEL_MCP_SYNC_VERIFY_WAIT_SECONDS", "45"))
-_sync_verify_poll_seconds = float(os.environ.get("ACCEL_MCP_SYNC_VERIFY_POLL_SECONDS", "0.2"))
-_sync_index_wait_seconds = int(os.environ.get("ACCEL_MCP_SYNC_INDEX_WAIT_SECONDS", "45"))
-_sync_index_poll_seconds = float(os.environ.get("ACCEL_MCP_SYNC_INDEX_POLL_SECONDS", "0.2"))
-_sync_context_wait_seconds = int(os.environ.get("ACCEL_MCP_SYNC_CONTEXT_WAIT_SECONDS", "45"))
-_sync_context_poll_seconds = float(os.environ.get("ACCEL_MCP_SYNC_CONTEXT_POLL_SECONDS", "0.2"))
-_FALSE_LITERALS = {"", "0", "false", "no", "off", "none", "null", "undefined", "pydanticundefined"}
+_sync_verify_wait_seconds = int(
+    os.environ.get("ACCEL_MCP_SYNC_VERIFY_WAIT_SECONDS", "45")
+)
+_sync_verify_poll_seconds = float(
+    os.environ.get("ACCEL_MCP_SYNC_VERIFY_POLL_SECONDS", "0.2")
+)
+_sync_index_wait_seconds = int(
+    os.environ.get("ACCEL_MCP_SYNC_INDEX_WAIT_SECONDS", "45")
+)
+_sync_index_poll_seconds = float(
+    os.environ.get("ACCEL_MCP_SYNC_INDEX_POLL_SECONDS", "0.2")
+)
+_sync_context_wait_seconds = int(
+    os.environ.get("ACCEL_MCP_SYNC_CONTEXT_WAIT_SECONDS", "45")
+)
+_sync_context_poll_seconds = float(
+    os.environ.get("ACCEL_MCP_SYNC_CONTEXT_POLL_SECONDS", "0.2")
+)
+_FALSE_LITERALS = {
+    "",
+    "0",
+    "false",
+    "no",
+    "off",
+    "none",
+    "null",
+    "undefined",
+    "pydanticundefined",
+}
 _TRUE_LITERALS = {"1", "true", "yes", "on"}
 _SYNC_TIMEOUT_ACTIONS = {"poll", "cancel"}
 _CONTEXT_SYNC_TIMEOUT_ACTIONS = {"fallback_async", "cancel"}
@@ -84,6 +118,7 @@ _VERIFY_PRESET_ALIASES = {
 }
 _VERIFY_OUTPUT_CHUNK_LIMIT = 600
 
+
 def _signal_handler(signum: int, frame) -> None:
     """Handle shutdown signals gracefully."""
     global _shutdown_requested
@@ -93,38 +128,42 @@ def _signal_handler(signum: int, frame) -> None:
     time.sleep(0.1)
     sys.exit(0)
 
+
 def _check_server_runtime() -> None:
     """Check if server has exceeded maximum runtime."""
     global _server_start_time, _shutdown_requested
-    
+
     if _shutdown_requested:
         return
-        
+
     if _server_start_time > 0:
         elapsed = time.perf_counter() - _server_start_time
         if elapsed > _server_max_runtime:
-            _debug_log(f"Server exceeded maximum runtime ({_server_max_runtime}s), shutting down")
+            _debug_log(
+                f"Server exceeded maximum runtime ({_server_max_runtime}s), shutting down"
+            )
             sys.exit(0)
+
 
 def _setup_debug_log() -> logging.Logger:
     """Setup debug logging for MCP protocol tracing."""
     if _debug_enabled:
         logger = logging.getLogger("accel_mcp_debug")
         logger.setLevel(logging.DEBUG)
-        
+
         # Create log directory and file
         log_dir = Path.home() / ".accel" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"mcp_debug_{int(time.time())}.log"
-        
+
         handler = logging.FileHandler(log_file, encoding="utf-8")
         formatter = logging.Formatter(
             "%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
+            datefmt="%Y-%m-%d %H:%M:%S",
         )
         handler.setFormatter(formatter)
         logger.addHandler(handler)
-        
+
         logger.debug("MCP debug logging initialized")
         return logger
     else:
@@ -132,6 +171,7 @@ def _setup_debug_log() -> logging.Logger:
         logger = logging.getLogger("accel_mcp_noop")
         logger.setLevel(logging.CRITICAL + 1)  # Disable all logging
         return logger
+
 
 def _debug_log(message: str) -> None:
     """Log debug message if debugging is enabled."""
@@ -178,10 +218,18 @@ def _normalize_job_status_payload(status_payload: JSONDict) -> JSONDict:
             progress = derived_progress
     progress = max(0.0, min(100.0, progress))
     consistency = "normal"
-    if state in {JobState.PENDING, JobState.RUNNING, JobState.CANCELLING} and total > 0 and completed >= total:
+    if (
+        state in {JobState.PENDING, JobState.RUNNING, JobState.CANCELLING}
+        and total > 0
+        and completed >= total
+    ):
         progress = min(progress, 99.9)
         consistency = "finalizing"
-    elif state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED} and total > 0 and completed >= total:
+    elif (
+        state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
+        and total > 0
+        and completed >= total
+    ):
         progress = 100.0
     normalized["progress"] = round(progress, 2)
     normalized["state_consistency"] = consistency
@@ -232,11 +280,15 @@ def _resolve_semantic_cache_mode(value: Any, *, default_mode: str) -> str:
         return token
     if value is None:
         return "hybrid"
-    raise ValueError("semantic_cache_mode must be one of exact|hybrid (aliases: readwrite|read_write|read-write|rw)")
+    raise ValueError(
+        "semantic_cache_mode must be one of exact|hybrid (aliases: readwrite|read_write|read-write|rw)"
+    )
 
 
 def _resolve_constraint_mode(value: Any, *, default_mode: str = "warn") -> str:
-    normalized = normalize_constraint_mode(value if value is not None else default_mode, default_mode=default_mode)
+    normalized = normalize_constraint_mode(
+        value if value is not None else default_mode, default_mode=default_mode
+    )
     if value is None:
         return normalized
     raw = str(value).strip().lower()
@@ -312,7 +364,9 @@ def _coerce_sync_timeout_action(value: Any, default: str = "poll") -> str:
     return "poll"
 
 
-def _coerce_context_sync_timeout_action(value: Any, default: str = "fallback_async") -> str:
+def _coerce_context_sync_timeout_action(
+    value: Any, default: str = "fallback_async"
+) -> str:
     token = str(value or "").strip().lower()
     if token == "poll":
         token = "fallback_async"
@@ -326,312 +380,18 @@ def _coerce_context_sync_timeout_action(value: Any, default: str = "fallback_asy
     return "fallback_async"
 
 
-def _coerce_events_limit(value: Any, default_value: int = 30, max_value: int = 500) -> int:
+def _coerce_events_limit(
+    value: Any, default_value: int = 30, max_value: int = 500
+) -> int:
     parsed = _coerce_optional_int(value)
     if parsed is None:
         parsed = default_value
     return max(1, min(int(max_value), int(parsed)))
 
 
-def _clamp_float(value: float, min_value: float, max_value: float) -> float:
-    return max(float(min_value), min(float(max_value), float(value)))
-
-
-def _token_reduction_ratio(context_tokens: int, baseline_tokens: int) -> float:
-    baseline = int(baseline_tokens)
-    if baseline <= 0:
-        return 0.0
-    ratio = 1.0 - (float(max(0, int(context_tokens))) / float(baseline))
-    return _clamp_float(ratio, 0.0, 1.0)
-
-
-def _estimate_changed_files_chars(
-    project_dir: Path,
-    changed_files: list[str],
-    *,
-    max_files: int = 200,
-    max_total_chars: int = 2_000_000,
-) -> int:
-    total_chars = 0
-    seen: set[str] = set()
-    for rel_path in changed_files[: max(1, int(max_files))]:
-        normalized = str(rel_path).replace("\\", "/").strip()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        file_path = (project_dir / normalized).resolve()
-        if not file_path.exists() or not file_path.is_file():
-            continue
-        try:
-            content = file_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        total_chars += len(content)
-        if total_chars >= max_total_chars:
-            return int(max_total_chars)
-    return int(total_chars)
-
-
-def _build_context_output_pack(
-    pack: JSONDict,
-    *,
-    snippets_only: bool,
-    include_metadata: bool,
+def _summarize_verify_events(
+    events: list[dict[str, Any]], status: JSONDict
 ) -> JSONDict:
-    if snippets_only:
-        output: JSONDict = {
-            "version": int(pack.get("version", 1) or 1),
-            "task": str(pack.get("task", "")),
-            "generated_at": str(pack.get("generated_at", "")),
-            "snippets": list(pack.get("snippets", [])),
-        }
-        if include_metadata and isinstance(pack.get("meta"), dict):
-            output["meta"] = dict(pack.get("meta", {}))
-        return output
-
-    output = dict(pack)
-    if not include_metadata:
-        output.pop("meta", None)
-    return output
-
-
-def _normalize_rel_path(value: Any) -> str:
-    return str(value or "").replace("\\", "/").strip().lower()
-
-
-def _apply_strict_changed_files_scope(
-    pack: JSONDict,
-    changed_files: list[str],
-) -> tuple[JSONDict, int, int]:
-    changed_set = {_normalize_rel_path(item) for item in changed_files if _normalize_rel_path(item)}
-    if not changed_set:
-        return dict(pack), 0, 0
-
-    payload = dict(pack)
-    filtered_top_files = 0
-    filtered_snippets = 0
-
-    top_files_raw = payload.get("top_files")
-    if isinstance(top_files_raw, list):
-        kept_top_files: list[JSONDict] = []
-        for item in top_files_raw:
-            if isinstance(item, dict):
-                path_token = _normalize_rel_path(item.get("path", ""))
-                if path_token and path_token in changed_set:
-                    kept_top_files.append(dict(item))
-                else:
-                    filtered_top_files += 1
-            else:
-                filtered_top_files += 1
-        payload["top_files"] = kept_top_files
-
-    snippets_raw = payload.get("snippets")
-    if isinstance(snippets_raw, list):
-        kept_snippets: list[JSONDict] = []
-        for item in snippets_raw:
-            if isinstance(item, dict):
-                path_token = _normalize_rel_path(item.get("path", ""))
-                if path_token and path_token in changed_set:
-                    kept_snippets.append(dict(item))
-                else:
-                    filtered_snippets += 1
-            else:
-                filtered_snippets += 1
-        payload["snippets"] = kept_snippets
-
-    meta_raw = payload.get("meta")
-    if isinstance(meta_raw, dict):
-        meta_payload = dict(meta_raw)
-        meta_payload["strict_changed_files_scope"] = True
-        meta_payload["strict_scope_changed_files_count"] = int(len(changed_set))
-        meta_payload["strict_scope_filtered_top_files"] = int(filtered_top_files)
-        meta_payload["strict_scope_filtered_snippets"] = int(filtered_snippets)
-        payload["meta"] = meta_payload
-
-    return payload, int(filtered_top_files), int(filtered_snippets)
-
-
-def _resolve_changed_file_rel_path(project_dir: Path, value: Any) -> str | None:
-    token = str(value or "").replace("\\", "/").strip()
-    if not token:
-        return None
-    raw_path = Path(token)
-    candidate = raw_path if raw_path.is_absolute() else (project_dir / raw_path)
-    try:
-        resolved = candidate.resolve()
-        project_root = project_dir.resolve()
-        rel = resolved.relative_to(project_root)
-    except (OSError, ValueError):
-        return None
-    if not resolved.exists() or not resolved.is_file():
-        return None
-    return str(rel).replace("\\", "/")
-
-
-def _build_changed_file_snippet(project_dir: Path, rel_path: str, max_chars: int) -> JSONDict | None:
-    rel = str(rel_path or "").replace("\\", "/").strip()
-    if not rel:
-        return None
-    file_path = (project_dir / rel).resolve()
-    try:
-        content = file_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    clipped = content[: max(200, int(max_chars))]
-    if not clipped:
-        clipped = "[empty file]"
-    end_line = max(1, int(clipped.count("\n")) + 1)
-    return {
-        "path": rel,
-        "start_line": 1,
-        "end_line": end_line,
-        "symbol": "",
-        "reason": "strict_changed_file_fallback",
-        "content": clipped,
-    }
-
-
-def _ensure_strict_changed_files_presence(
-    pack: JSONDict,
-    *,
-    project_dir: Path,
-    changed_files: list[str],
-) -> tuple[JSONDict, int, int]:
-    payload = dict(pack)
-    budget = payload.get("budget", {}) if isinstance(payload.get("budget", {}), dict) else {}
-    top_n_files = max(1, int(budget.get("top_n_files", 8) or 8))
-    max_snippets = max(1, int(budget.get("max_snippets", 30) or 30))
-    per_snippet_max_chars = max(200, int(budget.get("per_snippet_max_chars", 2000) or 2000))
-
-    existing_rel_paths: list[str] = []
-    seen: set[str] = set()
-    for item in changed_files:
-        rel = _resolve_changed_file_rel_path(project_dir, item)
-        if not rel:
-            continue
-        key = _normalize_rel_path(rel)
-        if key in seen:
-            continue
-        seen.add(key)
-        existing_rel_paths.append(rel)
-
-    if not existing_rel_paths:
-        return payload, 0, 0
-
-    top_files = payload.get("top_files")
-    snippets = payload.get("snippets")
-    top_files_list = list(top_files) if isinstance(top_files, list) else []
-    snippets_list = list(snippets) if isinstance(snippets, list) else []
-
-    injected_top_files = 0
-    injected_snippets = 0
-
-    if not top_files_list:
-        for rel in existing_rel_paths[:top_n_files]:
-            top_files_list.append(
-                {
-                    "path": rel,
-                    "score": 1.0,
-                    "reasons": ["strict_changed_file_fallback"],
-                    "signals": [{"signal_name": "strict_changed_file_fallback", "score": 1.0}],
-                }
-            )
-            injected_top_files += 1
-        payload["top_files"] = top_files_list
-
-    if not snippets_list:
-        for rel in existing_rel_paths[:max_snippets]:
-            snippet = _build_changed_file_snippet(project_dir, rel, per_snippet_max_chars)
-            if not isinstance(snippet, dict):
-                continue
-            snippets_list.append(snippet)
-            injected_snippets += 1
-        payload["snippets"] = snippets_list
-
-    meta_raw = payload.get("meta")
-    if isinstance(meta_raw, dict):
-        meta_payload = dict(meta_raw)
-        meta_payload["strict_scope_injected_top_files"] = int(injected_top_files)
-        meta_payload["strict_scope_injected_snippets"] = int(injected_snippets)
-        payload["meta"] = meta_payload
-
-    return payload, int(injected_top_files), int(injected_snippets)
-
-
-def _write_context_metadata_sidecar(out_path: Path, payload: JSONDict) -> Path:
-    sidecar_path = out_path.with_suffix(".meta.json")
-    token_reduction_payload = payload.get("token_reduction", {})
-    token_estimator_payload = payload.get("token_estimator", {})
-    sidecar_payload: JSONDict = {
-        "version": 1,
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "out": str(out_path),
-        "output_mode": payload.get("output_mode", "full"),
-        "include_metadata": bool(payload.get("include_metadata", True)),
-        "budget": {
-            "source": payload.get("budget_source", "auto"),
-            "preset": payload.get("budget_preset", "small"),
-            "reason": payload.get("budget_reason", ""),
-            "effective": payload.get("budget_effective", {}),
-        },
-        "scope": {
-        "changed_files_source": payload.get("changed_files_source", "none"),
-        "changed_files_count": int(payload.get("changed_files_count", 0) or 0),
-        "changed_files_used": list(payload.get("changed_files_used", [])),
-        "changed_files_detection": (
-            dict(payload.get("changed_files_detection", {}))
-            if isinstance(payload.get("changed_files_detection"), dict)
-            else {}
-        ),
-        "fallback_confidence": float(payload.get("fallback_confidence", 0.0) or 0.0),
-        "strict_changed_files": bool(payload.get("strict_changed_files", False)),
-        "strict_scope_filtered_top_files": int(payload.get("strict_scope_filtered_top_files", 0) or 0),
-        "strict_scope_filtered_snippets": int(payload.get("strict_scope_filtered_snippets", 0) or 0),
-        "strict_scope_injected_top_files": int(payload.get("strict_scope_injected_top_files", 0) or 0),
-        "strict_scope_injected_snippets": int(payload.get("strict_scope_injected_snippets", 0) or 0),
-      },
-        "estimates": {
-            "context_chars": int(payload.get("context_chars", 0) or 0),
-            "source_chars": int(payload.get("source_chars", 0) or 0),
-            "estimated_tokens": int(payload.get("estimated_tokens", 0) or 0),
-            "estimated_source_tokens": int(payload.get("estimated_source_tokens", 0) or 0),
-            "estimated_changed_files_tokens": int(payload.get("estimated_changed_files_tokens", 0) or 0),
-            "estimated_snippets_only_tokens": int(payload.get("estimated_snippets_only_tokens", 0) or 0),
-            "compression_ratio": float(payload.get("compression_ratio", 1.0) or 1.0),
-            "token_reduction_ratio": float(payload.get("token_reduction_ratio", 0.0) or 0.0),
-            "token_reduction": token_reduction_payload if isinstance(token_reduction_payload, dict) else {},
-            "token_estimator": token_estimator_payload if isinstance(token_estimator_payload, dict) else {},
-        },
-        "selected_tests_count": int(payload.get("selected_tests_count", 0) or 0),
-        "selected_checks_count": int(payload.get("selected_checks_count", 0) or 0),
-        "semantic_cache": {
-            "enabled": bool(payload.get("semantic_cache_enabled", False)),
-            "hit": bool(payload.get("semantic_cache_hit", False)),
-            "mode": str(payload.get("semantic_cache_mode_used", "off")),
-            "similarity": float(payload.get("semantic_cache_similarity", 0.0) or 0.0),
-            "reason": str(payload.get("semantic_cache_reason", "")),
-            "invalidation_reason": str(payload.get("semantic_cache_invalidation_reason", "")),
-            "safety_fingerprint": str(payload.get("semantic_cache_safety_fingerprint", "")),
-            "safety": dict(payload.get("semantic_cache_safety", {}))
-            if isinstance(payload.get("semantic_cache_safety"), dict)
-            else {},
-        },
-        "compression": {
-            "rules_applied": dict(payload.get("compression_rules_applied", {})),
-            "saved_chars": int(payload.get("compression_saved_chars", 0) or 0),
-        },
-        "constraints": {
-            "mode": str(payload.get("constraint_mode", "warn")),
-            "repair_count": int(payload.get("constraint_repair_count", 0) or 0),
-            "warnings": list(payload.get("constraint_warnings", [])),
-        },
-        "warnings": list(payload.get("warnings", [])),
-    }
-    sidecar_path.write_text(json.dumps(sidecar_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return sidecar_path
-
-
-def _summarize_verify_events(events: list[dict[str, Any]], status: JSONDict) -> JSONDict:
     event_type_counts: dict[str, int] = {}
     command_start = 0
     command_complete = 0
@@ -697,7 +457,9 @@ def _summarize_verify_events(events: list[dict[str, Any]], status: JSONDict) -> 
                 "completed": int(event.get("completed", 0) or 0),
                 "total": int(event.get("total", 0) or 0),
             }
-        elif event_type == "heartbeat" and _coerce_bool(event.get("stall_detected"), False):
+        elif event_type == "heartbeat" and _coerce_bool(
+            event.get("stall_detected"), False
+        ):
             stall_heartbeats += 1
         if event_type in terminal_events:
             terminal_event_seen = True
@@ -806,7 +568,9 @@ def _wait_for_verify_job_result(
         time.sleep(poll)
 
 
-def _sync_verify_timeout_payload(job_id: str, wait_seconds: float, *, timeout_action: str = "poll") -> JSONDict:
+def _sync_verify_timeout_payload(
+    job_id: str, wait_seconds: float, *, timeout_action: str = "poll"
+) -> JSONDict:
     jm = JobManager()
     job = jm.get_job(job_id)
     status = _normalize_job_status_payload(job.to_status()) if job is not None else {}
@@ -834,9 +598,17 @@ def _resolve_sync_timeout_defaults(project_dir: Path) -> tuple[str, float]:
     grace_seconds = 5.0
     try:
         config = resolve_effective_config(project_dir)
-        runtime_cfg = config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {}
-        action = _coerce_sync_timeout_action(runtime_cfg.get("sync_verify_timeout_action"), default="poll")
-        grace_value = _coerce_optional_float(runtime_cfg.get("sync_verify_cancel_grace_seconds"))
+        runtime_cfg = (
+            config.get("runtime", {})
+            if isinstance(config.get("runtime", {}), dict)
+            else {}
+        )
+        action = _coerce_sync_timeout_action(
+            runtime_cfg.get("sync_verify_timeout_action"), default="poll"
+        )
+        grace_value = _coerce_optional_float(
+            runtime_cfg.get("sync_verify_cancel_grace_seconds")
+        )
         if grace_value is not None:
             grace_seconds = grace_value
     except Exception:
@@ -861,7 +633,11 @@ def _resolve_sync_wait_seconds(
     else:
         try:
             config = resolve_effective_config(project_dir)
-            runtime_cfg = config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {}
+            runtime_cfg = (
+                config.get("runtime", {})
+                if isinstance(config.get("runtime", {}), dict)
+                else {}
+            )
             configured_value = _coerce_optional_float(runtime_cfg.get(runtime_key))
             if configured_value is not None:
                 wait_seconds = configured_value
@@ -874,14 +650,22 @@ def _resolve_sync_wait_seconds(
     return resolved
 
 
-def _resolve_context_sync_timeout_action(project_dir: Path, override_value: Any = None) -> str:
+def _resolve_context_sync_timeout_action(
+    project_dir: Path, override_value: Any = None
+) -> str:
     action_override = str(override_value or "").strip().lower()
     if action_override:
-        return _coerce_context_sync_timeout_action(action_override, default="fallback_async")
+        return _coerce_context_sync_timeout_action(
+            action_override, default="fallback_async"
+        )
     action = "fallback_async"
     try:
         config = resolve_effective_config(project_dir)
-        runtime_cfg = config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {}
+        runtime_cfg = (
+            config.get("runtime", {})
+            if isinstance(config.get("runtime", {}), dict)
+            else {}
+        )
         action = _coerce_context_sync_timeout_action(
             runtime_cfg.get("sync_context_timeout_action"),
             default="fallback_async",
@@ -891,11 +675,15 @@ def _resolve_context_sync_timeout_action(project_dir: Path, override_value: Any 
     return action
 
 
-def _sync_context_timeout_payload(job_id: str, wait_seconds: float, *, timeout_action: str) -> JSONDict:
+def _sync_context_timeout_payload(
+    job_id: str, wait_seconds: float, *, timeout_action: str
+) -> JSONDict:
     jm = JobManager()
     job = jm.get_job(job_id)
     status = _normalize_job_status_payload(job.to_status()) if job is not None else {}
-    action = _coerce_context_sync_timeout_action(timeout_action, default="fallback_async")
+    action = _coerce_context_sync_timeout_action(
+        timeout_action, default="fallback_async"
+    )
     return {
         "status": "running",
         "exit_code": 124,
@@ -1153,21 +941,35 @@ def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
                     "full": bool(full_value),
                 },
             )
+
             def _on_index_progress(progress_payload: JSONDict) -> None:
-                stage_name = str(progress_payload.get("stage", "indexing")).strip().lower() or "indexing"
-                processed_files = max(0, int(progress_payload.get("processed_files", 0) or 0))
+                stage_name = (
+                    str(progress_payload.get("stage", "indexing")).strip().lower()
+                    or "indexing"
+                )
+                processed_files = max(
+                    0, int(progress_payload.get("processed_files", 0) or 0)
+                )
                 total_files = max(0, int(progress_payload.get("total_files", 0) or 0))
-                changed_files = max(0, int(progress_payload.get("changed_files", 0) or 0))
+                changed_files = max(
+                    0, int(progress_payload.get("changed_files", 0) or 0)
+                )
                 current_path = str(progress_payload.get("current_path", "")).strip()
                 message = str(progress_payload.get("message", "")).strip()
                 if stage_name:
                     current.stage = stage_name
                 if total_files > 0:
-                    current.update_progress(min(processed_files, total_files), total_files, current_path)
+                    current.update_progress(
+                        min(processed_files, total_files), total_files, current_path
+                    )
                 elif current_path:
                     current.current_command = current_path
                 progress_pct_value = float(current.progress)
-                if total_files > 0 and processed_files >= total_files and current.state == JobState.RUNNING:
+                if (
+                    total_files > 0
+                    and processed_files >= total_files
+                    and current.state == JobState.RUNNING
+                ):
                     progress_pct_value = min(progress_pct_value, 99.9)
                 index_event_payload: JSONDict = {
                     "stage": stage_name,
@@ -1175,7 +977,9 @@ def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
                     "total_files": int(total_files),
                     "changed_files": int(changed_files),
                     "progress_pct": round(float(progress_pct_value), 2),
-                    "eta_sec": round(float(current.eta_sec), 1) if current.eta_sec is not None else None,
+                    "eta_sec": round(float(current.eta_sec), 1)
+                    if current.eta_sec is not None
+                    else None,
                 }
                 if current_path:
                     index_event_payload["current_path"] = current_path
@@ -1206,12 +1010,17 @@ def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
             if current.state in (JobState.CANCELLING, JobState.CANCELLED):
                 if current.state != JobState.CANCELLED:
                     current.mark_cancelled()
-                current.add_event("job_cancelled_finalized", {"reason": "index_worker_observed_cancel"})
+                current.add_event(
+                    "job_cancelled_finalized",
+                    {"reason": "index_worker_observed_cancel"},
+                )
                 return
             payload: JSONDict = {
                 "status": "ok",
                 "exit_code": 0,
-                "manifest": dict(result.get("manifest", {})) if isinstance(result.get("manifest"), dict) else {},
+                "manifest": dict(result.get("manifest", {}))
+                if isinstance(result.get("manifest"), dict)
+                else {},
                 "mode": mode_value,
                 "full": bool(full_value),
                 "timed_out": False,
@@ -1226,7 +1035,10 @@ def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
             if current.state in (JobState.CANCELLING, JobState.CANCELLED):
                 if current.state != JobState.CANCELLED:
                     current.mark_cancelled()
-                current.add_event("job_cancelled_finalized", {"reason": "index_worker_exception_after_cancel"})
+                current.add_event(
+                    "job_cancelled_finalized",
+                    {"reason": "index_worker_exception_after_cancel"},
+                )
                 return
             current.mark_failed(str(exc))
             current.add_event("index_failed", {"error": str(exc)})
@@ -1267,13 +1079,14 @@ def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
 
 def _with_timeout(func, timeout_seconds: int = 300):
     """Wrapper to add timeout to MCP tool functions."""
+
     def wrapper(*args, **kwargs):
         # Check server runtime before each tool call
         _check_server_runtime()
-        
+
         start_time = time.perf_counter()
         _debug_log(f"Starting {func.__name__} with timeout {timeout_seconds}s")
-        
+
         result_holder: dict[str, Any] = {}
         error_holder: dict[str, BaseException] = {}
 
@@ -1292,7 +1105,9 @@ def _with_timeout(func, timeout_seconds: int = 300):
             if worker.is_alive():
                 elapsed = time.perf_counter() - start_time
                 _debug_log(f"Timed out {func.__name__} after {elapsed:.3f}s")
-                raise TimeoutError(f"{func.__name__} timed out after {timeout_value:.1f}s")
+                raise TimeoutError(
+                    f"{func.__name__} timed out after {timeout_value:.1f}s"
+                )
 
             if "error" in error_holder:
                 raise error_holder["error"]
@@ -1305,7 +1120,7 @@ def _with_timeout(func, timeout_seconds: int = 300):
             elapsed = time.perf_counter() - start_time
             _debug_log(f"Failed {func.__name__} after {elapsed:.3f}s: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
-    
+
     return wrapper
 
 
@@ -1325,11 +1140,36 @@ def _resolve_path(project_dir: Path, path_value: Any) -> Path | None:
 
 
 _BUDGET_PRESETS: dict[str, dict[str, int]] = {
-    "tiny": {"max_chars": 6000, "max_snippets": 16, "top_n_files": 6, "snippet_radius": 20},
-    "small": {"max_chars": 12000, "max_snippets": 30, "top_n_files": 8, "snippet_radius": 24},
-    "medium": {"max_chars": 24000, "max_snippets": 60, "top_n_files": 12, "snippet_radius": 30},
-    "large": {"max_chars": 36000, "max_snippets": 90, "top_n_files": 16, "snippet_radius": 40},
-    "xlarge": {"max_chars": 50000, "max_snippets": 120, "top_n_files": 20, "snippet_radius": 50},
+    "tiny": {
+        "max_chars": 6000,
+        "max_snippets": 16,
+        "top_n_files": 6,
+        "snippet_radius": 20,
+    },
+    "small": {
+        "max_chars": 12000,
+        "max_snippets": 30,
+        "top_n_files": 8,
+        "snippet_radius": 24,
+    },
+    "medium": {
+        "max_chars": 24000,
+        "max_snippets": 60,
+        "top_n_files": 12,
+        "snippet_radius": 30,
+    },
+    "large": {
+        "max_chars": 36000,
+        "max_snippets": 90,
+        "top_n_files": 16,
+        "snippet_radius": 40,
+    },
+    "xlarge": {
+        "max_chars": 50000,
+        "max_snippets": 120,
+        "top_n_files": 20,
+        "snippet_radius": 50,
+    },
 }
 _BUDGET_PRESET_ALIASES: dict[str, str] = {
     "s": "small",
@@ -1445,7 +1285,9 @@ def _run_git_cmd_lines(cmd: list[str], timeout_seconds: float) -> tuple[list[str
     return lines, int(proc.returncode)
 
 
-def _discover_changed_files_from_git_details(project_dir: Path, limit: int = 200) -> tuple[list[str], JSONDict]:
+def _discover_changed_files_from_git_details(
+    project_dir: Path, limit: int = 200
+) -> tuple[list[str], JSONDict]:
     discovered: list[str] = []
     details: JSONDict = {}
     lock = threading.Lock()
@@ -1457,13 +1299,19 @@ def _discover_changed_files_from_git_details(project_dir: Path, limit: int = 200
         source_counts: dict[str, int] = {}
         source_order: list[str] = []
 
-        def _add_source(name: str, lines: list[str], *, status_parser: bool = False) -> None:
+        def _add_source(
+            name: str, lines: list[str], *, status_parser: bool = False
+        ) -> None:
             if not lines or len(output) >= max_items:
                 return
             source_order.append(name)
             accepted = 0
             for raw_line in lines:
-                rel = _extract_status_path(raw_line) if status_parser else str(raw_line).strip().replace("\\", "/")
+                rel = (
+                    _extract_status_path(raw_line)
+                    if status_parser
+                    else str(raw_line).strip().replace("\\", "/")
+                )
                 if not rel or rel in seen:
                     continue
                 seen.add(rel)
@@ -1499,15 +1347,47 @@ def _discover_changed_files_from_git_details(project_dir: Path, limit: int = 200
         git_root = str(git_root_lines[0]).strip() if git_root_lines else ""
 
         status_lines, _status_rc = _run_git_cmd_lines(
-            ["git", "-C", str(project_dir), "status", "--porcelain", "--untracked-files=normal"],
+            [
+                "git",
+                "-C",
+                str(project_dir),
+                "status",
+                "--porcelain",
+                "--untracked-files=normal",
+            ],
             2.0,
         )
         _add_source("status_porcelain", status_lines, status_parser=True)
 
         diff_commands = [
-            ("staged_diff", ["git", "-C", str(project_dir), "diff", "--name-only", "--relative", "--cached"]),
-            ("working_tree_diff", ["git", "-C", str(project_dir), "diff", "--name-only", "--relative"]),
-            ("head_diff", ["git", "-C", str(project_dir), "diff", "--name-only", "--relative", "HEAD"]),
+            (
+                "staged_diff",
+                [
+                    "git",
+                    "-C",
+                    str(project_dir),
+                    "diff",
+                    "--name-only",
+                    "--relative",
+                    "--cached",
+                ],
+            ),
+            (
+                "working_tree_diff",
+                ["git", "-C", str(project_dir), "diff", "--name-only", "--relative"],
+            ),
+            (
+                "head_diff",
+                [
+                    "git",
+                    "-C",
+                    str(project_dir),
+                    "diff",
+                    "--name-only",
+                    "--relative",
+                    "HEAD",
+                ],
+            ),
         ]
         for source_name, cmd in diff_commands:
             if len(output) >= max_items:
@@ -1519,7 +1399,15 @@ def _discover_changed_files_from_git_details(project_dir: Path, limit: int = 200
         merge_base = ""
         if len(output) < max_items:
             upstream_lines, _upstream_rc = _run_git_cmd_lines(
-                ["git", "-C", str(project_dir), "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+                [
+                    "git",
+                    "-C",
+                    str(project_dir),
+                    "rev-parse",
+                    "--abbrev-ref",
+                    "--symbolic-full-name",
+                    "@{upstream}",
+                ],
                 1.0,
             )
             if upstream_lines:
@@ -1533,7 +1421,15 @@ def _discover_changed_files_from_git_details(project_dir: Path, limit: int = 200
                     merge_base = str(merge_base_lines[0]).strip()
             if merge_base:
                 upstream_diff_lines, _upstream_diff_rc = _run_git_cmd_lines(
-                    ["git", "-C", str(project_dir), "diff", "--name-only", "--relative", f"{merge_base}..HEAD"],
+                    [
+                        "git",
+                        "-C",
+                        str(project_dir),
+                        "diff",
+                        "--name-only",
+                        "--relative",
+                        f"{merge_base}..HEAD",
+                    ],
                     2.0,
                 )
                 _add_source("upstream_diff", upstream_diff_lines, status_parser=False)
@@ -1543,7 +1439,10 @@ def _discover_changed_files_from_git_details(project_dir: Path, limit: int = 200
             confidence = 0.99
         elif source_counts.get("status_porcelain", 0) > 0:
             confidence = 0.98
-        elif source_counts.get("staged_diff", 0) > 0 or source_counts.get("working_tree_diff", 0) > 0:
+        elif (
+            source_counts.get("staged_diff", 0) > 0
+            or source_counts.get("working_tree_diff", 0) > 0
+        ):
             confidence = 0.96
         elif source_counts.get("head_diff", 0) > 0:
             confidence = 0.9
@@ -1570,7 +1469,9 @@ def _discover_changed_files_from_git_details(project_dir: Path, limit: int = 200
     worker.start()
     worker.join(timeout=6.0)
     if worker.is_alive():
-        _debug_log("_discover_changed_files_from_git_details timed out; fallback to empty changed_files")
+        _debug_log(
+            "_discover_changed_files_from_git_details timed out; fallback to empty changed_files"
+        )
         return [], {
             "provider": "git",
             "available": False,
@@ -1610,7 +1511,11 @@ def _discover_changed_files_from_index_fallback(
     except Exception:
         return [], "manifest_parse_failed", 0.0
 
-    indexed_files = [str(item).replace("\\", "/") for item in manifest.get("indexed_files", []) if str(item).strip()]
+    indexed_files = [
+        str(item).replace("\\", "/")
+        for item in manifest.get("indexed_files", [])
+        if str(item).strip()
+    ]
     if not indexed_files:
         return [], "manifest_index_empty", 0.0
 
@@ -1646,14 +1551,25 @@ def _discover_changed_files_from_index_fallback(
     return indexed_files[: max(1, min(int(limit), 8))], "index_head_fallback", 0.2
 
 
-def _auto_context_budget_preset(task: str, changed_files: list[str], hints: list[str]) -> tuple[str, str]:
+def _auto_context_budget_preset(
+    task: str, changed_files: list[str], hints: list[str]
+) -> tuple[str, str]:
     task_text = str(task or "").strip()
     task_low = task_text.lower()
     task_tokens = normalize_task_tokens(task_text)
     changed_count = len(changed_files)
     hint_count = len(hints)
 
-    quick_markers = {"explain", "summary", "summarize", "quick", "small", "typo", "doc", "readme"}
+    quick_markers = {
+        "explain",
+        "summary",
+        "summarize",
+        "quick",
+        "small",
+        "typo",
+        "doc",
+        "readme",
+    }
     complex_markers = {
         "architecture",
         "migration",
@@ -1676,9 +1592,19 @@ def _auto_context_budget_preset(task: str, changed_files: list[str], hints: list
     if any(marker in task_low for marker in quick_markers):
         score -= 1
 
-    if changed_count <= 1 and len(task_tokens) <= 8 and len(task_text) <= 120 and score <= 2:
+    if (
+        changed_count <= 1
+        and len(task_tokens) <= 8
+        and len(task_text) <= 120
+        and score <= 2
+    ):
         return "tiny", "auto:tiny_for_quick_task"
-    if changed_count >= 8 or len(task_tokens) >= 20 or len(task_text) >= 260 or score >= 8:
+    if (
+        changed_count >= 8
+        or len(task_tokens) >= 20
+        or len(task_text) >= 260
+        or score >= 8
+    ):
         return "medium", "auto:medium_for_complex_scope"
     return "small", "auto:small_default"
 
@@ -1710,12 +1636,20 @@ def _context_config_hash(config: JSONDict) -> str:
     payload = {
         "context": context_cfg,
         "runtime": {
-            "rule_compression_enabled": bool(runtime_cfg.get("rule_compression_enabled", True)),
+            "rule_compression_enabled": bool(
+                runtime_cfg.get("rule_compression_enabled", True)
+            ),
             "constraint_mode": str(runtime_cfg.get("constraint_mode", "warn")),
-            "token_estimator_backend": str(runtime_cfg.get("token_estimator_backend", "auto")),
-            "token_estimator_encoding": str(runtime_cfg.get("token_estimator_encoding", "cl100k_base")),
+            "token_estimator_backend": str(
+                runtime_cfg.get("token_estimator_backend", "auto")
+            ),
+            "token_estimator_encoding": str(
+                runtime_cfg.get("token_estimator_encoding", "cl100k_base")
+            ),
             "token_estimator_model": str(runtime_cfg.get("token_estimator_model", "")),
-            "token_estimator_calibration": float(runtime_cfg.get("token_estimator_calibration", 1.0)),
+            "token_estimator_calibration": float(
+                runtime_cfg.get("token_estimator_calibration", 1.0)
+            ),
         },
     }
     return make_stable_hash(payload)
@@ -1745,7 +1679,9 @@ def _resolve_git_head_commit(project_dir: Path) -> str:
     return str(lines[0]).strip()
 
 
-def _collect_changed_files_state(project_dir: Path, changed_files: list[str]) -> list[dict[str, Any]]:
+def _collect_changed_files_state(
+    project_dir: Path, changed_files: list[str]
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     project_root = project_dir.resolve()
     for item in normalize_changed_files(changed_files):
@@ -1792,7 +1728,9 @@ def _semantic_cache_safety_fingerprint(
     return fingerprint, metadata
 
 
-def _safe_semantic_cache_store(project_dir: Path, config: JSONDict) -> SemanticCacheStore | None:
+def _safe_semantic_cache_store(
+    project_dir: Path, config: JSONDict
+) -> SemanticCacheStore | None:
     try:
         runtime_cfg = dict(config.get("runtime", {}))
         accel_home = Path(str(runtime_cfg.get("accel_home", "") or "")).resolve()
@@ -1837,7 +1775,9 @@ def _tool_index_build(
             retry_manifest["scope_retry_used"] = True
             retry_manifest["scope_retry_reason"] = "initial_scope_selected_zero_files"
             manifest = retry_manifest
-    _debug_log(f"accel_index_build completed: {len(manifest.get('indexed_files', []))} files indexed")
+    _debug_log(
+        f"accel_index_build completed: {len(manifest.get('indexed_files', []))} files indexed"
+    )
     return {"status": "ok", "manifest": manifest}
 
 
@@ -1874,7 +1814,9 @@ def _tool_index_update(
             retry_manifest["scope_retry_used"] = True
             retry_manifest["scope_retry_reason"] = "initial_scope_selected_zero_files"
             manifest = retry_manifest
-    _debug_log(f"accel_index_update completed: {len(manifest.get('changed_files', []))} files updated")
+    _debug_log(
+        f"accel_index_update completed: {len(manifest.get('changed_files', []))} files updated"
+    )
     return {"status": "ok", "manifest": manifest}
 
 
@@ -1914,13 +1856,23 @@ def _tool_context(
 
     config = resolve_effective_config(project_dir)
     _debug_log("_tool_context: config resolved")
-    runtime_cfg = config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {}
-    require_changed_files = bool(runtime_cfg.get("context_require_changed_files", False))
+    runtime_cfg = (
+        config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {}
+    )
+    require_changed_files = bool(
+        runtime_cfg.get("context_require_changed_files", False)
+    )
     strict_changed_files_override = _coerce_optional_bool(strict_changed_files)
-    strict_changed_files_effective = bool(strict_changed_files_override) if strict_changed_files_override is not None else False
+    strict_changed_files_effective = (
+        bool(strict_changed_files_override)
+        if strict_changed_files_override is not None
+        else False
+    )
     semantic_cache_default = bool(runtime_cfg.get("semantic_cache_enabled", True))
     semantic_cache_enabled = _coerce_bool(semantic_cache, semantic_cache_default)
-    semantic_cache_mode_default = str(runtime_cfg.get("semantic_cache_mode", "hybrid")).strip().lower()
+    semantic_cache_mode_default = (
+        str(runtime_cfg.get("semantic_cache_mode", "hybrid")).strip().lower()
+    )
     semantic_cache_mode_value = _resolve_semantic_cache_mode(
         semantic_cache_mode,
         default_mode=semantic_cache_mode_default,
@@ -1938,7 +1890,9 @@ def _tool_context(
         "reason": "explicit_changed_files",
         "confidence": 1.0 if changed_files_list else 0.0,
         "sources": ["user_input"] if changed_files_list else [],
-        "source_counts": {"user_input": len(changed_files_list)} if changed_files_list else {},
+        "source_counts": {"user_input": len(changed_files_list)}
+        if changed_files_list
+        else {},
     }
     if not changed_files_list:
         auto_changed = _discover_changed_files_from_git(project_dir)
@@ -1971,11 +1925,13 @@ def _tool_context(
                 "confidence": float(git_detection.get("confidence", 0.0) or 0.0),
             }
         else:
-            fallback_changed, fallback_reason, fallback_conf = _discover_changed_files_from_index_fallback(
-                project_dir,
-                config=config,
-                task=task_text,
-                hints=hints_list,
+            fallback_changed, fallback_reason, fallback_conf = (
+                _discover_changed_files_from_index_fallback(
+                    project_dir,
+                    config=config,
+                    task=task_text,
+                    hints=hints_list,
+                )
             )
             if fallback_changed:
                 changed_files_list = fallback_changed
@@ -2014,11 +1970,13 @@ def _tool_context(
             "Provide changed_files explicitly or ensure git diff is available."
         )
 
-    budget_override, budget_source, budget_preset, budget_reason = _resolve_context_budget(
-        budget,
-        task=task_text,
-        changed_files=changed_files_list,
-        hints=hints_list,
+    budget_override, budget_source, budget_preset, budget_reason = (
+        _resolve_context_budget(
+            budget,
+            task=task_text,
+            changed_files=changed_files_list,
+            hints=hints_list,
+        )
     )
     _debug_log(
         "_tool_context: budget resolution "
@@ -2035,7 +1993,9 @@ def _tool_context(
 
     resolved_feedback_path = _resolve_path(project_dir, feedback_path)
     if resolved_feedback_path is not None and resolved_feedback_path.exists():
-        feedback_payload = json.loads(resolved_feedback_path.read_text(encoding="utf-8"))
+        feedback_payload = json.loads(
+            resolved_feedback_path.read_text(encoding="utf-8")
+        )
     _debug_log("_tool_context: feedback loaded")
 
     task_tokens = normalize_task_tokens(task_text)
@@ -2051,7 +2011,9 @@ def _tool_context(
         include_metadata=include_metadata_flag,
     )
     config_hash = _context_config_hash(config)
-    cache_safety_fingerprint, cache_safety_metadata = _semantic_cache_safety_fingerprint(project_dir, changed_files_list)
+    cache_safety_fingerprint, cache_safety_metadata = (
+        _semantic_cache_safety_fingerprint(project_dir, changed_files_list)
+    )
     task_sig = task_signature(task_tokens, hint_tokens)
     semantic_cache_key = make_stable_hash(
         {
@@ -2092,7 +2054,9 @@ def _tool_context(
                     budget_fingerprint=budget_fingerprint,
                     config_hash=config_hash,
                     safety_fingerprint=cache_safety_fingerprint,
-                    threshold=float(runtime_cfg.get("semantic_cache_hybrid_threshold", 0.86)),
+                    threshold=float(
+                        runtime_cfg.get("semantic_cache_hybrid_threshold", 0.86)
+                    ),
                 )
             if isinstance(cached_hybrid, dict):
                 pack = cached_hybrid
@@ -2110,7 +2074,9 @@ def _tool_context(
                     git_head=str(cache_safety_metadata.get("git_head", "")),
                 )
                 semantic_cache_reason = "miss"
-                semantic_cache_invalidation_reason = str(miss_explain.get("reason", "no_prior_entry"))
+                semantic_cache_invalidation_reason = str(
+                    miss_explain.get("reason", "no_prior_entry")
+                )
                 _debug_log("_tool_context: compile_context_pack start (cache miss)")
                 pack = compile_context_pack(
                     project_dir=project_dir,
@@ -2134,15 +2100,21 @@ def _tool_context(
                     config_hash=config_hash,
                     safety_fingerprint=cache_safety_fingerprint,
                     git_head=str(cache_safety_metadata.get("git_head", "")),
-                    changed_files_state=list(cache_safety_metadata.get("changed_files_state", [])),
+                    changed_files_state=list(
+                        cache_safety_metadata.get("changed_files_state", [])
+                    ),
                     payload=pack,
-                    ttl_seconds=int(runtime_cfg.get("semantic_cache_ttl_seconds", 7200)),
+                    ttl_seconds=int(
+                        runtime_cfg.get("semantic_cache_ttl_seconds", 7200)
+                    ),
                     max_entries=int(runtime_cfg.get("semantic_cache_max_entries", 800)),
                 )
     else:
         if semantic_cache_enabled and semantic_store is None:
             semantic_cache_reason = "store_unavailable"
-        _debug_log("_tool_context: compile_context_pack start (semantic cache disabled)")
+        _debug_log(
+            "_tool_context: compile_context_pack start (semantic cache disabled)"
+        )
         pack = compile_context_pack(
             project_dir=project_dir,
             config=config,
@@ -2159,14 +2131,18 @@ def _tool_context(
     strict_scope_injected_top_files = 0
     strict_scope_injected_snippets = 0
     if strict_changed_files_effective and changed_files_list:
-        pack, strict_scope_filtered_top_files, strict_scope_filtered_snippets = _apply_strict_changed_files_scope(
-            pack,
-            changed_files_list,
+        pack, strict_scope_filtered_top_files, strict_scope_filtered_snippets = (
+            _apply_strict_changed_files_scope(
+                pack,
+                changed_files_list,
+            )
         )
-        pack, strict_scope_injected_top_files, strict_scope_injected_snippets = _ensure_strict_changed_files_presence(
-            pack,
-            project_dir=project_dir,
-            changed_files=changed_files_list,
+        pack, strict_scope_injected_top_files, strict_scope_injected_snippets = (
+            _ensure_strict_changed_files_presence(
+                pack,
+                project_dir=project_dir,
+                changed_files=changed_files_list,
+            )
         )
 
     pack_contract_warnings: list[str] = []
@@ -2205,7 +2181,9 @@ def _tool_context(
         model=runtime_cfg.get("token_estimator_model", ""),
         encoding=runtime_cfg.get("token_estimator_encoding", "cl100k_base"),
         calibration=runtime_cfg.get("token_estimator_calibration", 1.0),
-        fallback_chars_per_token=runtime_cfg.get("token_estimator_fallback_chars_per_token", 4.0),
+        fallback_chars_per_token=runtime_cfg.get(
+            "token_estimator_fallback_chars_per_token", 4.0
+        ),
     )
     source_token_estimate = estimate_tokens_from_chars(
         source_chars,
@@ -2213,19 +2191,25 @@ def _tool_context(
             "chars_per_token",
             runtime_cfg.get("token_estimator_fallback_chars_per_token", 4.0),
         ),
-        calibration=token_estimate.get("calibration", runtime_cfg.get("token_estimator_calibration", 1.0)),
+        calibration=token_estimate.get(
+            "calibration", runtime_cfg.get("token_estimator_calibration", 1.0)
+        ),
     )
 
     compression_ratio = float(context_chars / source_chars) if source_chars > 0 else 1.0
     token_reduction_ratio = max(0.0, 1.0 - compression_ratio)
-    snippets_only_text = json.dumps({"snippets": list(pack.get("snippets", []))}, ensure_ascii=False)
+    snippets_only_text = json.dumps(
+        {"snippets": list(pack.get("snippets", []))}, ensure_ascii=False
+    )
     snippets_only_token_estimate = estimate_tokens_for_text(
         snippets_only_text,
         backend=runtime_cfg.get("token_estimator_backend", "auto"),
         model=runtime_cfg.get("token_estimator_model", ""),
         encoding=runtime_cfg.get("token_estimator_encoding", "cl100k_base"),
         calibration=runtime_cfg.get("token_estimator_calibration", 1.0),
-        fallback_chars_per_token=runtime_cfg.get("token_estimator_fallback_chars_per_token", 4.0),
+        fallback_chars_per_token=runtime_cfg.get(
+            "token_estimator_fallback_chars_per_token", 4.0
+        ),
     )
     changed_files_chars = _estimate_changed_files_chars(project_dir, changed_files_list)
     changed_files_token_estimate = estimate_tokens_from_chars(
@@ -2234,51 +2218,85 @@ def _tool_context(
             "chars_per_token",
             runtime_cfg.get("token_estimator_fallback_chars_per_token", 4.0),
         ),
-        calibration=token_estimate.get("calibration", runtime_cfg.get("token_estimator_calibration", 1.0)),
+        calibration=token_estimate.get(
+            "calibration", runtime_cfg.get("token_estimator_calibration", 1.0)
+        ),
     )
     context_tokens = int(token_estimate.get("estimated_tokens", 1))
     source_tokens = int(source_token_estimate.get("estimated_tokens", 1))
     changed_files_tokens = int(changed_files_token_estimate.get("estimated_tokens", 0))
     snippets_only_tokens = int(snippets_only_token_estimate.get("estimated_tokens", 1))
-    token_reduction_vs_full_index = _token_reduction_ratio(context_tokens, source_tokens)
-    token_reduction_vs_changed_files = (
-        _token_reduction_ratio(context_tokens, changed_files_tokens) if changed_files_tokens > 0 else None
+    token_reduction_vs_full_index = _token_reduction_ratio(
+        context_tokens, source_tokens
     )
-    token_reduction_vs_snippets_only = _token_reduction_ratio(context_tokens, snippets_only_tokens)
+    token_reduction_vs_changed_files = (
+        _token_reduction_ratio(context_tokens, changed_files_tokens)
+        if changed_files_tokens > 0
+        else None
+    )
+    token_reduction_vs_snippets_only = _token_reduction_ratio(
+        context_tokens, snippets_only_tokens
+    )
     warnings: list[str] = []
     if changed_files_source == "none":
-        warnings.append("changed_files not provided and no git delta detected; context scope may be wider than necessary")
-    elif changed_files_source in {"manifest_recent", "planner_fallback", "index_head_fallback"}:
+        warnings.append(
+            "changed_files not provided and no git delta detected; context scope may be wider than necessary"
+        )
+    elif changed_files_source in {
+        "manifest_recent",
+        "planner_fallback",
+        "index_head_fallback",
+    }:
         warnings.append(
             f"changed_files inferred via {changed_files_source}; provide explicit changed_files for tighter precision"
         )
-    if changed_files_source in {"planner_fallback", "index_head_fallback"} and fallback_confidence < 0.6:
+    if (
+        changed_files_source in {"planner_fallback", "index_head_fallback"}
+        and fallback_confidence < 0.6
+    ):
         warnings.append(
             "changed_files inference confidence is low; provide explicit changed_files for stable narrowing"
         )
     if changed_files_fallback_reason:
-        warnings.append(f"changed_files fallback detail: {changed_files_fallback_reason}")
-    detection_confidence = float(changed_files_detection.get("confidence", fallback_confidence) or fallback_confidence)
-    detection_provider = str(changed_files_detection.get("provider", "")).strip().lower()
+        warnings.append(
+            f"changed_files fallback detail: {changed_files_fallback_reason}"
+        )
+    detection_confidence = float(
+        changed_files_detection.get("confidence", fallback_confidence)
+        or fallback_confidence
+    )
+    detection_provider = (
+        str(changed_files_detection.get("provider", "")).strip().lower()
+    )
     if detection_provider == "git" and detection_confidence < 0.95:
         warnings.append(
             "git changed_files detection confidence below expected deterministic threshold; "
             "consider passing changed_files explicitly"
         )
-    if strict_changed_files_effective and (strict_scope_filtered_top_files > 0 or strict_scope_filtered_snippets > 0):
+    if strict_changed_files_effective and (
+        strict_scope_filtered_top_files > 0 or strict_scope_filtered_snippets > 0
+    ):
         warnings.append(
             "strict_changed_files pruned non-changed context items "
             f"(top_files={strict_scope_filtered_top_files}, snippets={strict_scope_filtered_snippets})"
         )
-    if strict_changed_files_effective and (strict_scope_injected_top_files > 0 or strict_scope_injected_snippets > 0):
+    if strict_changed_files_effective and (
+        strict_scope_injected_top_files > 0 or strict_scope_injected_snippets > 0
+    ):
         warnings.append(
             "strict_changed_files injected changed-file fallback context "
             f"(top_files={strict_scope_injected_top_files}, snippets={strict_scope_injected_snippets})"
         )
     if semantic_cache_enabled and semantic_cache_reason == "store_unavailable":
-        warnings.append("semantic cache requested but storage backend is unavailable; fell back to fresh compilation")
+        warnings.append(
+            "semantic cache requested but storage backend is unavailable; fell back to fresh compilation"
+        )
 
-    verify_plan = pack.get("verify_plan", {}) if isinstance(pack.get("verify_plan", {}), dict) else {}
+    verify_plan = (
+        pack.get("verify_plan", {})
+        if isinstance(pack.get("verify_plan", {}), dict)
+        else {}
+    )
     target_tests = verify_plan.get("target_tests", [])
     target_checks = verify_plan.get("target_checks", [])
     selected_tests_count = len(target_tests) if isinstance(target_tests, list) else 0
@@ -2287,7 +2305,9 @@ def _tool_context(
     compression_saved_chars = 0
     if isinstance(meta.get("compression_rules_applied", {}), dict):
         compression_rules_applied = dict(meta.get("compression_rules_applied", {}))
-    compression_saved_chars = int(meta.get("compression_saved_chars", meta.get("snippet_saved_chars", 0)) or 0)
+    compression_saved_chars = int(
+        meta.get("compression_saved_chars", meta.get("snippet_saved_chars", 0)) or 0
+    )
 
     payload: JSONDict = {
         "status": "ok",
@@ -2307,7 +2327,9 @@ def _tool_context(
         "compression_ratio": round(compression_ratio, 6),
         "token_reduction_ratio": round(token_reduction_ratio, 6),
         "token_reduction_ratio_vs_full_index": round(token_reduction_vs_full_index, 6),
-        "token_reduction_ratio_vs_snippets_only": round(token_reduction_vs_snippets_only, 6),
+        "token_reduction_ratio_vs_snippets_only": round(
+            token_reduction_vs_snippets_only, 6
+        ),
         "token_reduction": {
             "vs_full_index": {
                 "baseline_tokens": source_tokens,
@@ -2317,7 +2339,9 @@ def _tool_context(
             "vs_changed_files": {
                 "baseline_tokens": changed_files_tokens,
                 "context_tokens": context_tokens,
-                "ratio": round(token_reduction_vs_changed_files, 6) if token_reduction_vs_changed_files is not None else None,
+                "ratio": round(token_reduction_vs_changed_files, 6)
+                if token_reduction_vs_changed_files is not None
+                else None,
                 "available": bool(changed_files_tokens > 0),
             },
             "vs_snippets_only": {
@@ -2329,13 +2353,21 @@ def _tool_context(
         "token_estimator": {
             "backend_requested": token_estimate.get("backend_requested", "auto"),
             "backend_used": token_estimate.get("backend_used", "heuristic"),
-            "encoding_requested": token_estimate.get("encoding_requested", "cl100k_base"),
+            "encoding_requested": token_estimate.get(
+                "encoding_requested", "cl100k_base"
+            ),
             "encoding_used": token_estimate.get("encoding_used", "chars/4"),
             "model": token_estimate.get("model", ""),
             "calibration": float(token_estimate.get("calibration", 1.0)),
-            "fallback_chars_per_token": float(token_estimate.get("fallback_chars_per_token", 4.0)),
-            "context_chars_per_token": round(float(token_estimate.get("chars_per_token", 4.0)), 6),
-            "source_chars_per_token": round(float(source_token_estimate.get("chars_per_token", 4.0)), 6),
+            "fallback_chars_per_token": float(
+                token_estimate.get("fallback_chars_per_token", 4.0)
+            ),
+            "context_chars_per_token": round(
+                float(token_estimate.get("chars_per_token", 4.0)), 6
+            ),
+            "source_chars_per_token": round(
+                float(source_token_estimate.get("chars_per_token", 4.0)), 6
+            ),
             "raw_context_tokens": int(token_estimate.get("raw_tokens", 1)),
             "raw_source_tokens": int(source_token_estimate.get("raw_tokens", 1)),
         },
@@ -2364,15 +2396,21 @@ def _tool_context(
         "semantic_cache_safety_fingerprint": str(cache_safety_fingerprint),
         "semantic_cache_safety": {
             "git_head": str(cache_safety_metadata.get("git_head", "")),
-            "changed_files_state_count": int(len(cache_safety_metadata.get("changed_files_state", []))),
-            "fingerprint": str(cache_safety_metadata.get("fingerprint", cache_safety_fingerprint)),
+            "changed_files_state_count": int(
+                len(cache_safety_metadata.get("changed_files_state", []))
+            ),
+            "fingerprint": str(
+                cache_safety_metadata.get("fingerprint", cache_safety_fingerprint)
+            ),
         },
         "compression_rules_applied": compression_rules_applied,
         "compression_saved_chars": int(compression_saved_chars),
         "constraint_mode": constraint_mode_value,
     }
     if token_reduction_vs_changed_files is not None:
-        payload["token_reduction_ratio_vs_changed_files"] = round(token_reduction_vs_changed_files, 6)
+        payload["token_reduction_ratio_vs_changed_files"] = round(
+            token_reduction_vs_changed_files, 6
+        )
     fallback_reason = str(token_estimate.get("fallback_reason", "")).strip()
     if fallback_reason:
         token_estimator_payload = payload.get("token_estimator")
@@ -2384,16 +2422,22 @@ def _tool_context(
 
     payload_contract_warnings: list[str] = []
     payload_repair_count = 0
-    payload, payload_contract_warnings, payload_repair_count = enforce_context_payload_contract(
-        payload,
-        mode=constraint_mode_value,
+    payload, payload_contract_warnings, payload_repair_count = (
+        enforce_context_payload_contract(
+            payload,
+            mode=constraint_mode_value,
+        )
     )
     all_constraint_warnings = pack_contract_warnings + payload_contract_warnings
     constraint_repair_count = int(pack_repair_count) + int(payload_repair_count)
     payload["constraint_warnings"] = all_constraint_warnings
     payload["constraint_repair_count"] = int(constraint_repair_count)
     if all_constraint_warnings:
-        merged_warnings = list(payload.get("warnings", [])) if isinstance(payload.get("warnings"), list) else []
+        merged_warnings = (
+            list(payload.get("warnings", []))
+            if isinstance(payload.get("warnings"), list)
+            else []
+        )
         merged_warnings.extend([f"contract:{item}" for item in all_constraint_warnings])
         payload["warnings"] = merged_warnings
 
@@ -2440,29 +2484,43 @@ def _tool_verify(
     verify_preset_value = _resolve_verify_preset(verify_preset)
     verify_stall_timeout_value = _coerce_optional_float(verify_stall_timeout_seconds)
     verify_max_wall_time_value = _coerce_optional_float(verify_max_wall_time_seconds)
-    
-    _debug_log(f"accel_verify called: project={project}, changed_files={len(changed_files or [])}, evidence_run={evidence_run}")
+
+    _debug_log(
+        f"accel_verify called: project={project}, changed_files={len(changed_files or [])}, evidence_run={evidence_run}"
+    )
     project_dir = _normalize_project_dir(project)
 
     runtime_overrides: JSONDict = {}
     if verify_workers is not None:
         runtime_overrides["verify_workers"] = int(verify_workers)
     if per_command_timeout_seconds is not None:
-        runtime_overrides["per_command_timeout_seconds"] = int(per_command_timeout_seconds)
+        runtime_overrides["per_command_timeout_seconds"] = int(
+            per_command_timeout_seconds
+        )
     if verify_stall_timeout_value is not None:
-        runtime_overrides["verify_stall_timeout_seconds"] = float(verify_stall_timeout_value)
+        runtime_overrides["verify_stall_timeout_seconds"] = float(
+            verify_stall_timeout_value
+        )
     if verify_max_wall_time_value is not None:
-        runtime_overrides["verify_max_wall_time_seconds"] = float(verify_max_wall_time_value)
+        runtime_overrides["verify_max_wall_time_seconds"] = float(
+            verify_max_wall_time_value
+        )
     if verify_cache_ttl_seconds is not None:
         runtime_overrides["verify_cache_ttl_seconds"] = int(verify_cache_ttl_seconds)
     if verify_cache_max_entries is not None:
         runtime_overrides["verify_cache_max_entries"] = int(verify_cache_max_entries)
     if verify_cache_failed_ttl_seconds is not None:
-        runtime_overrides["verify_cache_failed_ttl_seconds"] = int(verify_cache_failed_ttl_seconds)
+        runtime_overrides["verify_cache_failed_ttl_seconds"] = int(
+            verify_cache_failed_ttl_seconds
+        )
     if command_plan_cache_enabled is not None:
-        runtime_overrides["command_plan_cache_enabled"] = _coerce_bool(command_plan_cache_enabled, True)
+        runtime_overrides["command_plan_cache_enabled"] = _coerce_bool(
+            command_plan_cache_enabled, True
+        )
     if constraint_mode is not None:
-        runtime_overrides["constraint_mode"] = _resolve_constraint_mode(constraint_mode, default_mode="warn")
+        runtime_overrides["constraint_mode"] = _resolve_constraint_mode(
+            constraint_mode, default_mode="warn"
+        )
 
     if verify_preset_value == "fast":
         runtime_overrides["verify_fail_fast"] = True
@@ -2486,9 +2544,13 @@ def _tool_verify(
     if verify_cache_enabled is not None:
         runtime_overrides["verify_cache_enabled"] = bool(verify_cache_enabled)
     if verify_cache_failed_results is not None:
-        runtime_overrides["verify_cache_failed_results"] = bool(verify_cache_failed_results)
+        runtime_overrides["verify_cache_failed_results"] = bool(
+            verify_cache_failed_results
+        )
     if verify_auto_cancel_on_stall is not None:
-        runtime_overrides["verify_auto_cancel_on_stall"] = bool(verify_auto_cancel_on_stall)
+        runtime_overrides["verify_auto_cancel_on_stall"] = bool(
+            verify_auto_cancel_on_stall
+        )
 
     cli_overrides = {"runtime": runtime_overrides} if runtime_overrides else None
     config = resolve_effective_config(project_dir, cli_overrides=cli_overrides)
@@ -2498,8 +2560,10 @@ def _tool_verify(
         config=config,
         changed_files=_to_string_list(changed_files),
     )
-    
-    _debug_log(f"accel_verify completed: status={result.get('status')}, exit_code={result.get('exit_code')}")
+
+    _debug_log(
+        f"accel_verify completed: status={result.get('status')}, exit_code={result.get('exit_code')}"
+    )
     return result
 
 
@@ -2626,10 +2690,18 @@ def create_server() -> FastMCP:
             if job is None or not str(job_id).strip().lower().startswith("index_"):
                 return {"error": "job_not_found", "job_id": job_id}
             status_payload = _normalize_job_status_payload(job.to_status())
-            status_payload["processed_files"] = int(status_payload.get("completed_commands", 0) or 0)
-            status_payload["total_files"] = int(status_payload.get("total_commands", 0) or 0)
-            status_payload["current_path"] = str(status_payload.get("current_command", ""))
-            status_payload["progress_pct"] = float(status_payload.get("progress", 0.0) or 0.0)
+            status_payload["processed_files"] = int(
+                status_payload.get("completed_commands", 0) or 0
+            )
+            status_payload["total_files"] = int(
+                status_payload.get("total_commands", 0) or 0
+            )
+            status_payload["current_path"] = str(
+                status_payload.get("current_command", "")
+            )
+            status_payload["progress_pct"] = float(
+                status_payload.get("progress", 0.0) or 0.0
+            )
             status_payload["state_source"] = "job_state"
             return status_payload
         except Exception as exc:
@@ -2682,7 +2754,9 @@ def create_server() -> FastMCP:
                 latest_progress_event: JSONDict = {}
                 for item in events_all:
                     event_name = str(item.get("event", "")).strip().lower() or "unknown"
-                    event_type_counts[event_name] = int(event_type_counts.get(event_name, 0)) + 1
+                    event_type_counts[event_name] = (
+                        int(event_type_counts.get(event_name, 0)) + 1
+                    )
                     seq = int(item.get("seq", 0) or 0)
                     if seq > 0:
                         if first_seq == 0:
@@ -2698,12 +2772,20 @@ def create_server() -> FastMCP:
                     "seq_range": {"first": int(first_seq), "last": int(last_seq)},
                     "constraint_repair_count": 0,
                     "progress": {
-                        "processed_files": int(status_payload.get("completed_commands", 0) or 0),
-                        "total_files": int(status_payload.get("total_commands", 0) or 0),
+                        "processed_files": int(
+                            status_payload.get("completed_commands", 0) or 0
+                        ),
+                        "total_files": int(
+                            status_payload.get("total_commands", 0) or 0
+                        ),
                         "current_path": str(status_payload.get("current_command", "")),
                         "eta_sec": status_payload.get("eta_sec"),
-                        "progress_pct": float(status_payload.get("progress", 0.0) or 0.0),
-                        "latest_progress_event_seq": int(latest_progress_event.get("seq", 0) or 0),
+                        "progress_pct": float(
+                            status_payload.get("progress", 0.0) or 0.0
+                        ),
+                        "latest_progress_event_seq": int(
+                            latest_progress_event.get("seq", 0) or 0
+                        ),
                     },
                 }
             return payload
@@ -2722,9 +2804,19 @@ def create_server() -> FastMCP:
             if job is None or not str(job_id).strip().lower().startswith("index_"):
                 return {"error": "job_not_found", "job_id": job_id}
             if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
-                return {"job_id": job_id, "status": job.state, "cancelled": False, "message": "Job already in terminal state"}
+                return {
+                    "job_id": job_id,
+                    "status": job.state,
+                    "cancelled": False,
+                    "message": "Job already in terminal state",
+                }
             _finalize_job_cancel(job, reason="user_request")
-            return {"job_id": job_id, "status": JobState.CANCELLED, "cancelled": True, "message": "Cancellation requested and finalized"}
+            return {
+                "job_id": job_id,
+                "status": JobState.CANCELLED,
+                "cancelled": True,
+                "message": "Cancellation requested and finalized",
+            }
         except Exception as exc:
             _debug_log(f"accel_index_cancel failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
@@ -2738,18 +2830,26 @@ def create_server() -> FastMCP:
         timeout_override = _coerce_optional_int(rpc_timeout_seconds)
         if timeout_override is not None:
             return max(30.0, min(3600.0, float(timeout_override)))
-        effective_config = config if isinstance(config, dict) else resolve_effective_config(project_dir)
+        effective_config = (
+            config
+            if isinstance(config, dict)
+            else resolve_effective_config(project_dir)
+        )
         runtime_cfg = (
             effective_config.get("runtime", {})
             if isinstance(effective_config.get("runtime", {}), dict)
             else {}
         )
-        timeout_config = _coerce_optional_int(runtime_cfg.get("context_rpc_timeout_seconds"))
+        timeout_config = _coerce_optional_int(
+            runtime_cfg.get("context_rpc_timeout_seconds")
+        )
         if timeout_config is None:
             timeout_config = 300
         return max(30.0, min(3600.0, float(timeout_config)))
 
-    def _summarize_context_events(events: list[dict[str, Any]], status: JSONDict) -> JSONDict:
+    def _summarize_context_events(
+        events: list[dict[str, Any]], status: JSONDict
+    ) -> JSONDict:
         event_type_counts: dict[str, int] = {}
         first_seq = 0
         last_seq = 0
@@ -2762,7 +2862,9 @@ def create_server() -> FastMCP:
             event_name = str(event.get("event", "")).strip().lower()
             if not event_name:
                 continue
-            event_type_counts[event_name] = int(event_type_counts.get(event_name, 0)) + 1
+            event_type_counts[event_name] = (
+                int(event_type_counts.get(event_name, 0)) + 1
+            )
             seq = int(event.get("seq", 0) or 0)
             if seq > 0:
                 if first_seq <= 0:
@@ -2873,7 +2975,9 @@ def create_server() -> FastMCP:
                         "timeout_seconds": float(timeout_seconds),
                     },
                 )
-                result = _with_timeout(_tool_context, timeout_seconds=int(timeout_seconds))(
+                result = _with_timeout(
+                    _tool_context, timeout_seconds=int(timeout_seconds)
+                )(
                     project=project,
                     task=task_text,
                     changed_files=changed_files,
@@ -2892,7 +2996,10 @@ def create_server() -> FastMCP:
                 if j.state in (JobState.CANCELLING, JobState.CANCELLED):
                     if j.state != JobState.CANCELLED:
                         j.mark_cancelled()
-                    j.add_event("job_cancelled_finalized", {"reason": "context_worker_observed_cancel"})
+                    j.add_event(
+                        "job_cancelled_finalized",
+                        {"reason": "context_worker_observed_cancel"},
+                    )
                     return
                 j.update_progress(1, 1, "")
                 j.add_event(
@@ -2904,17 +3011,26 @@ def create_server() -> FastMCP:
                         "snippets": int(result.get("snippets", 0) or 0),
                     },
                 )
-                j.mark_completed(str(result.get("status", "ok")), int(result.get("exit_code", 0) or 0), result)
+                j.mark_completed(
+                    str(result.get("status", "ok")),
+                    int(result.get("exit_code", 0) or 0),
+                    result,
+                )
             except Exception as exc:
                 if j.state in (JobState.CANCELLING, JobState.CANCELLED):
                     if j.state != JobState.CANCELLED:
                         j.mark_cancelled()
-                    j.add_event("job_cancelled_finalized", {"reason": "context_worker_exception_after_cancel"})
+                    j.add_event(
+                        "job_cancelled_finalized",
+                        {"reason": "context_worker_exception_after_cancel"},
+                    )
                     return
                 j.mark_failed(str(exc))
                 j.add_event("context_failed", {"error": str(exc)})
 
-        thread = threading.Thread(target=_run_context_thread, args=(job.job_id,), daemon=True)
+        thread = threading.Thread(
+            target=_run_context_thread, args=(job.job_id,), daemon=True
+        )
         thread.start()
 
         def _heartbeat_thread(job_id: str) -> None:
@@ -2934,7 +3050,9 @@ def create_server() -> FastMCP:
                         "state": state,
                         "stage": status.get("stage", "running"),
                         "progress": float(status.get("progress", 0.0)),
-                        "state_consistency": str(status.get("state_consistency", "normal")),
+                        "state_consistency": str(
+                            status.get("state_consistency", "normal")
+                        ),
                         "current_command": str(status.get("current_command", "")),
                     },
                 )
@@ -3030,7 +3148,9 @@ def create_server() -> FastMCP:
                 cancel_requested = False
                 job_for_cancel = jm.get_job(job_id)
                 if job_for_cancel is not None:
-                    cancel_requested = _finalize_job_cancel(job_for_cancel, reason="sync_timeout_auto_cancel")
+                    cancel_requested = _finalize_job_cancel(
+                        job_for_cancel, reason="sync_timeout_auto_cancel"
+                    )
                 return _timeout_cancel_payload_context(
                     job_id=job_id,
                     wait_seconds=wait_seconds,
@@ -3158,7 +3278,9 @@ def create_server() -> FastMCP:
             }
             if include_summary_flag:
                 status_payload = _normalize_job_status_payload(job.to_status())
-                payload["summary"] = _summarize_context_events(events_all, status_payload)
+                payload["summary"] = _summarize_context_events(
+                    events_all, status_payload
+                )
             return payload
         except Exception as exc:
             _debug_log(f"accel_context_events failed: {exc!r}")
@@ -3219,40 +3341,68 @@ def create_server() -> FastMCP:
         fast_loop_normalized = _coerce_bool(fast_loop, False)
         verify_fail_fast_normalized = _coerce_optional_bool(verify_fail_fast)
         verify_cache_enabled_normalized = _coerce_optional_bool(verify_cache_enabled)
-        verify_cache_failed_results_normalized = _coerce_optional_bool(verify_cache_failed_results)
-        verify_auto_cancel_on_stall_normalized = _coerce_optional_bool(verify_auto_cancel_on_stall)
+        verify_cache_failed_results_normalized = _coerce_optional_bool(
+            verify_cache_failed_results
+        )
+        verify_auto_cancel_on_stall_normalized = _coerce_optional_bool(
+            verify_auto_cancel_on_stall
+        )
         verify_preset_value = _resolve_verify_preset(verify_preset)
         verify_workers_value = _coerce_optional_int(verify_workers)
         per_command_timeout_value = _coerce_optional_int(per_command_timeout_seconds)
-        verify_stall_timeout_value = _coerce_optional_float(verify_stall_timeout_seconds)
-        verify_max_wall_time_value = _coerce_optional_float(verify_max_wall_time_seconds)
+        verify_stall_timeout_value = _coerce_optional_float(
+            verify_stall_timeout_seconds
+        )
+        verify_max_wall_time_value = _coerce_optional_float(
+            verify_max_wall_time_seconds
+        )
         verify_cache_ttl_value = _coerce_optional_int(verify_cache_ttl_seconds)
         verify_cache_max_entries_value = _coerce_optional_int(verify_cache_max_entries)
-        verify_cache_failed_ttl_value = _coerce_optional_int(verify_cache_failed_ttl_seconds)
-        command_plan_cache_enabled_normalized = _coerce_optional_bool(command_plan_cache_enabled)
+        verify_cache_failed_ttl_value = _coerce_optional_int(
+            verify_cache_failed_ttl_seconds
+        )
+        command_plan_cache_enabled_normalized = _coerce_optional_bool(
+            command_plan_cache_enabled
+        )
 
-        _debug_log(f"_start_verify_job called: project={project}, changed_files={len(changed_files_list)}")
+        _debug_log(
+            f"_start_verify_job called: project={project}, changed_files={len(changed_files_list)}"
+        )
         project_dir = _normalize_project_dir(project)
 
         runtime_overrides: JSONDict = {}
         if verify_workers_value is not None:
             runtime_overrides["verify_workers"] = int(verify_workers_value)
         if per_command_timeout_value is not None:
-            runtime_overrides["per_command_timeout_seconds"] = int(per_command_timeout_value)
+            runtime_overrides["per_command_timeout_seconds"] = int(
+                per_command_timeout_value
+            )
         if verify_stall_timeout_value is not None:
-            runtime_overrides["verify_stall_timeout_seconds"] = float(verify_stall_timeout_value)
+            runtime_overrides["verify_stall_timeout_seconds"] = float(
+                verify_stall_timeout_value
+            )
         if verify_max_wall_time_value is not None:
-            runtime_overrides["verify_max_wall_time_seconds"] = float(verify_max_wall_time_value)
+            runtime_overrides["verify_max_wall_time_seconds"] = float(
+                verify_max_wall_time_value
+            )
         if verify_cache_ttl_value is not None:
             runtime_overrides["verify_cache_ttl_seconds"] = int(verify_cache_ttl_value)
         if verify_cache_max_entries_value is not None:
-            runtime_overrides["verify_cache_max_entries"] = int(verify_cache_max_entries_value)
+            runtime_overrides["verify_cache_max_entries"] = int(
+                verify_cache_max_entries_value
+            )
         if verify_cache_failed_ttl_value is not None:
-            runtime_overrides["verify_cache_failed_ttl_seconds"] = int(verify_cache_failed_ttl_value)
+            runtime_overrides["verify_cache_failed_ttl_seconds"] = int(
+                verify_cache_failed_ttl_value
+            )
         if command_plan_cache_enabled_normalized is not None:
-            runtime_overrides["command_plan_cache_enabled"] = bool(command_plan_cache_enabled_normalized)
+            runtime_overrides["command_plan_cache_enabled"] = bool(
+                command_plan_cache_enabled_normalized
+            )
         if constraint_mode is not None:
-            runtime_overrides["constraint_mode"] = _resolve_constraint_mode(constraint_mode, default_mode="warn")
+            runtime_overrides["constraint_mode"] = _resolve_constraint_mode(
+                constraint_mode, default_mode="warn"
+            )
 
         if verify_preset_value == "fast":
             runtime_overrides["verify_fail_fast"] = True
@@ -3274,11 +3424,17 @@ def create_server() -> FastMCP:
         if verify_fail_fast_normalized is not None:
             runtime_overrides["verify_fail_fast"] = bool(verify_fail_fast_normalized)
         if verify_cache_enabled_normalized is not None:
-            runtime_overrides["verify_cache_enabled"] = bool(verify_cache_enabled_normalized)
+            runtime_overrides["verify_cache_enabled"] = bool(
+                verify_cache_enabled_normalized
+            )
         if verify_cache_failed_results_normalized is not None:
-            runtime_overrides["verify_cache_failed_results"] = bool(verify_cache_failed_results_normalized)
+            runtime_overrides["verify_cache_failed_results"] = bool(
+                verify_cache_failed_results_normalized
+            )
         if verify_auto_cancel_on_stall_normalized is not None:
-            runtime_overrides["verify_auto_cancel_on_stall"] = bool(verify_auto_cancel_on_stall_normalized)
+            runtime_overrides["verify_auto_cancel_on_stall"] = bool(
+                verify_auto_cancel_on_stall_normalized
+            )
 
         cli_overrides = {"runtime": runtime_overrides} if runtime_overrides else None
         config = resolve_effective_config(project_dir, cli_overrides=cli_overrides)
@@ -3286,7 +3442,12 @@ def create_server() -> FastMCP:
         jm = JobManager()
         job = jm.create_job()
 
-        def _run_verify_thread(job_id: str, project_dir: Path, config: dict[str, Any], changed_files: list[str] | None) -> None:
+        def _run_verify_thread(
+            job_id: str,
+            project_dir: Path,
+            config: dict[str, Any],
+            changed_files: list[str] | None,
+        ) -> None:
             j = jm.get_job(job_id)
             if j is None:
                 return
@@ -3303,14 +3464,21 @@ def create_server() -> FastMCP:
                 if j.state in (JobState.CANCELLING, JobState.CANCELLED):
                     if j.state != JobState.CANCELLED:
                         j.mark_cancelled()
-                    j.add_event("job_cancelled_finalized", {"reason": "worker_observed_cancel"})
+                    j.add_event(
+                        "job_cancelled_finalized", {"reason": "worker_observed_cancel"}
+                    )
                     return
-                j.mark_completed(result.get("status", "unknown"), result.get("exit_code", 1), result)
+                j.mark_completed(
+                    result.get("status", "unknown"), result.get("exit_code", 1), result
+                )
             except Exception as exc:
                 if j.state in (JobState.CANCELLING, JobState.CANCELLED):
                     if j.state != JobState.CANCELLED:
                         j.mark_cancelled()
-                    j.add_event("job_cancelled_finalized", {"reason": "worker_exception_after_cancel"})
+                    j.add_event(
+                        "job_cancelled_finalized",
+                        {"reason": "worker_exception_after_cancel"},
+                    )
                     return
                 j.mark_failed(str(exc))
                 j.add_event("job_failed", {"error": str(exc)})
@@ -3342,7 +3510,9 @@ def create_server() -> FastMCP:
                         "stage": status.get("stage", "running"),
                         "progress": float(status.get("progress", 0.0)),
                         "current_command": str(status.get("current_command", "")),
-                        "completed_commands": int(status.get("completed_commands", 0) or 0),
+                        "completed_commands": int(
+                            status.get("completed_commands", 0) or 0
+                        ),
                         "total_commands": int(status.get("total_commands", 0) or 0),
                     },
                 )
@@ -3403,7 +3573,9 @@ def create_server() -> FastMCP:
                 verify_cache_max_entries=verify_cache_max_entries,
                 verify_cache_failed_ttl_seconds=verify_cache_failed_ttl_seconds,
                 command_plan_cache_enabled=command_plan_cache_enabled,
-                constraint_mode=str(constraint_mode) if constraint_mode is not None else None,
+                constraint_mode=str(constraint_mode)
+                if constraint_mode is not None
+                else None,
             )
             job_id = str(job.job_id).strip()
 
@@ -3428,11 +3600,17 @@ def create_server() -> FastMCP:
                 runtime_key="sync_verify_wait_seconds",
                 fallback_seconds=float(_effective_sync_verify_wait_seconds()),
             )
-            default_timeout_action, default_cancel_grace = _resolve_sync_timeout_defaults(project_dir)
-            timeout_action_value = _coerce_sync_timeout_action(sync_timeout_action, default=default_timeout_action)
+            default_timeout_action, default_cancel_grace = (
+                _resolve_sync_timeout_defaults(project_dir)
+            )
+            timeout_action_value = _coerce_sync_timeout_action(
+                sync_timeout_action, default=default_timeout_action
+            )
             cancel_grace_value = _coerce_optional_float(sync_cancel_grace_seconds)
             cancel_grace_seconds = (
-                float(cancel_grace_value) if cancel_grace_value is not None else float(default_cancel_grace)
+                float(cancel_grace_value)
+                if cancel_grace_value is not None
+                else float(default_cancel_grace)
             )
             cancel_grace_seconds = max(0.2, min(30.0, cancel_grace_seconds))
             result = _wait_for_verify_job_result(
@@ -3447,7 +3625,9 @@ def create_server() -> FastMCP:
                     cancel_requested = False
                     job_for_cancel = jm.get_job(job_id)
                     if job_for_cancel is not None:
-                        cancel_requested = _finalize_job_cancel(job_for_cancel, reason="sync_timeout_auto_cancel")
+                        cancel_requested = _finalize_job_cancel(
+                            job_for_cancel, reason="sync_timeout_auto_cancel"
+                        )
                     if cancel_requested:
                         _wait_for_verify_job_result(
                             job_id,
@@ -3459,7 +3639,9 @@ def create_server() -> FastMCP:
                         wait_seconds=wait_seconds,
                         cancel_requested=cancel_requested,
                     )
-                return _sync_verify_timeout_payload(job_id, wait_seconds, timeout_action=timeout_action_value)
+                return _sync_verify_timeout_payload(
+                    job_id, wait_seconds, timeout_action=timeout_action_value
+                )
             return result
         except Exception as exc:
             _debug_log(f"accel_verify failed: {exc!r}")
@@ -3481,11 +3663,15 @@ def create_server() -> FastMCP:
             self._job.stage = stage.name.lower()
             self._job.add_live_event("stage_change", {"stage": stage.name.lower()})
 
-        def on_command_start(self, job_id: str, command: str, index: int, total: int) -> None:
+        def on_command_start(
+            self, job_id: str, command: str, index: int, total: int
+        ) -> None:
             if self._job.is_terminal():
                 return
             self._job.current_command = command
-            self._job.add_live_event("command_start", {"command": command, "index": index, "total": total})
+            self._job.add_live_event(
+                "command_start", {"command": command, "index": index, "total": total}
+            )
 
         def on_command_complete(
             self,
@@ -3518,16 +3704,26 @@ def create_server() -> FastMCP:
                 payload["stderr_tail"] = stderr_tail_text
             self._job.add_live_event("command_complete", payload)
 
-        def on_progress(self, job_id: str, completed: int, total: int, current_command: str) -> None:
+        def on_progress(
+            self, job_id: str, completed: int, total: int, current_command: str
+        ) -> None:
             if self._job.is_terminal():
                 return
             self._job.update_progress(completed, total, current_command)
             progress_pct = float(self._job.progress)
-            if total > 0 and completed >= total and self._job.state in {JobState.RUNNING, JobState.CANCELLING}:
+            if (
+                total > 0
+                and completed >= total
+                and self._job.state in {JobState.RUNNING, JobState.CANCELLING}
+            ):
                 progress_pct = min(progress_pct, 99.9)
             self._job.add_live_event(
                 "progress",
-                {"completed": completed, "total": total, "progress_pct": round(progress_pct, 1)},
+                {
+                    "completed": completed,
+                    "total": total,
+                    "progress_pct": round(progress_pct, 1),
+                },
             )
 
         def on_heartbeat(
@@ -3558,15 +3754,23 @@ def create_server() -> FastMCP:
             if current_command:
                 heartbeat_payload["current_command"] = current_command
             if command_elapsed_sec is not None:
-                heartbeat_payload["command_elapsed_sec"] = round(float(command_elapsed_sec), 1)
+                heartbeat_payload["command_elapsed_sec"] = round(
+                    float(command_elapsed_sec), 1
+                )
             if command_timeout_sec is not None:
-                heartbeat_payload["command_timeout_sec"] = round(float(command_timeout_sec), 1)
+                heartbeat_payload["command_timeout_sec"] = round(
+                    float(command_timeout_sec), 1
+                )
             if command_progress_pct is not None:
-                heartbeat_payload["command_progress_pct"] = round(float(command_progress_pct), 2)
+                heartbeat_payload["command_progress_pct"] = round(
+                    float(command_progress_pct), 2
+                )
             if stall_detected is not None:
                 heartbeat_payload["stall_detected"] = bool(stall_detected)
             if stall_elapsed_sec is not None:
-                heartbeat_payload["stall_elapsed_sec"] = round(float(stall_elapsed_sec), 1)
+                heartbeat_payload["stall_elapsed_sec"] = round(
+                    float(stall_elapsed_sec), 1
+                )
             self._job.add_live_event("heartbeat", heartbeat_payload)
 
         def on_command_output(
@@ -3604,7 +3808,9 @@ def create_server() -> FastMCP:
         def on_skip(self, job_id: str, command: str, reason: str) -> None:
             if self._job.is_terminal():
                 return
-            self._job.add_live_event("command_skipped", {"command": command, "reason": reason})
+            self._job.add_live_event(
+                "command_skipped", {"command": command, "reason": reason}
+            )
 
         def on_error(self, job_id: str, command: str | None, error: str) -> None:
             if self._job.is_terminal():
@@ -3614,7 +3820,9 @@ def create_server() -> FastMCP:
         def on_complete(self, job_id: str, status: str, exit_code: int) -> None:
             if self._job.is_terminal():
                 return
-            self._job.add_live_event("job_completed", {"status": status, "exit_code": exit_code})
+            self._job.add_live_event(
+                "job_completed", {"status": status, "exit_code": exit_code}
+            )
 
     @server.tool(
         name="accel_verify_start",
@@ -3659,7 +3867,9 @@ def create_server() -> FastMCP:
                 verify_cache_max_entries=verify_cache_max_entries,
                 verify_cache_failed_ttl_seconds=verify_cache_failed_ttl_seconds,
                 command_plan_cache_enabled=command_plan_cache_enabled,
-                constraint_mode=str(constraint_mode) if constraint_mode is not None else None,
+                constraint_mode=str(constraint_mode)
+                if constraint_mode is not None
+                else None,
             )
             _debug_log(f"accel_verify_start created job: {job.job_id}")
             return {"job_id": job.job_id, "status": "started"}
@@ -3718,9 +3928,14 @@ def create_server() -> FastMCP:
                         )
                         if len(recent_output) > 5:
                             recent_output = recent_output[-5:]
-                if event_name == "heartbeat" and _coerce_bool(event.get("stall_detected"), False):
+                if event_name == "heartbeat" and _coerce_bool(
+                    event.get("stall_detected"), False
+                ):
                     stall_detected = True
-                    stall_elapsed_sec = max(stall_elapsed_sec, float(event.get("stall_elapsed_sec", 0.0) or 0.0))
+                    stall_elapsed_sec = max(
+                        stall_elapsed_sec,
+                        float(event.get("stall_elapsed_sec", 0.0) or 0.0),
+                    )
             status_payload["recent_output"] = recent_output
             status_payload["stall_detected"] = bool(stall_detected)
             if stall_detected:
@@ -3777,16 +3992,29 @@ def create_server() -> FastMCP:
             if include_summary_flag:
                 status_payload = _normalize_job_status_payload(job.to_status())
                 summary = _summarize_verify_events(events_all, status_payload)
-                summary_mode = normalize_constraint_mode(os.environ.get("ACCEL_CONSTRAINT_MODE", "warn"), default_mode="warn")
-                summary, summary_warnings, summary_repair_count = enforce_verify_summary_contract(
-                    summary,
-                    status=status_payload,
-                    mode=summary_mode,
+                summary_mode = normalize_constraint_mode(
+                    os.environ.get("ACCEL_CONSTRAINT_MODE", "warn"), default_mode="warn"
+                )
+                summary, summary_warnings, summary_repair_count = (
+                    enforce_verify_summary_contract(
+                        summary,
+                        status=status_payload,
+                        mode=summary_mode,
+                    )
                 )
                 summary["constraint_repair_count"] = int(summary_repair_count)
                 if summary_warnings:
                     summary["constraint_warnings"] = summary_warnings
                 payload["summary"] = summary
+            payload_mode = normalize_constraint_mode(
+                os.environ.get("ACCEL_CONSTRAINT_MODE", "warn"), default_mode="warn"
+            )
+            payload, payload_warnings, payload_repairs = (
+                enforce_verify_events_payload_contract(payload, mode=payload_mode)
+            )
+            payload["constraint_repair_count"] = int(payload_repairs)
+            if payload_warnings:
+                payload["constraint_warnings"] = payload_warnings
             return payload
         except Exception as exc:
             _debug_log(f"accel_verify_events failed: {exc!r}")
@@ -3804,9 +4032,19 @@ def create_server() -> FastMCP:
             if job is None:
                 return {"error": "job_not_found", "job_id": job_id}
             if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
-                return {"job_id": job_id, "status": job.state, "cancelled": False, "message": "Job already in terminal state"}
+                return {
+                    "job_id": job_id,
+                    "status": job.state,
+                    "cancelled": False,
+                    "message": "Job already in terminal state",
+                }
             _finalize_job_cancel(job, reason="user_request")
-            return {"job_id": job_id, "status": JobState.CANCELLED, "cancelled": True, "message": "Cancellation requested and finalized"}
+            return {
+                "job_id": job_id,
+                "status": JobState.CANCELLED,
+                "cancelled": True,
+                "message": "Cancellation requested and finalized",
+            }
         except Exception as exc:
             _debug_log(f"accel_verify_cancel failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
@@ -3846,7 +4084,9 @@ def create_server() -> FastMCP:
                 "changed_files": [],
             },
         }
-        return json.dumps(templates.get(key, {"kind": key, "template": None}), ensure_ascii=False)
+        return json.dumps(
+            templates.get(key, {"kind": key, "template": None}), ensure_ascii=False
+        )
 
     return server
 
@@ -3873,33 +4113,38 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     global _server_start_time
-    
+
     # Setup signal handlers for graceful shutdown
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
-    if hasattr(signal, 'SIGBREAK'):  # Windows-specific
+    if hasattr(signal, "SIGBREAK"):  # Windows-specific
         signal.signal(signal.SIGBREAK, _signal_handler)
-    
+
     args = build_parser().parse_args()
-    
+
     if _debug_enabled:
         _debug_log(f"Starting agent-accel MCP server with args: {vars(args)}")
-        print("agent-accel MCP debug mode enabled. Logs will be written to ~/.accel/logs/", file=sys.stderr)
+        print(
+            "agent-accel MCP debug mode enabled. Logs will be written to ~/.accel/logs/",
+            file=sys.stderr,
+        )
         print(f"Server max runtime: {_server_max_runtime}s", file=sys.stderr)
-    
+
     server = create_server()
     _server_start_time = time.perf_counter()
-    
+
     try:
         _debug_log(f"Running FastMCP server with transport: {args.transport}")
         if bool(args.show_banner):
-            _debug_log("Ignoring --show-banner for stdio transport to preserve MCP framing")
-        
+            _debug_log(
+                "Ignoring --show-banner for stdio transport to preserve MCP framing"
+            )
+
         # Run server with timeout monitoring
         # Note: FastMCP's server.run() is blocking, so we can't directly add timeout here
         # But we have runtime checks in tool wrappers
         server.run(transport=args.transport, show_banner=False)
-        
+
     except KeyboardInterrupt:
         _debug_log("Server interrupted by user")
     except Exception as exc:

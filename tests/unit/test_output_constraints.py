@@ -5,6 +5,7 @@ import pytest
 from accel.schema.contracts import (
     enforce_context_pack_contract,
     enforce_context_payload_contract,
+    enforce_verify_events_payload_contract,
     enforce_verify_summary_contract,
 )
 
@@ -74,3 +75,40 @@ def test_verify_summary_contract_prefers_terminal_status() -> None:
     assert int(fixed.get("constraint_repair_count", 0)) >= 1
     assert repairs >= 1
     assert warnings
+
+
+def test_verify_events_payload_contract_warn_repairs_invalid_payload() -> None:
+    broken = {
+        "job_id": 123,
+        "events": [{"event": "", "seq": 0}, "bad"],
+        "count": 999,
+        "total_available": -1,
+        "truncated": "yes",
+        "max_events": 0,
+        "since_seq": -5,
+        "summary": {"constraint_repair_count": -2, "event_type_counts": []},
+    }
+    fixed, warnings, repairs = enforce_verify_events_payload_contract(broken, mode="warn")
+    assert isinstance(fixed.get("job_id"), str)
+    assert isinstance(fixed.get("events"), list)
+    assert int(fixed.get("count", 0)) == len(fixed.get("events", []))
+    assert int(fixed.get("max_events", 0)) >= 1
+    assert int(fixed.get("since_seq", 0)) >= 0
+    assert repairs >= 1
+    assert warnings
+
+
+def test_verify_events_payload_contract_strict_raises() -> None:
+    with pytest.raises(ValueError):
+        enforce_verify_events_payload_contract(
+            {
+                "job_id": "verify_abc",
+                "events": [{"event": ""}],
+                "count": 1,
+                "total_available": 1,
+                "truncated": False,
+                "max_events": 30,
+                "since_seq": 0,
+            },
+            mode="strict",
+        )

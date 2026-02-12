@@ -1,0 +1,90 @@
+[
+  {
+    "id": "ranker-signal-balance",
+    "task": "Tune multi-signal ranking to reduce false positives for scoped bugfix tasks.",
+    "changed_files": [
+      "accel/query/ranker.py",
+      "accel/query/planner.py"
+    ],
+    "hints": [
+      "focus:signal_weights",
+      "focus:changed_files_prioritization"
+    ],
+    "expected_top_files": [
+      "accel/query/ranker.py",
+      "accel/query/planner.py",
+      "accel/query/context_compiler.py"
+    ]
+  },
+  {
+    "id": "verify-orchestrator-fallback",
+    "task": "Adjust verify orchestration to keep degraded outcomes explicit when no commands are selected.",
+    "changed_files": [
+      "accel/verify/orchestrator.py",
+      "accel/verify/orchestrator_helpers.py",
+      "accel/verify/sharding.py"
+    ],
+    "hints": [
+      "focus:degraded_semantics",
+      "focus:zero_command_plan"
+    ],
+    "expected_top_files": [
+      "accel/verify/orchestrator.py",
+      "accel/verify/orchestrator_helpers.py",
+      "accel/verify/sharding.py"
+    ]
+  },
+  {
+    "id": "test-ownership-index-quality",
+    "task": "Improve test ownership recall for changed service modules.",
+    "changed_files": [
+      "accel/indexers/tests_ownership.py",
+      "accel/indexers/references.py"
+    ],
+    "hints": [
+      "focus:test_ownership",
+      "focus:dependency_edges"
+    ],
+    "expected_top_files": [
+      "accel/indexers/tests_ownership.py",
+      "accel/indexers/references.py",
+      "accel/indexers/symbols.py"
+    ]
+  },
+  {
+    "id": "mcp-verify-events-contract",
+    "task": "Harden verify events payload contracts without changing transport behavior.",
+    "changed_files": [
+      "accel/mcp_server.py",
+      "accel/schema/contracts.py",
+      "accel/schema/mcp_verify_events.schema.json"
+    ],
+    "hints": [
+      "focus:constraint_mode",
+      "focus:event_summary"
+    ],
+    "expected_top_files": [
+      "accel/mcp_server.py",
+      "accel/schema/contracts.py",
+      "accel/schema/mcp_verify_events.schema.json"
+    ]
+  },
+  {
+    "id": "context-pack-schema-alignment",
+    "task": "Align context pack generation fields with schema and contract checks.",
+    "changed_files": [
+      "accel/query/context_compiler.py",
+      "accel/schema/context_pack.schema.json",
+      "accel/schema/contracts.py"
+    ],
+    "hints": [
+      "focus:pack_shape",
+      "focus:contract_repair"
+    ],
+    "expected_top_files": [
+      "accel/query/context_compiler.py",
+      "accel/schema/context_pack.schema.json",
+      "accel/schema/contracts.py"
+    ]
+  }
+]

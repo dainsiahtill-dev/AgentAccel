@@ -1,5 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-accel.local/schema/index_manifest/v1",
   "title": "AgentAccel Index Manifest",
   "type": "object",
   "required": ["version", "schema_version", "indexed_at", "mode", "counts"],
