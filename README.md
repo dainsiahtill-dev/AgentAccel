@@ -311,7 +311,7 @@ Start incremental verification with runtime override options.
 | `command_plan_cache_enabled` | boolean \| string | `null` | Cache `select_verify_commands` planning output |
 | `constraint_mode` | string | `null` | Summary/output contract mode: `off` \| `warn` \| `strict` |
 | `wait_for_completion` | boolean \| string | `false` | Synchronous bounded wait for final result |
-| `sync_wait_seconds` | integer \| string | `null` | Override synchronous wait window (explicit override bypasses RPC-safe default cap) |
+| `sync_wait_seconds` | integer \| string | `null` | Override synchronous wait window (still capped by MCP RPC-safe limit, default 45s) |
 | `sync_timeout_action` | string | `poll` | Timeout action: `poll` (default) or `cancel` |
 | `sync_cancel_grace_seconds` | number \| string | `null` | Extra grace window after auto-cancel request |
 
@@ -370,7 +370,7 @@ Tokenizer estimation runtime knobs (via `accel.local.yaml` runtime or env):
 - `sync_verify_wait_seconds`: default sync wait window for `accel_verify` (default `45.0`)
 - `sync_index_wait_seconds`: default sync wait window for `accel_index_build/update` (default `45.0`)
 - `sync_context_wait_seconds`: default sync wait window for `accel_context` (default `45.0`)
-- runtime `sync_*_wait_seconds` defaults are RPC-safe capped in MCP tools; pass per-call `sync_wait_seconds` to request a longer explicit wait.
+- runtime `sync_*_wait_seconds` values are RPC-safe capped in MCP tools (default cap 45s), including per-call `sync_wait_seconds` overrides.
 - `sync_verify_timeout_action`: `poll` | `cancel` (default `poll`)
 - `sync_verify_cancel_grace_seconds`: grace period after auto-cancel request (default `5.0`)
 - `sync_context_timeout_action`: `fallback_async` | `cancel` (default `fallback_async`)

@@ -1813,7 +1813,7 @@ def test_sync_verify_wait_runtime_default_is_capped_for_rpc_safety(tmp_path: Pat
     assert float(captured.get("wait_seconds", 0.0)) == 45.0
 
 
-def test_sync_verify_wait_explicit_override_bypasses_rpc_safety_cap(tmp_path: Path, monkeypatch) -> None:
+def test_sync_verify_wait_explicit_override_is_capped_for_rpc_safety(tmp_path: Path, monkeypatch) -> None:
     project_dir = tmp_path / "sync_verify_explicit_wait_project"
     project_dir.mkdir(parents=True)
 
@@ -1864,7 +1864,7 @@ def test_sync_verify_wait_explicit_override_bypasses_rpc_safety_cap(tmp_path: Pa
 
     result = verify_fn(project=str(project_dir), wait_for_completion=True, sync_wait_seconds=180)
     assert result["status"] == "success"
-    assert float(captured.get("wait_seconds", 0.0)) == 180.0
+    assert float(captured.get("wait_seconds", 0.0)) == 45.0
 
 
 def test_sync_verify_timeout_action_cancel_finalizes_job(tmp_path: Path, monkeypatch) -> None:
@@ -2335,7 +2335,7 @@ def test_sync_index_wait_runtime_default_is_capped_for_rpc_safety(tmp_path: Path
     assert float(captured.get("wait_seconds", 0.0)) == 45.0
 
 
-def test_sync_index_wait_explicit_override_bypasses_rpc_safety_cap(tmp_path: Path, monkeypatch) -> None:
+def test_sync_index_wait_explicit_override_is_capped_for_rpc_safety(tmp_path: Path, monkeypatch) -> None:
     project_dir = tmp_path / "sync_index_explicit_wait_project"
     project_dir.mkdir(parents=True)
 
@@ -2373,7 +2373,7 @@ def test_sync_index_wait_explicit_override_bypasses_rpc_safety_cap(tmp_path: Pat
 
     result = build_fn(project=str(project_dir), full=True, wait_for_completion=True, sync_wait_seconds=205)
     assert result["status"] == "ok"
-    assert float(captured.get("wait_seconds", 0.0)) == 205.0
+    assert float(captured.get("wait_seconds", 0.0)) == 45.0
 
 
 def test_sync_index_returns_manifest_for_fast_job(tmp_path: Path, monkeypatch) -> None:

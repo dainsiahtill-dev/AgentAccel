@@ -855,18 +855,18 @@ def _resolve_sync_wait_seconds(
     rpc_safe_cap_seconds: float | None = _SYNC_WAIT_RPC_SAFE_SECONDS,
 ) -> float:
     parsed_override = _coerce_optional_float(override_value)
-    if parsed_override is not None:
-        return _clamp_float(parsed_override, 1.0, _SYNC_WAIT_SECONDS_MAX)
-
     wait_seconds = float(fallback_seconds)
-    try:
-        config = resolve_effective_config(project_dir)
-        runtime_cfg = config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {}
-        configured_value = _coerce_optional_float(runtime_cfg.get(runtime_key))
-        if configured_value is not None:
-            wait_seconds = configured_value
-    except Exception:
-        wait_seconds = float(fallback_seconds)
+    if parsed_override is not None:
+        wait_seconds = parsed_override
+    else:
+        try:
+            config = resolve_effective_config(project_dir)
+            runtime_cfg = config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {}
+            configured_value = _coerce_optional_float(runtime_cfg.get(runtime_key))
+            if configured_value is not None:
+                wait_seconds = configured_value
+        except Exception:
+            wait_seconds = float(fallback_seconds)
     resolved = _clamp_float(wait_seconds, 1.0, _SYNC_WAIT_SECONDS_MAX)
     cap_value = _coerce_optional_float(rpc_safe_cap_seconds)
     if cap_value is not None and cap_value > 0:
