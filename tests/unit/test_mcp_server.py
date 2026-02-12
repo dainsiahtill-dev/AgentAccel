@@ -26,6 +26,10 @@ def test_create_server_registers_core_tools_and_resources() -> None:
     assert "accel_index_events" in tool_names
     assert "accel_index_cancel" in tool_names
     assert "accel_context" in tool_names
+    assert "accel_context_start" in tool_names
+    assert "accel_context_status" in tool_names
+    assert "accel_context_events" in tool_names
+    assert "accel_context_cancel" in tool_names
     assert "accel_verify" in tool_names
     assert "agent-accel://status" in resource_uris
     assert "agent-accel://template/{kind}" in template_uris
@@ -70,6 +74,251 @@ def test_tool_context_builds_pack_for_temp_project(tmp_path: Path) -> None:
     )
     assert context["status"] == "ok"
     assert Path(context["out"]).is_file()
+
+
+def test_accel_context_uses_runtime_or_override_timeout(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_timeout_project"
+    project_dir.mkdir(parents=True)
+
+    captured: dict[str, float] = {}
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {
+            "runtime": {
+                "accel_home": str(tmp_path / ".accel-home"),
+                "context_rpc_timeout_seconds": 444,
+                "semantic_cache_mode": "hybrid",
+                "constraint_mode": "warn",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "_tool_context",
+        lambda **kwargs: {"status": "ok", "out": str(project_dir / "ctx.json"), "top_files": 0, "snippets": 0},
+    )
+
+    def fake_with_timeout(func, timeout_seconds: int = 300):
+        captured["timeout_seconds"] = float(timeout_seconds)
+
+        def _run(*args, **kwargs):
+            return func(*args, **kwargs)
+
+        return _run
+
+    monkeypatch.setattr(mcp_server, "_with_timeout", fake_with_timeout)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    context_fn = tools["accel_context"].fn
+
+    result_default = context_fn(project=str(project_dir), task="timeout default")
+    assert result_default["status"] == "ok"
+    assert float(captured.get("timeout_seconds", 0.0)) == 444.0
+
+    result_override = context_fn(project=str(project_dir), task="timeout override", rpc_timeout_seconds=77)
+    assert result_override["status"] == "ok"
+    assert float(captured.get("timeout_seconds", 0.0)) == 77.0
+
+
+def test_accel_context_sync_timeout_falls_back_to_async(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_sync_timeout_project"
+    project_dir.mkdir(parents=True)
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {
+            "runtime": {
+                "accel_home": str(tmp_path / ".accel-home"),
+                "semantic_cache_mode": "hybrid",
+                "constraint_mode": "warn",
+                "context_rpc_timeout_seconds": 300,
+                "sync_context_wait_seconds": 1,
+                "sync_context_timeout_action": "fallback_async",
+            }
+        },
+    )
+    monkeypatch.setattr(mcp_server, "_sync_context_wait_seconds", 1)
+    monkeypatch.setattr(mcp_server, "_sync_context_poll_seconds", 0.05)
+
+    def fake_tool_context(**kwargs):
+        time.sleep(1.4)
+        return {
+            "status": "ok",
+            "out": str(project_dir / "ctx.json"),
+            "out_meta": str(project_dir / "ctx.meta.json"),
+            "top_files": 1,
+            "snippets": 1,
+        }
+
+    monkeypatch.setattr(mcp_server, "_tool_context", fake_tool_context)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    context_fn = tools["accel_context"].fn
+    status_fn = tools["accel_context_status"].fn
+
+    started_at = time.perf_counter()
+    payload = context_fn(project=str(project_dir), task="timeout fallback")
+    elapsed = time.perf_counter() - started_at
+
+    assert elapsed < 1.3
+    assert payload["status"] == "running"
+    assert bool(payload.get("timed_out")) is True
+    assert payload.get("timeout_action") == "fallback_async"
+    job_id = str(payload.get("job_id", ""))
+    assert job_id.startswith("context_")
+
+    final_status = {}
+    for _ in range(40):
+        final_status = status_fn(job_id=job_id)
+        if final_status.get("state") == mcp_server.JobState.COMPLETED:
+            break
+        time.sleep(0.05)
+    assert final_status.get("state") == mcp_server.JobState.COMPLETED
+
+
+def test_accel_context_start_status_events_and_cancel(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_async_project"
+    project_dir.mkdir(parents=True)
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    call_count = {"n": 0}
+
+    def fake_tool_context(**kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            time.sleep(0.08)
+            return {
+                "status": "ok",
+                "out": str(project_dir / "context_1.json"),
+                "out_meta": str(project_dir / "context_1.meta.json"),
+                "top_files": 2,
+                "snippets": 3,
+                "selected_tests_count": 1,
+                "selected_checks_count": 1,
+            }
+        time.sleep(0.5)
+        return {
+            "status": "ok",
+            "out": str(project_dir / "context_2.json"),
+            "out_meta": str(project_dir / "context_2.meta.json"),
+            "top_files": 1,
+            "snippets": 1,
+        }
+
+    monkeypatch.setattr(mcp_server, "_tool_context", fake_tool_context)
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {
+            "runtime": {
+                "accel_home": str(tmp_path / ".accel-home"),
+                "semantic_cache_mode": "hybrid",
+                "constraint_mode": "warn",
+            }
+        },
+    )
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    start_fn = tools["accel_context_start"].fn
+    status_fn = tools["accel_context_status"].fn
+    events_fn = tools["accel_context_events"].fn
+    cancel_fn = tools["accel_context_cancel"].fn
+
+    started = start_fn(project=str(project_dir), task="build async context")
+    assert started["status"] == "started"
+    job_id_1 = str(started["job_id"])
+    assert job_id_1.startswith("context_")
+
+    final_status = {}
+    for _ in range(40):
+        final_status = status_fn(job_id=job_id_1)
+        if final_status.get("state") == mcp_server.JobState.COMPLETED:
+            break
+        time.sleep(0.03)
+
+    assert final_status.get("state") == mcp_server.JobState.COMPLETED
+    assert final_status.get("status") == "ok"
+    assert int(final_status.get("top_files", 0)) == 2
+
+    events_payload = events_fn(job_id=job_id_1, since_seq=0, max_events=100, include_summary=True)
+    assert isinstance(events_payload.get("events"), list)
+    summary = events_payload.get("summary", {})
+    assert isinstance(summary, dict)
+    assert "latest_state" in summary
+    assert "event_type_counts" in summary
+
+    started_cancel = start_fn(project=str(project_dir), task="cancel context")
+    job_id_2 = str(started_cancel["job_id"])
+    cancelled = cancel_fn(job_id=job_id_2)
+    assert bool(cancelled.get("cancelled")) is True
+    cancelled_status = status_fn(job_id=job_id_2)
+    assert cancelled_status.get("state") == mcp_server.JobState.CANCELLED
+
+
+def test_accel_context_events_summary_prefers_terminal_event_state() -> None:
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+    job = jm.create_job(prefix="context")
+    job.mark_running("running")
+    job.add_event("heartbeat", {"state": "running", "stage": "running", "elapsed_sec": 1.0})
+    job.add_event("context_completed", {"status": "ok", "out": "context.json", "top_files": 1, "snippets": 1})
+    # Simulate transient stale job status before mark_completed is observed.
+    job.state = mcp_server.JobState.RUNNING
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    events_fn = tools["accel_context_events"].fn
+
+    payload = events_fn(job_id=job.job_id, since_seq=0, max_events=100, include_summary=True)
+    summary = payload.get("summary", {})
+    assert isinstance(summary, dict)
+    assert summary.get("latest_state") == mcp_server.JobState.COMPLETED
+    assert summary.get("state_source") == "event_terminal"
+    assert bool(summary.get("terminal_event_seen")) is True
+
+
+def test_accel_context_start_rejects_invalid_enum_inputs_early(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_enum_validation_project"
+    project_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {
+            "runtime": {
+                "accel_home": str(tmp_path / ".accel-home"),
+                "semantic_cache_mode": "hybrid",
+                "constraint_mode": "warn",
+            }
+        },
+    )
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    start_fn = tools["accel_context_start"].fn
+
+    try:
+        start_fn(project=str(project_dir), task="invalid enum", semantic_cache_mode="invalid")
+    except RuntimeError as exc:
+        assert "semantic_cache_mode must be one of" in str(exc)
+    else:
+        raise AssertionError("expected invalid semantic_cache_mode to fail before async job start")
+
+
+def test_semantic_cache_mode_accepts_read_write_alias() -> None:
+    assert mcp_server._resolve_semantic_cache_mode("read_write", default_mode="hybrid") == "hybrid"
+    assert mcp_server._resolve_semantic_cache_mode("read-write", default_mode="hybrid") == "hybrid"
 
 
 def test_tool_context_budget_and_list_string_compat(tmp_path: Path) -> None:
@@ -997,6 +1246,52 @@ def test_tool_verify_accepts_timebox_and_stall_overrides(tmp_path: Path, monkeyp
     assert bool(runtime.get("verify_auto_cancel_on_stall")) is True
 
 
+def test_tool_verify_applies_verify_preset_fast_and_full(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "verify_preset_project"
+    project_dir.mkdir(parents=True)
+
+    captured: dict[str, object] = {}
+
+    def fake_resolve_effective_config(project_dir, cli_overrides=None):
+        captured["cli_overrides"] = cli_overrides
+        return {"runtime": {"accel_home": str(tmp_path / ".accel-home")}}
+
+    monkeypatch.setattr(mcp_server, "resolve_effective_config", fake_resolve_effective_config)
+    monkeypatch.setattr(
+        mcp_server,
+        "run_verify",
+        lambda project_dir, config, changed_files=None: {"status": "success", "exit_code": 0, "commands": [], "results": []},
+    )
+
+    result_fast = mcp_server._tool_verify(
+        project=str(project_dir),
+        changed_files=["src/a.py"],
+        verify_preset="fast",
+    )
+    assert result_fast["status"] == "success"
+    overrides_fast = captured.get("cli_overrides")
+    assert isinstance(overrides_fast, dict)
+    runtime_fast = overrides_fast.get("runtime", {})
+    assert isinstance(runtime_fast, dict)
+    assert bool(runtime_fast.get("verify_fail_fast")) is True
+    assert bool(runtime_fast.get("verify_cache_enabled")) is True
+    assert bool(runtime_fast.get("verify_cache_failed_results")) is True
+
+    result_full = mcp_server._tool_verify(
+        project=str(project_dir),
+        changed_files=["src/a.py"],
+        verify_preset="full",
+        verify_fail_fast=True,  # explicit override should win
+    )
+    assert result_full["status"] == "success"
+    overrides_full = captured.get("cli_overrides")
+    assert isinstance(overrides_full, dict)
+    runtime_full = overrides_full.get("runtime", {})
+    assert isinstance(runtime_full, dict)
+    assert bool(runtime_full.get("verify_cache_enabled")) is False
+    assert bool(runtime_full.get("verify_fail_fast")) is True
+
+
 def test_verify_starts_async_by_default(tmp_path: Path, monkeypatch) -> None:
     project_dir = tmp_path / "sync_wait_project"
     project_dir.mkdir(parents=True)
@@ -1464,6 +1759,114 @@ def test_sync_verify_returns_running_when_wait_window_exceeded(tmp_path: Path, m
     assert final_status.get("state") == mcp_server.JobState.COMPLETED
 
 
+def test_sync_verify_wait_runtime_default_is_capped_for_rpc_safety(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "sync_verify_runtime_wait_project"
+    project_dir.mkdir(parents=True)
+
+    captured: dict[str, float] = {}
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda *args, **kwargs: {
+            "runtime": {
+                "accel_home": str(tmp_path / ".accel-home"),
+                "sync_verify_wait_seconds": 180.0,
+                "sync_verify_timeout_action": "poll",
+                "sync_verify_cancel_grace_seconds": 1.0,
+            }
+        },
+    )
+
+    monkeypatch.setattr(
+        mcp_server,
+        "run_verify_with_callback",
+        lambda project_dir, config, changed_files=None, callback=None: {
+            "status": "success",
+            "exit_code": 0,
+            "nonce": "runtime_wait_nonce",
+            "log_path": str(tmp_path / "verify.log"),
+            "jsonl_path": str(tmp_path / "verify.jsonl"),
+            "commands": [],
+            "results": [],
+            "degraded": False,
+            "fail_fast": False,
+            "fail_fast_skipped_commands": [],
+            "cache_enabled": False,
+            "cache_hits": 0,
+            "cache_misses": 0,
+        },
+    )
+
+    def fake_wait_for_verify(job_id: str, *, max_wait_seconds: float, poll_seconds: float):
+        captured["wait_seconds"] = float(max_wait_seconds)
+        return {"status": "success", "exit_code": 0, "job_id": job_id}
+
+    monkeypatch.setattr(mcp_server, "_wait_for_verify_job_result", fake_wait_for_verify)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    verify_fn = tools["accel_verify"].fn
+
+    result = verify_fn(project=str(project_dir), wait_for_completion=True)
+    assert result["status"] == "success"
+    assert float(captured.get("wait_seconds", 0.0)) == 45.0
+
+
+def test_sync_verify_wait_explicit_override_bypasses_rpc_safety_cap(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "sync_verify_explicit_wait_project"
+    project_dir.mkdir(parents=True)
+
+    captured: dict[str, float] = {}
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda *args, **kwargs: {
+            "runtime": {
+                "accel_home": str(tmp_path / ".accel-home"),
+                "sync_verify_wait_seconds": 45.0,
+                "sync_verify_timeout_action": "poll",
+                "sync_verify_cancel_grace_seconds": 1.0,
+            }
+        },
+    )
+
+    monkeypatch.setattr(
+        mcp_server,
+        "run_verify_with_callback",
+        lambda project_dir, config, changed_files=None, callback=None: {
+            "status": "success",
+            "exit_code": 0,
+            "nonce": "runtime_wait_nonce_2",
+            "log_path": str(tmp_path / "verify2.log"),
+            "jsonl_path": str(tmp_path / "verify2.jsonl"),
+            "commands": [],
+            "results": [],
+            "degraded": False,
+            "fail_fast": False,
+            "fail_fast_skipped_commands": [],
+            "cache_enabled": False,
+            "cache_hits": 0,
+            "cache_misses": 0,
+        },
+    )
+
+    def fake_wait_for_verify(job_id: str, *, max_wait_seconds: float, poll_seconds: float):
+        captured["wait_seconds"] = float(max_wait_seconds)
+        return {"status": "success", "exit_code": 0, "job_id": job_id}
+
+    monkeypatch.setattr(mcp_server, "_wait_for_verify_job_result", fake_wait_for_verify)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    verify_fn = tools["accel_verify"].fn
+
+    result = verify_fn(project=str(project_dir), wait_for_completion=True, sync_wait_seconds=180)
+    assert result["status"] == "success"
+    assert float(captured.get("wait_seconds", 0.0)) == 180.0
+
+
 def test_sync_verify_timeout_action_cancel_finalizes_job(tmp_path: Path, monkeypatch) -> None:
     project_dir = tmp_path / "sync_timeout_cancel_project"
     project_dir.mkdir(parents=True)
@@ -1791,6 +2194,56 @@ def test_verify_status_exposes_partial_fields_from_completed_result() -> None:
     assert isinstance(payload.get("unfinished_commands"), list)
 
 
+def test_verify_status_exposes_failure_classification_from_completed_result() -> None:
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+    job = jm.create_job()
+    job.mark_running("running")
+    job.mark_completed(
+        status="failed",
+        exit_code=3,
+        result={
+            "status": "failed",
+            "exit_code": 3,
+            "failure_kind": "project_gate_failed",
+            "failed_commands": ["pytest -q tests/test_auth.py"],
+            "executor_failed_commands": [],
+            "project_failed_commands": ["pytest -q tests/test_auth.py"],
+            "failure_counts": {"failed_total": 1, "executor_failed": 0, "project_failed": 1},
+        },
+    )
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    status_fn = tools["accel_verify_status"].fn
+    payload = status_fn(job_id=job.job_id)
+
+    assert payload.get("state") == mcp_server.JobState.COMPLETED
+    assert payload.get("status") == "failed"
+    assert payload.get("failure_kind") == "project_gate_failed"
+    assert isinstance(payload.get("project_failed_commands"), list)
+    failure_counts = payload.get("failure_counts", {})
+    assert isinstance(failure_counts, dict)
+    assert int(failure_counts.get("project_failed", 0)) == 1
+
+
+def test_verify_status_clamps_finalizing_progress_before_terminal_transition() -> None:
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+    job = jm.create_job()
+    job.mark_running("running")
+    job.update_progress(2, 2, "")
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    status_fn = tools["accel_verify_status"].fn
+    payload = status_fn(job_id=job.job_id)
+
+    assert payload.get("state") == mcp_server.JobState.RUNNING
+    assert float(payload.get("progress", 0.0)) < 100.0
+    assert payload.get("state_consistency") == "finalizing"
+
+
 def test_sync_index_timeout_returns_running_then_completes(tmp_path: Path, monkeypatch) -> None:
     project_dir = tmp_path / "sync_index_timeout_project"
     project_dir.mkdir(parents=True)
@@ -1800,6 +2253,16 @@ def test_sync_index_timeout_returns_running_then_completes(tmp_path: Path, monke
 
     monkeypatch.setattr(mcp_server, "_sync_index_wait_seconds", 1)
     monkeypatch.setattr(mcp_server, "_sync_index_poll_seconds", 0.05)
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda *args, **kwargs: {
+            "runtime": {
+                "accel_home": str(tmp_path / ".accel-home"),
+                "sync_index_wait_seconds": 1.0,
+            }
+        },
+    )
 
     def fake_tool_index_build(project: str = ".", full: bool = True):
         time.sleep(1.3)
@@ -1829,6 +2292,88 @@ def test_sync_index_timeout_returns_running_then_completes(tmp_path: Path, monke
             break
         time.sleep(0.1)
     assert final_status.get("state") == mcp_server.JobState.COMPLETED
+
+
+def test_sync_index_wait_runtime_default_is_capped_for_rpc_safety(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "sync_index_runtime_wait_project"
+    project_dir.mkdir(parents=True)
+
+    captured: dict[str, float] = {}
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda *args, **kwargs: {
+            "runtime": {
+                "accel_home": str(tmp_path / ".accel-home"),
+                "sync_index_wait_seconds": 205.0,
+            }
+        },
+    )
+
+    class _DummyJob:
+        job_id = "index_runtime_wait_01"
+
+        @staticmethod
+        def to_status():
+            return {"state": "running", "stage": "indexing", "progress": 0.0, "elapsed_sec": 0.0}
+
+    monkeypatch.setattr(mcp_server, "_start_index_job", lambda **kwargs: _DummyJob())
+
+    def fake_wait_for_index(job_id: str, *, max_wait_seconds: float, poll_seconds: float):
+        captured["wait_seconds"] = float(max_wait_seconds)
+        return {"status": "ok", "exit_code": 0, "job_id": job_id, "timed_out": False}
+
+    monkeypatch.setattr(mcp_server, "_wait_for_index_job_result", fake_wait_for_index)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    build_fn = tools["accel_index_build"].fn
+
+    result = build_fn(project=str(project_dir), full=True, wait_for_completion=True)
+    assert result["status"] == "ok"
+    assert float(captured.get("wait_seconds", 0.0)) == 45.0
+
+
+def test_sync_index_wait_explicit_override_bypasses_rpc_safety_cap(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "sync_index_explicit_wait_project"
+    project_dir.mkdir(parents=True)
+
+    captured: dict[str, float] = {}
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda *args, **kwargs: {
+            "runtime": {
+                "accel_home": str(tmp_path / ".accel-home"),
+                "sync_index_wait_seconds": 45.0,
+            }
+        },
+    )
+
+    class _DummyJob:
+        job_id = "index_runtime_wait_02"
+
+        @staticmethod
+        def to_status():
+            return {"state": "running", "stage": "indexing", "progress": 0.0, "elapsed_sec": 0.0}
+
+    monkeypatch.setattr(mcp_server, "_start_index_job", lambda **kwargs: _DummyJob())
+
+    def fake_wait_for_index(job_id: str, *, max_wait_seconds: float, poll_seconds: float):
+        captured["wait_seconds"] = float(max_wait_seconds)
+        return {"status": "ok", "exit_code": 0, "job_id": job_id, "timed_out": False}
+
+    monkeypatch.setattr(mcp_server, "_wait_for_index_job_result", fake_wait_for_index)
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    build_fn = tools["accel_index_build"].fn
+
+    result = build_fn(project=str(project_dir), full=True, wait_for_completion=True, sync_wait_seconds=205)
+    assert result["status"] == "ok"
+    assert float(captured.get("wait_seconds", 0.0)) == 205.0
 
 
 def test_sync_index_returns_manifest_for_fast_job(tmp_path: Path, monkeypatch) -> None:
@@ -1960,6 +2505,23 @@ def test_index_progress_events_expose_file_metrics(tmp_path: Path, monkeypatch) 
     assert isinstance(progress_summary, dict)
     assert "processed_files" in progress_summary
     assert "total_files" in progress_summary
+
+
+def test_index_status_clamps_finalizing_progress_before_terminal_transition() -> None:
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+    job = jm.create_job(prefix="index")
+    job.mark_running("indexing")
+    job.update_progress(3, 3, "")
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    status_fn = tools["accel_index_status"].fn
+
+    payload = status_fn(job_id=job.job_id)
+    assert payload.get("state") == mcp_server.JobState.RUNNING
+    assert float(payload.get("progress_pct", 0.0)) < 100.0
+    assert payload.get("state_consistency") == "finalizing"
 
 
 def test_verify_events_capture_stream_output_and_stall_signal(tmp_path: Path, monkeypatch) -> None:

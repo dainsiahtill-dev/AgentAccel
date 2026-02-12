@@ -62,8 +62,13 @@ DEFAULT_LOCAL_CONFIG: dict[str, Any] = {
         "verify_stall_timeout_seconds": 20.0,
         "verify_auto_cancel_on_stall": False,
         "verify_max_wall_time_seconds": 3600.0,
+        "context_rpc_timeout_seconds": 300.0,
+        "sync_verify_wait_seconds": 45.0,
+        "sync_index_wait_seconds": 45.0,
+        "sync_context_wait_seconds": 45.0,
         "sync_verify_timeout_action": "poll",
         "sync_verify_cancel_grace_seconds": 5.0,
+        "sync_context_timeout_action": "fallback_async",
         "token_estimator_backend": "auto",
         "token_estimator_encoding": "cl100k_base",
         "token_estimator_model": "",
@@ -211,6 +216,18 @@ def _normalize_timeout_action(value: Any, default_value: str = "poll") -> str:
     return fallback if fallback in {"poll", "cancel"} else "poll"
 
 
+def _normalize_context_timeout_action(value: Any, default_value: str = "fallback_async") -> str:
+    token = str(value or default_value).strip().lower()
+    if token == "poll":
+        token = "fallback_async"
+    if token in {"fallback_async", "cancel"}:
+        return token
+    fallback = str(default_value or "fallback_async").strip().lower()
+    if fallback == "poll":
+        fallback = "fallback_async"
+    return fallback if fallback in {"fallback_async", "cancel"} else "fallback_async"
+
+
 def _normalize_constraint_mode(value: Any, default_value: str = "warn") -> str:
     token = str(value or default_value).strip().lower()
     if token in {"enforce", "error", "errors"}:
@@ -326,6 +343,26 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
             os.environ["ACCEL_VERIFY_MAX_WALL_TIME_SECONDS"],
             default_wall_time,
         )
+    if os.environ.get("ACCEL_CONTEXT_RPC_TIMEOUT_SECONDS"):
+        runtime["context_rpc_timeout_seconds"] = _normalize_positive_float(
+            os.environ["ACCEL_CONTEXT_RPC_TIMEOUT_SECONDS"],
+            float(runtime.get("context_rpc_timeout_seconds", 300.0)),
+        )
+    if os.environ.get("ACCEL_SYNC_VERIFY_WAIT_SECONDS"):
+        runtime["sync_verify_wait_seconds"] = _normalize_positive_float(
+            os.environ["ACCEL_SYNC_VERIFY_WAIT_SECONDS"],
+            float(runtime.get("sync_verify_wait_seconds", 45.0)),
+        )
+    if os.environ.get("ACCEL_SYNC_INDEX_WAIT_SECONDS"):
+        runtime["sync_index_wait_seconds"] = _normalize_positive_float(
+            os.environ["ACCEL_SYNC_INDEX_WAIT_SECONDS"],
+            float(runtime.get("sync_index_wait_seconds", 45.0)),
+        )
+    if os.environ.get("ACCEL_SYNC_CONTEXT_WAIT_SECONDS"):
+        runtime["sync_context_wait_seconds"] = _normalize_positive_float(
+            os.environ["ACCEL_SYNC_CONTEXT_WAIT_SECONDS"],
+            float(runtime.get("sync_context_wait_seconds", 45.0)),
+        )
     if os.environ.get("ACCEL_TOKEN_ESTIMATOR_BACKEND"):
         runtime["token_estimator_backend"] = str(os.environ["ACCEL_TOKEN_ESTIMATOR_BACKEND"]).strip().lower()
     if os.environ.get("ACCEL_TOKEN_ESTIMATOR_ENCODING"):
@@ -403,6 +440,11 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         runtime["sync_verify_cancel_grace_seconds"] = _normalize_positive_float(
             os.environ["ACCEL_SYNC_VERIFY_CANCEL_GRACE_SECONDS"],
             float(runtime.get("sync_verify_cancel_grace_seconds", 5.0)),
+        )
+    if os.environ.get("ACCEL_SYNC_CONTEXT_TIMEOUT_ACTION"):
+        runtime["sync_context_timeout_action"] = _normalize_context_timeout_action(
+            os.environ["ACCEL_SYNC_CONTEXT_TIMEOUT_ACTION"],
+            str(runtime.get("sync_context_timeout_action", "fallback_async")),
         )
     if os.environ.get("ACCEL_GPU_ENABLED") is not None:
         gpu["enabled"] = _normalize_bool(os.environ["ACCEL_GPU_ENABLED"], False)
@@ -517,6 +559,22 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
         runtime.get("verify_max_wall_time_seconds", runtime.get("total_verify_timeout_seconds", 3600.0)),
         default_value=float(runtime.get("total_verify_timeout_seconds", 3600.0)),
     )
+    runtime["context_rpc_timeout_seconds"] = _normalize_positive_float(
+        runtime.get("context_rpc_timeout_seconds", 300.0),
+        default_value=300.0,
+    )
+    runtime["sync_verify_wait_seconds"] = _normalize_positive_float(
+        runtime.get("sync_verify_wait_seconds", 45.0),
+        default_value=45.0,
+    )
+    runtime["sync_index_wait_seconds"] = _normalize_positive_float(
+        runtime.get("sync_index_wait_seconds", 45.0),
+        default_value=45.0,
+    )
+    runtime["sync_context_wait_seconds"] = _normalize_positive_float(
+        runtime.get("sync_context_wait_seconds", 45.0),
+        default_value=45.0,
+    )
     runtime["token_estimator_backend"] = str(runtime.get("token_estimator_backend", "auto")).strip().lower() or "auto"
     if runtime["token_estimator_backend"] not in {"auto", "tiktoken", "heuristic"}:
         runtime["token_estimator_backend"] = "auto"
@@ -582,6 +640,10 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
     runtime["sync_verify_cancel_grace_seconds"] = _normalize_positive_float(
         runtime.get("sync_verify_cancel_grace_seconds", 5.0),
         default_value=5.0,
+    )
+    runtime["sync_context_timeout_action"] = _normalize_context_timeout_action(
+        runtime.get("sync_context_timeout_action", "fallback_async"),
+        default_value="fallback_async",
     )
 
     accel_home = runtime.get("accel_home")

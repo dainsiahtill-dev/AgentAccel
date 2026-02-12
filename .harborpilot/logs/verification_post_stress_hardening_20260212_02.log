@@ -1,0 +1,40 @@
+﻿VERIFICATION_START post_stress_hardening_20260212_02 2026-02-12T07:56:17.1476503Z
+RUN_ID run_20260212_post_stress_hardening
+WORKDIR X:\MCPs\agent-accel
+GIT_BRANCH main
+GIT_HEAD 4d3c6c2231c0bd1e4809e888cfb8d51bddb1b71c
+PYTHON_VERSION Python 3.14.2
+GATESET full
+CMD_START [py_compile_mcp_server] python -m py_compile accel/mcp_server.py
+CMD_EXIT [py_compile_mcp_server] code=0 elapsed_sec=0.3
+
+CMD_START [py_compile_config] python -m py_compile accel/config.py
+CMD_EXIT [py_compile_config] code=0 elapsed_sec=0.26
+
+CMD_START [pytest_unit_mcp_server] pytest -q tests/unit/test_mcp_server.py
+CMD_EXIT [pytest_unit_mcp_server] code=0 elapsed_sec=12.24
+OUT [pytest_unit_mcp_server] .................................................                        [100%]
+OUT [pytest_unit_mcp_server] 49 passed in 9.86s
+
+CMD_START [pytest_unit_config] pytest -q tests/unit/test_config.py
+CMD_EXIT [pytest_unit_config] code=0 elapsed_sec=1.8
+OUT [pytest_unit_config] .....                                                                    [100%]
+OUT [pytest_unit_config] 5 passed in 0.11s
+
+CMD_START [pytest_tests] pytest -q tests
+CMD_EXIT [pytest_tests] code=0 elapsed_sec=16.39
+OUT [pytest_tests] ........................................................................ [ 70%]
+OUT [pytest_tests] ..............................                                           [100%]
+OUT [pytest_tests] 102 passed in 13.42s
+
+CMD_START [ruff] ruff check .
+CMD_EXIT [ruff] code=0 elapsed_sec=0.06
+OUT [ruff] All checks passed!
+
+CMD_START [mypy] mypy .
+CMD_EXIT [mypy] code=0 elapsed_sec=1.22
+OUT [mypy] accel\mcp_server.py:1105: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+OUT [mypy] accel\mcp_server.py:1106: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+OUT [mypy] Success: no issues found in 36 source files
+
+VERIFICATION_END post_stress_hardening_20260212_02 2026-02-12T07:56:49.7623906Z

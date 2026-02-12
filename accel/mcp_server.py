@@ -60,12 +60,27 @@ _sync_verify_wait_seconds = int(os.environ.get("ACCEL_MCP_SYNC_VERIFY_WAIT_SECON
 _sync_verify_poll_seconds = float(os.environ.get("ACCEL_MCP_SYNC_VERIFY_POLL_SECONDS", "0.2"))
 _sync_index_wait_seconds = int(os.environ.get("ACCEL_MCP_SYNC_INDEX_WAIT_SECONDS", "45"))
 _sync_index_poll_seconds = float(os.environ.get("ACCEL_MCP_SYNC_INDEX_POLL_SECONDS", "0.2"))
+_sync_context_wait_seconds = int(os.environ.get("ACCEL_MCP_SYNC_CONTEXT_WAIT_SECONDS", "45"))
+_sync_context_poll_seconds = float(os.environ.get("ACCEL_MCP_SYNC_CONTEXT_POLL_SECONDS", "0.2"))
 _FALSE_LITERALS = {"", "0", "false", "no", "off", "none", "null", "undefined", "pydanticundefined"}
 _TRUE_LITERALS = {"1", "true", "yes", "on"}
 _SYNC_TIMEOUT_ACTIONS = {"poll", "cancel"}
+_CONTEXT_SYNC_TIMEOUT_ACTIONS = {"fallback_async", "cancel"}
+_SYNC_WAIT_SECONDS_MAX = 7200.0
+_SYNC_WAIT_RPC_SAFE_SECONDS = 45.0
 _SEMANTIC_CACHE_MODE_ALIASES = {
     "readwrite": "hybrid",
+    "read_write": "hybrid",
+    "read-write": "hybrid",
     "rw": "hybrid",
+}
+_VERIFY_PRESET_ALIASES = {
+    "quick": "fast",
+    "speed": "fast",
+    "full_check": "full",
+    "evidence": "full",
+    "balanced": "full",
+    "default": "full",
 }
 _VERIFY_OUTPUT_CHUNK_LIMIT = 600
 
@@ -128,7 +143,7 @@ def _debug_log(message: str) -> None:
 
 
 def _effective_sync_verify_wait_seconds() -> int:
-    return max(1, min(50, int(_sync_verify_wait_seconds)))
+    return max(1, int(min(_SYNC_WAIT_SECONDS_MAX, float(_sync_verify_wait_seconds))))
 
 
 def _effective_sync_verify_poll_seconds() -> float:
@@ -136,11 +151,41 @@ def _effective_sync_verify_poll_seconds() -> float:
 
 
 def _effective_sync_index_wait_seconds() -> int:
-    return max(1, min(50, int(_sync_index_wait_seconds)))
+    return max(1, int(min(_SYNC_WAIT_SECONDS_MAX, float(_sync_index_wait_seconds))))
 
 
 def _effective_sync_index_poll_seconds() -> float:
     return max(0.05, float(_sync_index_poll_seconds))
+
+
+def _effective_sync_context_wait_seconds() -> int:
+    return max(1, int(min(_SYNC_WAIT_SECONDS_MAX, float(_sync_context_wait_seconds))))
+
+
+def _effective_sync_context_poll_seconds() -> float:
+    return max(0.05, float(_sync_context_poll_seconds))
+
+
+def _normalize_job_status_payload(status_payload: JSONDict) -> JSONDict:
+    normalized = dict(status_payload)
+    state = str(normalized.get("state", "")).strip().lower()
+    completed = max(0, int(normalized.get("completed_commands", 0) or 0))
+    total = max(0, int(normalized.get("total_commands", 0) or 0))
+    progress = float(normalized.get("progress", 0.0) or 0.0)
+    if total > 0:
+        derived_progress = (float(completed) / float(total)) * 100.0
+        if abs(progress - derived_progress) > 0.5:
+            progress = derived_progress
+    progress = max(0.0, min(100.0, progress))
+    consistency = "normal"
+    if state in {JobState.PENDING, JobState.RUNNING, JobState.CANCELLING} and total > 0 and completed >= total:
+        progress = min(progress, 99.9)
+        consistency = "finalizing"
+    elif state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED} and total > 0 and completed >= total:
+        progress = 100.0
+    normalized["progress"] = round(progress, 2)
+    normalized["state_consistency"] = consistency
+    return normalized
 
 
 def _coerce_bool(value: Any, default: bool = False) -> bool:
@@ -187,7 +232,7 @@ def _resolve_semantic_cache_mode(value: Any, *, default_mode: str) -> str:
         return token
     if value is None:
         return "hybrid"
-    raise ValueError("semantic_cache_mode must be one of exact|hybrid (aliases: readwrite|rw)")
+    raise ValueError("semantic_cache_mode must be one of exact|hybrid (aliases: readwrite|read_write|read-write|rw)")
 
 
 def _resolve_constraint_mode(value: Any, *, default_mode: str = "warn") -> str:
@@ -198,6 +243,18 @@ def _resolve_constraint_mode(value: Any, *, default_mode: str = "warn") -> str:
     if raw in {"off", "warn", "strict", "enforce", "error", "errors", "on", "default"}:
         return normalized
     raise ValueError("constraint_mode must be one of off|warn|strict (alias: enforce)")
+
+
+def _resolve_verify_preset(value: Any) -> str | None:
+    if value is None:
+        return None
+    token = str(value).strip().lower()
+    if token in {"", "auto", "none"}:
+        return None
+    token = _VERIFY_PRESET_ALIASES.get(token, token)
+    if token in {"fast", "full"}:
+        return token
+    raise ValueError("verify_preset must be one of auto|fast|full")
 
 
 def _coerce_optional_int(value: Any) -> int | None:
@@ -253,6 +310,20 @@ def _coerce_sync_timeout_action(value: Any, default: str = "poll") -> str:
     if fallback in _SYNC_TIMEOUT_ACTIONS:
         return fallback
     return "poll"
+
+
+def _coerce_context_sync_timeout_action(value: Any, default: str = "fallback_async") -> str:
+    token = str(value or "").strip().lower()
+    if token == "poll":
+        token = "fallback_async"
+    if token in _CONTEXT_SYNC_TIMEOUT_ACTIONS:
+        return token
+    fallback = str(default or "fallback_async").strip().lower()
+    if fallback == "poll":
+        fallback = "fallback_async"
+    if fallback in _CONTEXT_SYNC_TIMEOUT_ACTIONS:
+        return fallback
+    return "fallback_async"
 
 
 def _coerce_events_limit(value: Any, default_value: int = 30, max_value: int = 500) -> int:
@@ -738,7 +809,7 @@ def _wait_for_verify_job_result(
 def _sync_verify_timeout_payload(job_id: str, wait_seconds: float, *, timeout_action: str = "poll") -> JSONDict:
     jm = JobManager()
     job = jm.get_job(job_id)
-    status = job.to_status() if job is not None else {}
+    status = _normalize_job_status_payload(job.to_status()) if job is not None else {}
     action = _coerce_sync_timeout_action(timeout_action, default="poll")
     return {
         "status": "running",
@@ -775,6 +846,108 @@ def _resolve_sync_timeout_defaults(project_dir: Path) -> tuple[str, float]:
     return action, grace_seconds
 
 
+def _resolve_sync_wait_seconds(
+    *,
+    project_dir: Path,
+    override_value: Any,
+    runtime_key: str,
+    fallback_seconds: float,
+    rpc_safe_cap_seconds: float | None = _SYNC_WAIT_RPC_SAFE_SECONDS,
+) -> float:
+    parsed_override = _coerce_optional_float(override_value)
+    if parsed_override is not None:
+        return _clamp_float(parsed_override, 1.0, _SYNC_WAIT_SECONDS_MAX)
+
+    wait_seconds = float(fallback_seconds)
+    try:
+        config = resolve_effective_config(project_dir)
+        runtime_cfg = config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {}
+        configured_value = _coerce_optional_float(runtime_cfg.get(runtime_key))
+        if configured_value is not None:
+            wait_seconds = configured_value
+    except Exception:
+        wait_seconds = float(fallback_seconds)
+    resolved = _clamp_float(wait_seconds, 1.0, _SYNC_WAIT_SECONDS_MAX)
+    cap_value = _coerce_optional_float(rpc_safe_cap_seconds)
+    if cap_value is not None and cap_value > 0:
+        resolved = min(resolved, _clamp_float(cap_value, 1.0, _SYNC_WAIT_SECONDS_MAX))
+    return resolved
+
+
+def _resolve_context_sync_timeout_action(project_dir: Path, override_value: Any = None) -> str:
+    action_override = str(override_value or "").strip().lower()
+    if action_override:
+        return _coerce_context_sync_timeout_action(action_override, default="fallback_async")
+    action = "fallback_async"
+    try:
+        config = resolve_effective_config(project_dir)
+        runtime_cfg = config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {}
+        action = _coerce_context_sync_timeout_action(
+            runtime_cfg.get("sync_context_timeout_action"),
+            default="fallback_async",
+        )
+    except Exception:
+        action = "fallback_async"
+    return action
+
+
+def _sync_context_timeout_payload(job_id: str, wait_seconds: float, *, timeout_action: str) -> JSONDict:
+    jm = JobManager()
+    job = jm.get_job(job_id)
+    status = _normalize_job_status_payload(job.to_status()) if job is not None else {}
+    action = _coerce_context_sync_timeout_action(timeout_action, default="fallback_async")
+    return {
+        "status": "running",
+        "exit_code": 124,
+        "timed_out": True,
+        "job_id": job_id,
+        "timeout_action": action,
+        "message": (
+            f"accel_context exceeded synchronous wait window ({wait_seconds:.1f}s); "
+            "switched to async polling. Use accel_context_status/accel_context_events."
+        ),
+        "poll_interval_sec": 1.0,
+        "state": status.get("state", "running"),
+        "stage": status.get("stage", "running"),
+        "progress": status.get("progress", 0.0),
+        "elapsed_sec": status.get("elapsed_sec", 0.0),
+    }
+
+
+def _timeout_cancel_payload_context(
+    *,
+    job_id: str,
+    wait_seconds: float,
+    cancel_requested: bool,
+) -> JSONDict:
+    jm = JobManager()
+    job = jm.get_job(job_id)
+    status = _normalize_job_status_payload(job.to_status()) if job is not None else {}
+    state = str(status.get("state", JobState.CANCELLED))
+    stage = str(status.get("stage", JobState.CANCELLED))
+    if cancel_requested and state != JobState.CANCELLED:
+        state = JobState.CANCELLED
+        stage = JobState.CANCELLED
+    return {
+        "status": "cancelled" if cancel_requested else "running",
+        "exit_code": 130 if cancel_requested else 124,
+        "timed_out": True,
+        "job_id": job_id,
+        "timeout_action": "cancel",
+        "auto_cancel_requested": bool(cancel_requested),
+        "message": (
+            f"accel_context exceeded synchronous wait window ({wait_seconds:.1f}s); auto-cancel requested."
+            if cancel_requested
+            else f"accel_context exceeded synchronous wait window ({wait_seconds:.1f}s); auto-cancel request failed."
+        ),
+        "poll_interval_sec": 1.0,
+        "state": state,
+        "stage": stage,
+        "progress": status.get("progress", 0.0),
+        "elapsed_sec": status.get("elapsed_sec", 0.0),
+    }
+
+
 def _timeout_cancel_payload(
     *,
     job_id: str,
@@ -783,7 +956,7 @@ def _timeout_cancel_payload(
 ) -> JSONDict:
     jm = JobManager()
     job = jm.get_job(job_id)
-    status = job.to_status() if job is not None else {}
+    status = _normalize_job_status_payload(job.to_status()) if job is not None else {}
     state = str(status.get("state", JobState.CANCELLED))
     stage = str(status.get("stage", JobState.CANCELLED))
     if cancel_requested and state != JobState.CANCELLED:
@@ -871,10 +1044,61 @@ def _wait_for_index_job_result(
         time.sleep(poll)
 
 
+def _wait_for_context_job_result(
+    job_id: str,
+    *,
+    max_wait_seconds: float,
+    poll_seconds: float,
+) -> JSONDict | None:
+    jm = JobManager()
+    deadline = time.perf_counter() + max(0.0, max_wait_seconds)
+    poll = max(0.05, poll_seconds)
+
+    while True:
+        job = jm.get_job(job_id)
+        if job is None:
+            return {
+                "status": "failed",
+                "exit_code": 1,
+                "job_id": job_id,
+                "error": "job_not_found",
+            }
+
+        if job.state == JobState.COMPLETED:
+            if isinstance(job.result, dict) and job.result:
+                payload = dict(job.result)
+            else:
+                payload = {"status": "ok", "exit_code": 0}
+            payload.setdefault("job_id", job_id)
+            payload.setdefault("timed_out", False)
+            return payload
+
+        if job.state == JobState.FAILED:
+            return {
+                "status": "failed",
+                "exit_code": 1,
+                "job_id": job_id,
+                "error": str(job.error or "context job failed"),
+                "timed_out": False,
+            }
+
+        if job.state == JobState.CANCELLED:
+            return {
+                "status": "cancelled",
+                "exit_code": 130,
+                "job_id": job_id,
+                "timed_out": False,
+            }
+
+        if time.perf_counter() >= deadline:
+            return None
+        time.sleep(poll)
+
+
 def _sync_index_timeout_payload(job_id: str, wait_seconds: float) -> JSONDict:
     jm = JobManager()
     job = jm.get_job(job_id)
-    status = job.to_status() if job is not None else {}
+    status = _normalize_job_status_payload(job.to_status()) if job is not None else {}
     return {
         "status": "running",
         "exit_code": 124,
@@ -893,6 +1117,7 @@ def _sync_index_timeout_payload(job_id: str, wait_seconds: float) -> JSONDict:
         "total_files": int(status.get("total_commands", 0) or 0),
         "current_path": str(status.get("current_command", "")),
         "eta_sec": status.get("eta_sec"),
+        "state_consistency": status.get("state_consistency", "normal"),
     }
 
 
@@ -941,12 +1166,15 @@ def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
                     current.update_progress(min(processed_files, total_files), total_files, current_path)
                 elif current_path:
                     current.current_command = current_path
+                progress_pct_value = float(current.progress)
+                if total_files > 0 and processed_files >= total_files and current.state == JobState.RUNNING:
+                    progress_pct_value = min(progress_pct_value, 99.9)
                 index_event_payload: JSONDict = {
                     "stage": stage_name,
                     "processed_files": int(processed_files),
                     "total_files": int(total_files),
                     "changed_files": int(changed_files),
-                    "progress_pct": round(float(current.progress), 2),
+                    "progress_pct": round(float(progress_pct_value), 2),
                     "eta_sec": round(float(current.eta_sec), 1) if current.eta_sec is not None else None,
                 }
                 if current_path:
@@ -1011,7 +1239,7 @@ def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
             current = jm.get_job(job_id)
             if current is None:
                 return
-            status = current.to_status()
+            status = _normalize_job_status_payload(current.to_status())
             state = str(status.get("state", ""))
             if state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}:
                 return
@@ -1046,10 +1274,30 @@ def _with_timeout(func, timeout_seconds: int = 300):
         start_time = time.perf_counter()
         _debug_log(f"Starting {func.__name__} with timeout {timeout_seconds}s")
         
+        result_holder: dict[str, Any] = {}
+        error_holder: dict[str, BaseException] = {}
+
+        def _target() -> None:
+            try:
+                result_holder["result"] = func(*args, **kwargs)
+            except BaseException as exc:  # noqa: BLE001
+                error_holder["error"] = exc
+
+        worker = threading.Thread(target=_target, daemon=True)
+        worker.start()
+
         try:
-            # This is a simple timeout implementation
-            # For more robust timeout handling, consider using async/await
-            result = func(*args, **kwargs)
+            timeout_value = max(1.0, float(timeout_seconds))
+            worker.join(timeout=timeout_value)
+            if worker.is_alive():
+                elapsed = time.perf_counter() - start_time
+                _debug_log(f"Timed out {func.__name__} after {elapsed:.3f}s")
+                raise TimeoutError(f"{func.__name__} timed out after {timeout_value:.1f}s")
+
+            if "error" in error_holder:
+                raise error_holder["error"]
+
+            result = result_holder.get("result")
             elapsed = time.perf_counter() - start_time
             _debug_log(f"Completed {func.__name__} in {elapsed:.3f}s")
             return result
@@ -2169,6 +2417,7 @@ def _tool_verify(
     verify_stall_timeout_seconds: float | None = None,
     verify_max_wall_time_seconds: float | None = None,
     verify_auto_cancel_on_stall: bool | str | None = None,
+    verify_preset: str | None = None,
     verify_fail_fast: bool | str | None = None,
     verify_cache_enabled: bool | str | None = None,
     verify_cache_failed_results: bool | str | None = None,
@@ -2188,6 +2437,7 @@ def _tool_verify(
     verify_cache_enabled = _coerce_optional_bool(verify_cache_enabled)
     verify_cache_failed_results = _coerce_optional_bool(verify_cache_failed_results)
     verify_auto_cancel_on_stall = _coerce_optional_bool(verify_auto_cancel_on_stall)
+    verify_preset_value = _resolve_verify_preset(verify_preset)
     verify_stall_timeout_value = _coerce_optional_float(verify_stall_timeout_seconds)
     verify_max_wall_time_value = _coerce_optional_float(verify_max_wall_time_seconds)
     
@@ -2214,7 +2464,15 @@ def _tool_verify(
     if constraint_mode is not None:
         runtime_overrides["constraint_mode"] = _resolve_constraint_mode(constraint_mode, default_mode="warn")
 
-    if evidence_run and not fast_loop:
+    if verify_preset_value == "fast":
+        runtime_overrides["verify_fail_fast"] = True
+        runtime_overrides["verify_cache_enabled"] = True
+        if verify_cache_failed_results is None:
+            runtime_overrides["verify_cache_failed_results"] = True
+    elif verify_preset_value == "full":
+        runtime_overrides["verify_fail_fast"] = False
+        runtime_overrides["verify_cache_enabled"] = False
+    elif evidence_run and not fast_loop:
         runtime_overrides["verify_fail_fast"] = False
         runtime_overrides["verify_cache_enabled"] = False
     elif fast_loop and not evidence_run:
@@ -2274,7 +2532,7 @@ def create_server() -> FastMCP:
             job_id = str(job.job_id).strip()
 
             if not wait_flag:
-                status_payload = job.to_status()
+                status_payload = _normalize_job_status_payload(job.to_status())
                 return {
                     "status": "started",
                     "exit_code": 0,
@@ -2290,11 +2548,12 @@ def create_server() -> FastMCP:
                     "elapsed_sec": status_payload.get("elapsed_sec", 0.0),
                 }
 
-            sync_wait_seconds_value = _coerce_optional_int(sync_wait_seconds)
-            wait_seconds = float(
-                sync_wait_seconds_value if sync_wait_seconds_value is not None else _effective_sync_index_wait_seconds()
+            wait_seconds = _resolve_sync_wait_seconds(
+                project_dir=_normalize_project_dir(project),
+                override_value=sync_wait_seconds,
+                runtime_key="sync_index_wait_seconds",
+                fallback_seconds=float(_effective_sync_index_wait_seconds()),
             )
-            wait_seconds = max(1.0, min(55.0, wait_seconds))
             result = _wait_for_index_job_result(
                 job_id,
                 max_wait_seconds=wait_seconds,
@@ -2322,7 +2581,7 @@ def create_server() -> FastMCP:
             job_id = str(job.job_id).strip()
 
             if not wait_flag:
-                status_payload = job.to_status()
+                status_payload = _normalize_job_status_payload(job.to_status())
                 return {
                     "status": "started",
                     "exit_code": 0,
@@ -2338,11 +2597,12 @@ def create_server() -> FastMCP:
                     "elapsed_sec": status_payload.get("elapsed_sec", 0.0),
                 }
 
-            sync_wait_seconds_value = _coerce_optional_int(sync_wait_seconds)
-            wait_seconds = float(
-                sync_wait_seconds_value if sync_wait_seconds_value is not None else _effective_sync_index_wait_seconds()
+            wait_seconds = _resolve_sync_wait_seconds(
+                project_dir=_normalize_project_dir(project),
+                override_value=sync_wait_seconds,
+                runtime_key="sync_index_wait_seconds",
+                fallback_seconds=float(_effective_sync_index_wait_seconds()),
             )
-            wait_seconds = max(1.0, min(55.0, wait_seconds))
             result = _wait_for_index_job_result(
                 job_id,
                 max_wait_seconds=wait_seconds,
@@ -2365,7 +2625,7 @@ def create_server() -> FastMCP:
             job = jm.get_job(job_id)
             if job is None or not str(job_id).strip().lower().startswith("index_"):
                 return {"error": "job_not_found", "job_id": job_id}
-            status_payload = job.to_status()
+            status_payload = _normalize_job_status_payload(job.to_status())
             status_payload["processed_files"] = int(status_payload.get("completed_commands", 0) or 0)
             status_payload["total_files"] = int(status_payload.get("total_commands", 0) or 0)
             status_payload["current_path"] = str(status_payload.get("current_command", ""))
@@ -2415,7 +2675,7 @@ def create_server() -> FastMCP:
                 "since_seq": since_seq_value,
             }
             if include_summary_flag:
-                status_payload = job.to_status()
+                status_payload = _normalize_job_status_payload(job.to_status())
                 event_type_counts: JSONDict = {}
                 first_seq = 0
                 last_seq = 0
@@ -2469,6 +2729,223 @@ def create_server() -> FastMCP:
             _debug_log(f"accel_index_cancel failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
 
+    def _resolve_context_rpc_timeout_seconds(
+        *,
+        project_dir: Path,
+        rpc_timeout_seconds: Any = None,
+        config: JSONDict | None = None,
+    ) -> float:
+        timeout_override = _coerce_optional_int(rpc_timeout_seconds)
+        if timeout_override is not None:
+            return max(30.0, min(3600.0, float(timeout_override)))
+        effective_config = config if isinstance(config, dict) else resolve_effective_config(project_dir)
+        runtime_cfg = (
+            effective_config.get("runtime", {})
+            if isinstance(effective_config.get("runtime", {}), dict)
+            else {}
+        )
+        timeout_config = _coerce_optional_int(runtime_cfg.get("context_rpc_timeout_seconds"))
+        if timeout_config is None:
+            timeout_config = 300
+        return max(30.0, min(3600.0, float(timeout_config)))
+
+    def _summarize_context_events(events: list[dict[str, Any]], status: JSONDict) -> JSONDict:
+        event_type_counts: dict[str, int] = {}
+        first_seq = 0
+        last_seq = 0
+        latest_state = str(status.get("state", ""))
+        latest_stage = str(status.get("stage", ""))
+        latest_error = ""
+        terminal_event_seen = False
+        state_source = "job_state"
+        for event in events:
+            event_name = str(event.get("event", "")).strip().lower()
+            if not event_name:
+                continue
+            event_type_counts[event_name] = int(event_type_counts.get(event_name, 0)) + 1
+            seq = int(event.get("seq", 0) or 0)
+            if seq > 0:
+                if first_seq <= 0:
+                    first_seq = seq
+                last_seq = max(last_seq, seq)
+            state_value = str(event.get("state", "")).strip()
+            stage_value = str(event.get("stage", "")).strip()
+            if state_value:
+                latest_state = state_value
+                state_source = "events"
+            if stage_value:
+                latest_stage = stage_value
+            if event_name == "context_failed":
+                terminal_event_seen = True
+                latest_state = JobState.FAILED
+                latest_stage = "failed"
+                state_source = "event_terminal"
+                latest_error = str(event.get("error", "")).strip()
+            if event_name == "context_completed":
+                terminal_event_seen = True
+                latest_state = JobState.COMPLETED
+                latest_stage = "completed"
+                state_source = "event_terminal"
+            if event_name == "job_cancelled_finalized":
+                terminal_event_seen = True
+                latest_state = JobState.CANCELLED
+                latest_stage = "cancelled"
+                state_source = "event_terminal"
+        return {
+            "latest_state": latest_state or str(status.get("state", "")),
+            "latest_stage": latest_stage or str(status.get("stage", "")),
+            "state_source": state_source,
+            "terminal_event_seen": bool(terminal_event_seen),
+            "event_type_counts": event_type_counts,
+            "seq_range": {"first": int(first_seq), "last": int(last_seq)},
+            "latest_error": latest_error,
+            "constraint_repair_count": 0,
+        }
+
+    def _start_context_job(
+        *,
+        task: str,
+        project: str = ".",
+        changed_files: Any = None,
+        hints: Any = None,
+        feedback_path: str | None = None,
+        out: str | None = None,
+        include_pack: Any = False,
+        budget: Any = None,
+        strict_changed_files: Any = None,
+        snippets_only: Any = False,
+        include_metadata: Any = True,
+        semantic_cache: Any = None,
+        semantic_cache_mode: Any = None,
+        constraint_mode: Any = None,
+        rpc_timeout_seconds: Any = None,
+    ) -> VerifyJob:
+        task_text = str(task).strip()
+        if not task_text:
+            raise ValueError("task is required")
+        project_dir = _normalize_project_dir(project)
+        config_preview = resolve_effective_config(project_dir)
+        runtime_preview = (
+            config_preview.get("runtime", {})
+            if isinstance(config_preview.get("runtime", {}), dict)
+            else {}
+        )
+        _resolve_semantic_cache_mode(
+            semantic_cache_mode,
+            default_mode=str(runtime_preview.get("semantic_cache_mode", "hybrid")),
+        )
+        _resolve_constraint_mode(
+            constraint_mode,
+            default_mode=str(runtime_preview.get("constraint_mode", "warn")),
+        )
+        timeout_seconds = _resolve_context_rpc_timeout_seconds(
+            project_dir=project_dir,
+            rpc_timeout_seconds=rpc_timeout_seconds,
+            config=config_preview,
+        )
+
+        jm = JobManager()
+        job = jm.create_job(prefix="context")
+        changed_files_list = _to_string_list(changed_files)
+        hints_list = _to_string_list(hints)
+        job.add_event(
+            "context_queued",
+            {
+                "project": str(project_dir),
+                "changed_files_count": int(len(changed_files_list)),
+                "hints_count": int(len(hints_list)),
+                "timeout_seconds": float(timeout_seconds),
+            },
+        )
+
+        def _run_context_thread(job_id: str) -> None:
+            j = jm.get_job(job_id)
+            if j is None:
+                return
+            try:
+                j.mark_running("running")
+                j.update_progress(0, 1, "compile_context_pack")
+                j.add_live_event(
+                    "context_started",
+                    {
+                        "changed_files_count": int(len(changed_files_list)),
+                        "hints_count": int(len(hints_list)),
+                        "timeout_seconds": float(timeout_seconds),
+                    },
+                )
+                result = _with_timeout(_tool_context, timeout_seconds=int(timeout_seconds))(
+                    project=project,
+                    task=task_text,
+                    changed_files=changed_files,
+                    hints=hints,
+                    feedback_path=feedback_path,
+                    out=out,
+                    include_pack=include_pack,
+                    budget=budget,
+                    strict_changed_files=strict_changed_files,
+                    snippets_only=snippets_only,
+                    include_metadata=include_metadata,
+                    semantic_cache=semantic_cache,
+                    semantic_cache_mode=semantic_cache_mode,
+                    constraint_mode=constraint_mode,
+                )
+                if j.state in (JobState.CANCELLING, JobState.CANCELLED):
+                    if j.state != JobState.CANCELLED:
+                        j.mark_cancelled()
+                    j.add_event("job_cancelled_finalized", {"reason": "context_worker_observed_cancel"})
+                    return
+                j.update_progress(1, 1, "")
+                j.add_event(
+                    "context_completed",
+                    {
+                        "status": str(result.get("status", "ok")),
+                        "out": str(result.get("out", "")),
+                        "top_files": int(result.get("top_files", 0) or 0),
+                        "snippets": int(result.get("snippets", 0) or 0),
+                    },
+                )
+                j.mark_completed(str(result.get("status", "ok")), int(result.get("exit_code", 0) or 0), result)
+            except Exception as exc:
+                if j.state in (JobState.CANCELLING, JobState.CANCELLED):
+                    if j.state != JobState.CANCELLED:
+                        j.mark_cancelled()
+                    j.add_event("job_cancelled_finalized", {"reason": "context_worker_exception_after_cancel"})
+                    return
+                j.mark_failed(str(exc))
+                j.add_event("context_failed", {"error": str(exc)})
+
+        thread = threading.Thread(target=_run_context_thread, args=(job.job_id,), daemon=True)
+        thread.start()
+
+        def _heartbeat_thread(job_id: str) -> None:
+            while True:
+                current = jm.get_job(job_id)
+                if current is None:
+                    return
+                status = _normalize_job_status_payload(current.to_status())
+                state = str(status.get("state", ""))
+                if state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}:
+                    return
+                appended = current.add_live_event(
+                    "heartbeat",
+                    {
+                        "elapsed_sec": float(status.get("elapsed_sec", 0.0)),
+                        "eta_sec": status.get("eta_sec"),
+                        "state": state,
+                        "stage": status.get("stage", "running"),
+                        "progress": float(status.get("progress", 0.0)),
+                        "state_consistency": str(status.get("state_consistency", "normal")),
+                        "current_command": str(status.get("current_command", "")),
+                    },
+                )
+                if not appended:
+                    return
+                time.sleep(1.0)
+
+        hb = threading.Thread(target=_heartbeat_thread, args=(job.job_id,), daemon=True)
+        hb.start()
+        return job
+
     @server.tool(
         name="accel_context",
         description="Generate a budgeted context pack for a task.",
@@ -2488,11 +2965,21 @@ def create_server() -> FastMCP:
         semantic_cache: Any = None,
         semantic_cache_mode: Any = None,
         constraint_mode: Any = None,
+        rpc_timeout_seconds: Any = None,
+        wait_for_completion: Any = True,
+        sync_wait_seconds: Any = None,
+        sync_timeout_action: Any = None,
     ) -> JSONDict:
         try:
-            return _with_timeout(_tool_context, timeout_seconds=300)(
-                project=project,
+            wait_flag = _coerce_bool(wait_for_completion, True)
+            project_dir = _normalize_project_dir(project)
+            timeout_action_value = _resolve_context_sync_timeout_action(
+                project_dir=project_dir,
+                override_value=sync_timeout_action,
+            )
+            job = _start_context_job(
                 task=task,
+                project=project,
                 changed_files=changed_files,
                 hints=hints,
                 feedback_path=feedback_path,
@@ -2505,9 +2992,204 @@ def create_server() -> FastMCP:
                 semantic_cache=semantic_cache,
                 semantic_cache_mode=semantic_cache_mode,
                 constraint_mode=constraint_mode,
+                rpc_timeout_seconds=rpc_timeout_seconds,
+            )
+            job_id = str(job.job_id).strip()
+
+            if not wait_flag:
+                status_payload = _normalize_job_status_payload(job.to_status())
+                return {
+                    "status": "started",
+                    "exit_code": 0,
+                    "timed_out": False,
+                    "job_id": job_id,
+                    "message": "Context generation started asynchronously. Use accel_context_status/events for live progress.",
+                    "poll_interval_sec": 1.0,
+                    "state": status_payload.get("state", "pending"),
+                    "stage": status_payload.get("stage", "running"),
+                    "progress": status_payload.get("progress", 0.0),
+                    "elapsed_sec": status_payload.get("elapsed_sec", 0.0),
+                }
+
+            wait_seconds = _resolve_sync_wait_seconds(
+                project_dir=project_dir,
+                override_value=sync_wait_seconds,
+                runtime_key="sync_context_wait_seconds",
+                fallback_seconds=float(_effective_sync_context_wait_seconds()),
+            )
+            result = _wait_for_context_job_result(
+                job_id,
+                max_wait_seconds=wait_seconds,
+                poll_seconds=_effective_sync_context_poll_seconds(),
+            )
+            if result is not None:
+                return result
+
+            if timeout_action_value == "cancel":
+                jm = JobManager()
+                cancel_requested = False
+                job_for_cancel = jm.get_job(job_id)
+                if job_for_cancel is not None:
+                    cancel_requested = _finalize_job_cancel(job_for_cancel, reason="sync_timeout_auto_cancel")
+                return _timeout_cancel_payload_context(
+                    job_id=job_id,
+                    wait_seconds=wait_seconds,
+                    cancel_requested=cancel_requested,
+                )
+            return _sync_context_timeout_payload(
+                job_id,
+                wait_seconds,
+                timeout_action=timeout_action_value,
             )
         except Exception as exc:
             _debug_log(f"accel_context failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_context_start",
+        description="Start an async context-pack generation job. Returns job_id immediately.",
+    )
+    def accel_context_start(
+        task: str,
+        project: str = ".",
+        changed_files: Any = None,
+        hints: Any = None,
+        feedback_path: str | None = None,
+        out: str | None = None,
+        include_pack: Any = False,
+        budget: Any = None,
+        strict_changed_files: Any = None,
+        snippets_only: Any = False,
+        include_metadata: Any = True,
+        semantic_cache: Any = None,
+        semantic_cache_mode: Any = None,
+        constraint_mode: Any = None,
+        rpc_timeout_seconds: Any = None,
+    ) -> JSONDict:
+        try:
+            job = _start_context_job(
+                task=task,
+                project=project,
+                changed_files=changed_files,
+                hints=hints,
+                feedback_path=feedback_path,
+                out=out,
+                include_pack=include_pack,
+                budget=budget,
+                strict_changed_files=strict_changed_files,
+                snippets_only=snippets_only,
+                include_metadata=include_metadata,
+                semantic_cache=semantic_cache,
+                semantic_cache_mode=semantic_cache_mode,
+                constraint_mode=constraint_mode,
+                rpc_timeout_seconds=rpc_timeout_seconds,
+            )
+            return {"job_id": job.job_id, "status": "started"}
+        except Exception as exc:
+            _debug_log(f"accel_context_start failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_context_status",
+        description="Get current status of an async context generation job.",
+    )
+    def accel_context_status(job_id: str) -> JSONDict:
+        try:
+            jm = JobManager()
+            job = jm.get_job(job_id)
+            if job is None or not str(job_id).strip().lower().startswith("context_"):
+                return {"error": "job_not_found", "job_id": job_id}
+            status_payload = _normalize_job_status_payload(job.to_status())
+            if job.state == JobState.COMPLETED and isinstance(job.result, dict):
+                for key in (
+                    "status",
+                    "out",
+                    "out_meta",
+                    "top_files",
+                    "snippets",
+                    "selected_tests_count",
+                    "selected_checks_count",
+                    "warnings",
+                    "constraint_mode",
+                    "semantic_cache_hit",
+                ):
+                    if key in job.result:
+                        status_payload[key] = job.result.get(key)
+            status_payload["state_source"] = "job_state"
+            return status_payload
+        except Exception as exc:
+            _debug_log(f"accel_context_status failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_context_events",
+        description="Get context job events with optional summary and tail clipping.",
+    )
+    def accel_context_events(
+        job_id: str,
+        since_seq: int = 0,
+        max_events: Any = 30,
+        include_summary: Any = True,
+    ) -> JSONDict:
+        try:
+            jm = JobManager()
+            job = jm.get_job(job_id)
+            if job is None or not str(job_id).strip().lower().startswith("context_"):
+                return {"error": "job_not_found", "job_id": job_id}
+            since_seq_value = int(_coerce_optional_int(since_seq) or 0)
+            limit = _coerce_events_limit(max_events, default_value=30, max_value=500)
+            include_summary_flag = _coerce_bool(include_summary, True)
+            events_all = job.get_events(since_seq_value)
+            total_available = len(events_all)
+            truncated = False
+            if total_available > limit:
+                events = events_all[-limit:]
+                truncated = True
+            else:
+                events = events_all
+            payload: JSONDict = {
+                "job_id": job_id,
+                "events": events,
+                "count": len(events),
+                "total_available": total_available,
+                "truncated": truncated,
+                "max_events": limit,
+                "since_seq": since_seq_value,
+            }
+            if include_summary_flag:
+                status_payload = _normalize_job_status_payload(job.to_status())
+                payload["summary"] = _summarize_context_events(events_all, status_payload)
+            return payload
+        except Exception as exc:
+            _debug_log(f"accel_context_events failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_context_cancel",
+        description="Cancel a running async context generation job.",
+    )
+    def accel_context_cancel(job_id: str) -> JSONDict:
+        try:
+            jm = JobManager()
+            job = jm.get_job(job_id)
+            if job is None or not str(job_id).strip().lower().startswith("context_"):
+                return {"error": "job_not_found", "job_id": job_id}
+            if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+                return {
+                    "job_id": job_id,
+                    "status": job.state,
+                    "cancelled": False,
+                    "message": "Job already in terminal state",
+                }
+            _finalize_job_cancel(job, reason="user_request")
+            return {
+                "job_id": job_id,
+                "status": JobState.CANCELLED,
+                "cancelled": True,
+                "message": "Cancellation requested and finalized",
+            }
+        except Exception as exc:
+            _debug_log(f"accel_context_cancel failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
 
     def _start_verify_job(
@@ -2521,6 +3203,7 @@ def create_server() -> FastMCP:
         verify_stall_timeout_seconds: Any = None,
         verify_max_wall_time_seconds: Any = None,
         verify_auto_cancel_on_stall: bool | str | None = None,
+        verify_preset: Any = None,
         verify_fail_fast: bool | str | None = None,
         verify_cache_enabled: bool | str | None = None,
         verify_cache_failed_results: bool | str | None = None,
@@ -2538,6 +3221,7 @@ def create_server() -> FastMCP:
         verify_cache_enabled_normalized = _coerce_optional_bool(verify_cache_enabled)
         verify_cache_failed_results_normalized = _coerce_optional_bool(verify_cache_failed_results)
         verify_auto_cancel_on_stall_normalized = _coerce_optional_bool(verify_auto_cancel_on_stall)
+        verify_preset_value = _resolve_verify_preset(verify_preset)
         verify_workers_value = _coerce_optional_int(verify_workers)
         per_command_timeout_value = _coerce_optional_int(per_command_timeout_seconds)
         verify_stall_timeout_value = _coerce_optional_float(verify_stall_timeout_seconds)
@@ -2570,7 +3254,15 @@ def create_server() -> FastMCP:
         if constraint_mode is not None:
             runtime_overrides["constraint_mode"] = _resolve_constraint_mode(constraint_mode, default_mode="warn")
 
-        if evidence_run_normalized and not fast_loop_normalized:
+        if verify_preset_value == "fast":
+            runtime_overrides["verify_fail_fast"] = True
+            runtime_overrides["verify_cache_enabled"] = True
+            if verify_cache_failed_results_normalized is None:
+                runtime_overrides["verify_cache_failed_results"] = True
+        elif verify_preset_value == "full":
+            runtime_overrides["verify_fail_fast"] = False
+            runtime_overrides["verify_cache_enabled"] = False
+        elif evidence_run_normalized and not fast_loop_normalized:
             runtime_overrides["verify_fail_fast"] = False
             runtime_overrides["verify_cache_enabled"] = False
         elif fast_loop_normalized and not evidence_run_normalized:
@@ -2637,7 +3329,7 @@ def create_server() -> FastMCP:
                 current = jm.get_job(job_id)
                 if current is None:
                     return
-                status = current.to_status()
+                status = _normalize_job_status_payload(current.to_status())
                 state = str(status.get("state", ""))
                 if state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}:
                     return
@@ -2676,6 +3368,7 @@ def create_server() -> FastMCP:
         verify_stall_timeout_seconds: Any = None,
         verify_max_wall_time_seconds: Any = None,
         verify_auto_cancel_on_stall: Any = None,
+        verify_preset: Any = None,
         verify_fail_fast: bool | str | None = None,
         verify_cache_enabled: bool | str | None = None,
         verify_cache_failed_results: bool | str | None = None,
@@ -2702,6 +3395,7 @@ def create_server() -> FastMCP:
                 verify_stall_timeout_seconds=verify_stall_timeout_seconds,
                 verify_max_wall_time_seconds=verify_max_wall_time_seconds,
                 verify_auto_cancel_on_stall=verify_auto_cancel_on_stall,
+                verify_preset=verify_preset,
                 verify_fail_fast=verify_fail_fast,
                 verify_cache_enabled=verify_cache_enabled,
                 verify_cache_failed_results=verify_cache_failed_results,
@@ -2714,7 +3408,7 @@ def create_server() -> FastMCP:
             job_id = str(job.job_id).strip()
 
             if not wait_flag:
-                status_payload = job.to_status()
+                status_payload = _normalize_job_status_payload(job.to_status())
                 return {
                     "status": "started",
                     "exit_code": 0,
@@ -2728,11 +3422,12 @@ def create_server() -> FastMCP:
                     "elapsed_sec": status_payload.get("elapsed_sec", 0.0),
                 }
 
-            sync_wait_seconds_value = _coerce_optional_int(sync_wait_seconds)
-            wait_seconds = float(
-                sync_wait_seconds_value if sync_wait_seconds_value is not None else _effective_sync_verify_wait_seconds()
+            wait_seconds = _resolve_sync_wait_seconds(
+                project_dir=project_dir,
+                override_value=sync_wait_seconds,
+                runtime_key="sync_verify_wait_seconds",
+                fallback_seconds=float(_effective_sync_verify_wait_seconds()),
             )
-            wait_seconds = max(1.0, min(55.0, wait_seconds))
             default_timeout_action, default_cancel_grace = _resolve_sync_timeout_defaults(project_dir)
             timeout_action_value = _coerce_sync_timeout_action(sync_timeout_action, default=default_timeout_action)
             cancel_grace_value = _coerce_optional_float(sync_cancel_grace_seconds)
@@ -2827,9 +3522,12 @@ def create_server() -> FastMCP:
             if self._job.is_terminal():
                 return
             self._job.update_progress(completed, total, current_command)
+            progress_pct = float(self._job.progress)
+            if total > 0 and completed >= total and self._job.state in {JobState.RUNNING, JobState.CANCELLING}:
+                progress_pct = min(progress_pct, 99.9)
             self._job.add_live_event(
                 "progress",
-                {"completed": completed, "total": total, "progress_pct": round(self._job.progress, 1)},
+                {"completed": completed, "total": total, "progress_pct": round(progress_pct, 1)},
             )
 
         def on_heartbeat(
@@ -2932,6 +3630,7 @@ def create_server() -> FastMCP:
         verify_stall_timeout_seconds: Any = None,
         verify_max_wall_time_seconds: Any = None,
         verify_auto_cancel_on_stall: Any = None,
+        verify_preset: Any = None,
         verify_fail_fast: bool | str | None = None,
         verify_cache_enabled: bool | str | None = None,
         verify_cache_failed_results: bool | str | None = None,
@@ -2952,6 +3651,7 @@ def create_server() -> FastMCP:
                 verify_stall_timeout_seconds=verify_stall_timeout_seconds,
                 verify_max_wall_time_seconds=verify_max_wall_time_seconds,
                 verify_auto_cancel_on_stall=verify_auto_cancel_on_stall,
+                verify_preset=verify_preset,
                 verify_fail_fast=verify_fail_fast,
                 verify_cache_enabled=verify_cache_enabled,
                 verify_cache_failed_results=verify_cache_failed_results,
@@ -2979,7 +3679,7 @@ def create_server() -> FastMCP:
             job = jm.get_job(job_id)
             if job is None:
                 return {"error": "job_not_found", "job_id": job_id}
-            status_payload = job.to_status()
+            status_payload = _normalize_job_status_payload(job.to_status())
             if job.state == JobState.COMPLETED and isinstance(job.result, dict):
                 for key in (
                     "status",
@@ -2988,6 +3688,11 @@ def create_server() -> FastMCP:
                     "partial_reason",
                     "unfinished_commands",
                     "unfinished_items",
+                    "failure_kind",
+                    "failed_commands",
+                    "executor_failed_commands",
+                    "project_failed_commands",
+                    "failure_counts",
                     "timed_out",
                     "max_wall_time_seconds",
                     "auto_cancel_on_stall",
@@ -3070,7 +3775,7 @@ def create_server() -> FastMCP:
                 "since_seq": since_seq_value,
             }
             if include_summary_flag:
-                status_payload = job.to_status()
+                status_payload = _normalize_job_status_payload(job.to_status())
                 summary = _summarize_verify_events(events_all, status_payload)
                 summary_mode = normalize_constraint_mode(os.environ.get("ACCEL_CONSTRAINT_MODE", "warn"), default_mode="warn")
                 summary, summary_warnings, summary_repair_count = enforce_verify_summary_contract(

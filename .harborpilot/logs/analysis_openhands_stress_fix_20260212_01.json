@@ -1,0 +1,43 @@
+﻿{
+    "run_id":  "run_20260212_openhands_stress_fix",
+    "ts":  "2026-02-12T11:02:00.1049484Z",
+    "mode":  "S2",
+    "capabilities":  {
+                         "repo_read":  true,
+                         "repo_write":  true,
+                         "terminal":  true,
+                         "network":  true
+                     },
+    "contract":  {
+                     "goal":  "修复 OpenHands 压测暴露的非环境问题，提升同步接口可用性与结果可解释性。",
+                     "acceptance_criteria":  [
+                                                 "sync_wait 与同步调用窗口解耦，支持可配置 \u003e=180s，不再硬性夹到 55s。",
+                                                 "accel_context 同步接口超时时自动降级异步并返回 job_id，不再直接抛错。",
+                                                 "verify 返回明确失败分类：项目门禁失败 vs 执行器失败。",
+                                                 "Windows 下为 make install-pre-commit-hooks 提供兼容执行路径。"
+                                             ],
+                     "constraints":  [
+                                         "仅修复 agent-accel 自身问题，排除外部环境依赖缺失。",
+                                         "保持向后兼容：现有工具参数和基本状态字段不破坏。"
+                                     ]
+                 },
+    "risks":  [
+                  "同步等待窗口放宽会增加单次 MCP 调用占用时长。",
+                  "Windows 命令兼容映射若过宽可能误伤非目标命令。"
+              ],
+    "scope":  [
+                  "accel/mcp_server.py",
+                  "accel/config.py",
+                  "accel/verify/orchestrator.py",
+                  "examples/accel.yaml",
+                  "tests/unit/test_mcp_server.py",
+                  "tests/unit/test_config.py",
+                  "tests/unit/test_verify_orchestrator.py",
+                  "README.md"
+              ],
+    "budget":  {
+                   "touched_files_max":  20,
+                   "changed_loc_max":  1200,
+                   "deps":  "no new deps"
+               }
+}

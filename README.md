@@ -223,8 +223,12 @@ Generate a budgeted context pack for a task.
 | `snippets_only` | boolean \| string | `false` | Output lightweight pack containing only snippets |
 | `include_metadata` | boolean \| string | `true` | Include `meta` in generated pack payload |
 | `semantic_cache` | boolean \| string | `true` | Enable semantic context cache lookup/store |
-| `semantic_cache_mode` | string | `hybrid` | Cache lookup mode: `exact` or `hybrid` |
+| `semantic_cache_mode` | string | `hybrid` | Cache lookup mode: `exact` or `hybrid` (aliases: `readwrite`, `read_write`, `read-write`, `rw`) |
 | `constraint_mode` | string | `warn` | Output constraint behavior: `off` \| `warn` \| `strict` |
+| `wait_for_completion` | boolean \| string | `true` | Synchronous bounded wait for final result before fallback |
+| `sync_wait_seconds` | integer \| string | `null` | Override synchronous wait window for context polling |
+| `sync_timeout_action` | string | `fallback_async` | Timeout action: `fallback_async` (default) or `cancel` |
+| `rpc_timeout_seconds` | integer \| string | `null` | Hard timeout for context compilation worker (separate from sync wait) |
 
 `budget` string presets are aliases for common token envelopes. Example:
 
@@ -242,6 +246,7 @@ Generate a budgeted context pack for a task.
 - `budget`: adaptive policy (`tiny` for quick/small scope, `small` for daily usage, `medium` for complex scope)
 - `changed_files`: auto-discovered from git diff (worktree + staged) when available
 - if `changed_files` is still empty, `accel_context` continues with warning by default; set `runtime.context_require_changed_files=true` to enforce fail-fast
+- sync path defaults to bounded wait; when wait window is exceeded, `accel_context` returns `status=running` + `job_id` and continues asynchronously
 
 **Key response fields:**
 - `estimated_tokens`: tokenizer-based estimate for generated context payload (calibration applied)
@@ -306,7 +311,7 @@ Start incremental verification with runtime override options.
 | `command_plan_cache_enabled` | boolean \| string | `null` | Cache `select_verify_commands` planning output |
 | `constraint_mode` | string | `null` | Summary/output contract mode: `off` \| `warn` \| `strict` |
 | `wait_for_completion` | boolean \| string | `false` | Synchronous bounded wait for final result |
-| `sync_wait_seconds` | integer \| string | `null` | Override synchronous wait window (clamped) |
+| `sync_wait_seconds` | integer \| string | `null` | Override synchronous wait window (explicit override bypasses RPC-safe default cap) |
 | `sync_timeout_action` | string | `poll` | Timeout action: `poll` (default) or `cancel` |
 | `sync_cancel_grace_seconds` | number \| string | `null` | Extra grace window after auto-cancel request |
 
@@ -322,6 +327,8 @@ Start incremental verification with runtime override options.
   - `sync_timeout_action=poll`: return `timed_out=true` and keep job running for async polling.
   - `sync_timeout_action=cancel`: request auto-cancel and return cancelled timeout payload (no hanging job by default path).
 - `fast_loop=true` now defaults `verify_cache_failed_results=true` unless explicitly overridden, reducing repeat-failure cost in rapid loops.
+- Failure outputs include `failure_kind` (`project_gate_failed` | `executor_failed` | `mixed_failed`) for clearer diagnosis.
+- If verify plan resolves to zero commands, status is `degraded` (not `success`) with explicit `DEGRADE_REASON` to avoid false-positive green results.
 
 #### `accel_verify_events` (compact recommendations)
 
@@ -360,8 +367,13 @@ Tokenizer estimation runtime knobs (via `accel.local.yaml` runtime or env):
 - `verify_preflight_timeout_seconds`: timeout for preflight module probes (default `5`)
 - `constraint_mode`: output constraint mode `off|warn|strict` (default `warn`)
 - `rule_compression_enabled`: enable snippet rule compression (default `true`)
+- `sync_verify_wait_seconds`: default sync wait window for `accel_verify` (default `45.0`)
+- `sync_index_wait_seconds`: default sync wait window for `accel_index_build/update` (default `45.0`)
+- `sync_context_wait_seconds`: default sync wait window for `accel_context` (default `45.0`)
+- runtime `sync_*_wait_seconds` defaults are RPC-safe capped in MCP tools; pass per-call `sync_wait_seconds` to request a longer explicit wait.
 - `sync_verify_timeout_action`: `poll` | `cancel` (default `poll`)
 - `sync_verify_cancel_grace_seconds`: grace period after auto-cancel request (default `5.0`)
+- `sync_context_timeout_action`: `fallback_async` | `cancel` (default `fallback_async`)
 
 ### Running MCP Server
 

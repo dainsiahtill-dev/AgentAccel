@@ -110,6 +110,32 @@ def _preflight_warnings_for_command(
     return warnings
 
 
+def _resolve_windows_compatible_command(project_dir: Path, command: str) -> tuple[str, str]:
+    text = str(command or "").strip()
+    if os.name != "nt":
+        return text, ""
+    if not text:
+        return text, ""
+    binary = _command_binary(text).strip().lower()
+    if binary != "make":
+        return text, ""
+    if shutil.which("make") is not None:
+        return text, ""
+
+    parts = shlex.split(text, posix=False)
+    if len(parts) < 2:
+        return text, ""
+    target = str(parts[1]).strip().lower()
+    if target != "install-pre-commit-hooks":
+        return text, ""
+
+    # Windows-compatible fallback for the common make target used in Python projects.
+    fallback = "python -m pre_commit install"
+    if not shutil.which("python"):
+        fallback = "pre-commit install"
+    return fallback, "windows_make_target_compat:install-pre-commit-hooks"
+
+
 def _detect_missing_python_deps(results: list[dict[str, Any]]) -> list[str]:
     missing: set[str] = set()
     pattern = re.compile(r"ModuleNotFoundError:\s+No module named ['\"]([^'\"]+)['\"]")
@@ -397,6 +423,76 @@ def _write_cache_entries_atomic(cache_path: Path, entries: dict[str, dict[str, A
 
 def _is_failure(result: dict[str, Any]) -> bool:
     return int(result.get("exit_code", 1)) != 0
+
+
+def _is_executor_failure_result(result: dict[str, Any]) -> bool:
+    if bool(result.get("timed_out", False)):
+        return True
+    if bool(result.get("cancelled", False)):
+        return True
+    if bool(result.get("stalled", False)):
+        return True
+    cancel_reason = str(result.get("cancel_reason", "")).strip().lower()
+    if cancel_reason in {"external_cancel", "stall_timeout"}:
+        return True
+    stderr = str(result.get("stderr", "")).strip().lower()
+    if not stderr:
+        return False
+    markers = (
+        "agent-accel process error:",
+        "agent-accel error:",
+        "threadpool future error:",
+        "threadpool timeout",
+        "futures unfinished",
+    )
+    return any(marker in stderr for marker in markers)
+
+
+def _classify_verify_failures(results: list[dict[str, Any]]) -> dict[str, Any]:
+    failed_rows = [row for row in results if _is_failure(row)]
+    failed_commands: list[str] = []
+    executor_failed_commands: list[str] = []
+    project_failed_commands: list[str] = []
+    seen_failed: set[str] = set()
+    seen_executor: set[str] = set()
+    seen_project: set[str] = set()
+
+    for row in failed_rows:
+        command = str(row.get("command", "")).strip()
+        if not command:
+            continue
+        if command not in seen_failed:
+            failed_commands.append(command)
+            seen_failed.add(command)
+        if _is_executor_failure_result(row):
+            if command not in seen_executor:
+                executor_failed_commands.append(command)
+                seen_executor.add(command)
+        else:
+            if command not in seen_project:
+                project_failed_commands.append(command)
+                seen_project.add(command)
+
+    if not failed_rows:
+        failure_kind = "none"
+    elif executor_failed_commands and project_failed_commands:
+        failure_kind = "mixed_failed"
+    elif executor_failed_commands:
+        failure_kind = "executor_failed"
+    else:
+        failure_kind = "project_gate_failed"
+
+    return {
+        "failure_kind": failure_kind,
+        "failed_commands": failed_commands,
+        "executor_failed_commands": executor_failed_commands,
+        "project_failed_commands": project_failed_commands,
+        "failure_counts": {
+            "failed_total": int(len(failed_rows)),
+            "executor_failed": int(len(executor_failed_commands)),
+            "project_failed": int(len(project_failed_commands)),
+        },
+    }
 
 
 def _normalize_live_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -729,6 +825,7 @@ def run_verify(
     log_path = paths["verify"] / f"verify_{nonce}.log"
     jsonl_path = paths["verify"] / f"verify_{nonce}.jsonl"
     commands = select_verify_commands(config=config, changed_files=changed_files)
+    selected_commands_count = int(len(commands))
 
     _append_line(log_path, f"VERIFICATION_START {nonce} {_utc_now()}")
     _append_line(log_path, f"ENV cwd={project_dir} python={shutil.which('python') or ''}")
@@ -772,13 +869,38 @@ def run_verify(
 
     degraded = False
     degrade_reasons: list[str] = []
+    if selected_commands_count == 0:
+        degraded = True
+        degrade_reasons.append("no verify commands selected")
+        _append_line(log_path, "NO_COMMANDS selected verify command list is empty")
+        _append_jsonl(
+            jsonl_path,
+            {
+                "event": "verify_no_commands",
+                "reason": "no verify commands selected",
+                "ts": _utc_now(),
+            },
+        )
     import_probe_cache: dict[tuple[str, str], bool] = {}
     runnable_commands: list[str] = []
     for command in commands:
+        effective_command, compat_reason = _resolve_windows_compatible_command(project_dir, command)
+        if compat_reason:
+            _append_line(log_path, f"CMD_COMPAT {command} -> {effective_command} ({compat_reason})")
+            _append_jsonl(
+                jsonl_path,
+                {
+                    "event": "command_compat_resolved",
+                    "command": command,
+                    "resolved_command": effective_command,
+                    "reason": compat_reason,
+                    "ts": _utc_now(),
+                },
+            )
         if verify_preflight_enabled:
             warnings = _preflight_warnings_for_command(
                 project_dir=project_dir,
-                command=command,
+                command=effective_command,
                 timeout_seconds=verify_preflight_timeout_seconds,
                 import_probe_cache=import_probe_cache,
             )
@@ -786,27 +908,27 @@ def run_verify(
                 if warning not in degrade_reasons:
                     degrade_reasons.append(warning)
                 degraded = True
-                _append_line(log_path, f"PREFLIGHT_WARN {command} ({warning})")
+                _append_line(log_path, f"PREFLIGHT_WARN {effective_command} ({warning})")
                 _append_jsonl(
                     jsonl_path,
                     {
                         "event": "command_preflight_warning",
-                        "command": command,
+                        "command": effective_command,
                         "reason": warning,
                         "ts": _utc_now(),
                     },
                 )
-        binary = _command_binary(command)
+        binary = _command_binary(effective_command)
         if binary and shutil.which(binary) is None:
             degraded = True
             reason = f"missing command binary: {binary}"
             degrade_reasons.append(reason)
-            _append_line(log_path, f"SKIP {command} ({reason})")
+            _append_line(log_path, f"SKIP {effective_command} ({reason})")
             _append_jsonl(
                 jsonl_path,
                 {
                     "event": "command_skipped",
-                    "command": command,
+                    "command": effective_command,
                     "reason": reason,
                     "ts": _utc_now(),
                     "mode": verify_mode,
@@ -817,7 +939,8 @@ def run_verify(
                 },
             )
             continue
-        runnable_commands.append(command)
+        runnable_commands.append(effective_command)
+    runnable_commands_count = int(len(runnable_commands))
 
     results: list[dict[str, Any]] = []
     fail_fast_skipped_commands: list[str] = []
@@ -1215,6 +1338,8 @@ def run_verify(
         reason_text = "missing python dependencies: " + ", ".join(missing_python_deps)
         if reason_text not in degrade_reasons:
             degrade_reasons.append(reason_text)
+    failure_summary = _classify_verify_failures(results)
+    failure_kind = str(failure_summary.get("failure_kind", "none"))
     has_failure = any(_is_failure(item) for item in results)
     partial = bool(termination_reason or unfinished_items)
     if partial:
@@ -1232,6 +1357,15 @@ def run_verify(
     else:
         exit_code = 0
         status = "success"
+    if has_failure:
+        _append_line(log_path, f"FAILURE_KIND {failure_kind}")
+        _append_line(
+            log_path,
+            "FAILURE_COUNTS "
+            f"failed_total={int(failure_summary.get('failure_counts', {}).get('failed_total', 0))} "
+            f"executor_failed={int(failure_summary.get('failure_counts', {}).get('executor_failed', 0))} "
+            f"project_failed={int(failure_summary.get('failure_counts', {}).get('project_failed', 0))}",
+        )
 
     if degraded:
         reason_text = "; ".join(degrade_reasons) if degrade_reasons else "degraded execution"
@@ -1262,6 +1396,10 @@ def run_verify(
             "partial": bool(partial),
             "partial_reason": str(termination_reason),
             "unfinished_count": int(len(unfinished_items)),
+            "failure_kind": failure_kind,
+            "failure_counts": failure_summary.get("failure_counts", {}),
+            "selected_commands_count": int(selected_commands_count),
+            "runnable_commands_count": int(runnable_commands_count),
         },
     )
 
@@ -1286,6 +1424,13 @@ def run_verify(
         "partial_reason": str(termination_reason),
         "unfinished_items": unfinished_items,
         "unfinished_commands": [str(item.get("command", "")) for item in unfinished_items if str(item.get("command", "")).strip()],
+        "failure_kind": failure_kind,
+        "failed_commands": list(failure_summary.get("failed_commands", [])),
+        "executor_failed_commands": list(failure_summary.get("executor_failed_commands", [])),
+        "project_failed_commands": list(failure_summary.get("project_failed_commands", [])),
+        "failure_counts": dict(failure_summary.get("failure_counts", {})),
+        "selected_commands_count": int(selected_commands_count),
+        "runnable_commands_count": int(runnable_commands_count),
         "max_wall_time_seconds": float(verify_max_wall_time_seconds) if verify_max_wall_time_seconds is not None else None,
         "auto_cancel_on_stall": bool(verify_auto_cancel_on_stall),
         "timed_out": bool(termination_reason == "max_wall_time_exceeded"),
@@ -1345,6 +1490,7 @@ def run_verify_with_callback(
     log_path = paths["verify"] / f"verify_{nonce}.log"
     jsonl_path = paths["verify"] / f"verify_{nonce}.jsonl"
     commands = select_verify_commands(config=config, changed_files=changed_files)
+    selected_commands_count = int(len(commands))
     verify_started_at = time.perf_counter()
 
     callback.on_start(verify_job_id, len(commands))
@@ -1396,13 +1542,38 @@ def run_verify_with_callback(
 
     degraded = False
     degrade_reasons: list[str] = []
+    if selected_commands_count == 0:
+        degraded = True
+        degrade_reasons.append("no verify commands selected")
+        _append_line(log_path, "NO_COMMANDS selected verify command list is empty")
+        _append_jsonl(
+            jsonl_path,
+            {
+                "event": "verify_no_commands",
+                "reason": "no verify commands selected",
+                "ts": _utc_now(),
+            },
+        )
     import_probe_cache: dict[tuple[str, str], bool] = {}
     runnable_commands: list[str] = []
     for command in commands:
+        effective_command, compat_reason = _resolve_windows_compatible_command(project_dir, command)
+        if compat_reason:
+            _append_line(log_path, f"CMD_COMPAT {command} -> {effective_command} ({compat_reason})")
+            _append_jsonl(
+                jsonl_path,
+                {
+                    "event": "command_compat_resolved",
+                    "command": command,
+                    "resolved_command": effective_command,
+                    "reason": compat_reason,
+                    "ts": _utc_now(),
+                },
+            )
         if verify_preflight_enabled:
             warnings = _preflight_warnings_for_command(
                 project_dir=project_dir,
-                command=command,
+                command=effective_command,
                 timeout_seconds=verify_preflight_timeout_seconds,
                 import_probe_cache=import_probe_cache,
             )
@@ -1410,27 +1581,27 @@ def run_verify_with_callback(
                 if warning not in degrade_reasons:
                     degrade_reasons.append(warning)
                 degraded = True
-                _append_line(log_path, f"PREFLIGHT_WARN {command} ({warning})")
+                _append_line(log_path, f"PREFLIGHT_WARN {effective_command} ({warning})")
                 _append_jsonl(
                     jsonl_path,
                     {
                         "event": "command_preflight_warning",
-                        "command": command,
+                        "command": effective_command,
                         "reason": warning,
                         "ts": _utc_now(),
                     },
                 )
-        binary = _command_binary(command)
+        binary = _command_binary(effective_command)
         if binary and shutil.which(binary) is None:
             degraded = True
             reason = f"missing command binary: {binary}"
             degrade_reasons.append(reason)
-            _append_line(log_path, f"SKIP {command} ({reason})")
+            _append_line(log_path, f"SKIP {effective_command} ({reason})")
             _append_jsonl(
                 jsonl_path,
                 {
                     "event": "command_skipped",
-                    "command": command,
+                    "command": effective_command,
                     "reason": reason,
                     "ts": _utc_now(),
                     "mode": verify_mode,
@@ -1440,9 +1611,10 @@ def run_verify_with_callback(
                     "fail_fast_skipped": False,
                 },
             )
-            callback.on_skip(verify_job_id, command, reason)
+            callback.on_skip(verify_job_id, effective_command, reason)
             continue
-        runnable_commands.append(command)
+        runnable_commands.append(effective_command)
+    runnable_commands_count = int(len(runnable_commands))
 
     results: list[dict[str, Any]] = []
     fail_fast_skipped_commands: list[str] = []
@@ -2188,6 +2360,8 @@ def run_verify_with_callback(
         reason_text = "missing python dependencies: " + ", ".join(missing_python_deps)
         if reason_text not in degrade_reasons:
             degrade_reasons.append(reason_text)
+    failure_summary = _classify_verify_failures(results)
+    failure_kind = str(failure_summary.get("failure_kind", "none"))
     has_failure = any(_is_failure(item) for item in results)
     partial = bool(termination_reason or unfinished_items)
     if partial:
@@ -2205,6 +2379,15 @@ def run_verify_with_callback(
     else:
         exit_code = 0
         status = "success"
+    if has_failure:
+        _append_line(log_path, f"FAILURE_KIND {failure_kind}")
+        _append_line(
+            log_path,
+            "FAILURE_COUNTS "
+            f"failed_total={int(failure_summary.get('failure_counts', {}).get('failed_total', 0))} "
+            f"executor_failed={int(failure_summary.get('failure_counts', {}).get('executor_failed', 0))} "
+            f"project_failed={int(failure_summary.get('failure_counts', {}).get('project_failed', 0))}",
+        )
 
     if degraded:
         reason_text = "; ".join(degrade_reasons) if degrade_reasons else "degraded execution"
@@ -2235,6 +2418,10 @@ def run_verify_with_callback(
             "partial": bool(partial),
             "partial_reason": str(termination_reason),
             "unfinished_count": int(len(unfinished_items)),
+            "failure_kind": failure_kind,
+            "failure_counts": failure_summary.get("failure_counts", {}),
+            "selected_commands_count": int(selected_commands_count),
+            "runnable_commands_count": int(runnable_commands_count),
         },
     )
 
@@ -2261,6 +2448,13 @@ def run_verify_with_callback(
         "partial_reason": str(termination_reason),
         "unfinished_items": unfinished_items,
         "unfinished_commands": [str(item.get("command", "")) for item in unfinished_items if str(item.get("command", "")).strip()],
+        "failure_kind": failure_kind,
+        "failed_commands": list(failure_summary.get("failed_commands", [])),
+        "executor_failed_commands": list(failure_summary.get("executor_failed_commands", [])),
+        "project_failed_commands": list(failure_summary.get("project_failed_commands", [])),
+        "failure_counts": dict(failure_summary.get("failure_counts", {})),
+        "selected_commands_count": int(selected_commands_count),
+        "runnable_commands_count": int(runnable_commands_count),
         "max_wall_time_seconds": float(verify_max_wall_time_seconds) if verify_max_wall_time_seconds is not None else None,
         "auto_cancel_on_stall": bool(verify_auto_cancel_on_stall),
         "timed_out": bool(termination_reason == "max_wall_time_exceeded"),

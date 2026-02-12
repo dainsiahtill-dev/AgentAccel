@@ -205,6 +205,151 @@ def test_run_verify_fail_fast_stops_remaining_commands(tmp_path: Path, monkeypat
     assert list(result["fail_fast_skipped_commands"]) == commands[1:]
 
 
+def test_run_verify_marks_degraded_when_no_commands_selected(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "repo_no_verify_commands"
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(orchestrator, "select_verify_commands", lambda config, changed_files=None: [])
+
+    cfg = _base_config(tmp_path, fail_fast=False, cache_enabled=False)
+    result = run_verify(project_dir=project_dir, config=cfg, changed_files=[])
+
+    assert result["status"] == "degraded"
+    assert int(result["exit_code"]) == 2
+    assert int(result.get("selected_commands_count", -1)) == 0
+    assert int(result.get("runnable_commands_count", -1)) == 0
+
+    log_text = Path(result["log_path"]).read_text(encoding="utf-8")
+    assert "NO_COMMANDS selected verify command list is empty" in log_text
+    assert "DEGRADE_REASON: no verify commands selected" in log_text
+
+
+def test_run_verify_with_callback_marks_degraded_when_no_commands_selected(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "repo_no_verify_commands_callback"
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(orchestrator, "select_verify_commands", lambda config, changed_files=None: [])
+
+    cfg = _base_config(tmp_path, fail_fast=False, cache_enabled=False)
+    result = run_verify_with_callback(project_dir=project_dir, config=cfg, changed_files=[])
+
+    assert result["status"] == "degraded"
+    assert int(result["exit_code"]) == 2
+    assert int(result.get("selected_commands_count", -1)) == 0
+    assert int(result.get("runnable_commands_count", -1)) == 0
+
+
+def test_run_verify_classifies_project_gate_failure(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "repo_project_gate_failure"
+    (project_dir / "src").mkdir(parents=True, exist_ok=True)
+    (project_dir / "src" / "foo.py").write_text("x = 1\n", encoding="utf-8")
+
+    command = "python -m pytest -q"
+
+    monkeypatch.setattr(orchestrator, "select_verify_commands", lambda config, changed_files=None: [command])
+    monkeypatch.setattr(
+        orchestrator,
+        "run_command",
+        lambda current_command, cwd, timeout_seconds: {
+            "command": current_command,
+            "exit_code": 1,
+            "duration_seconds": 0.02,
+            "stdout": "",
+            "stderr": "assertion failed in project test",
+            "timed_out": False,
+        },
+    )
+
+    cfg = _base_config(tmp_path, fail_fast=False, cache_enabled=False)
+    result = run_verify(project_dir=project_dir, config=cfg, changed_files=["src/foo.py"])
+
+    assert result["status"] == "failed"
+    assert str(result.get("failure_kind")) == "project_gate_failed"
+    assert command in list(result.get("project_failed_commands", []))
+    failure_counts = result.get("failure_counts", {})
+    assert isinstance(failure_counts, dict)
+    assert int(failure_counts.get("executor_failed", 0)) == 0
+
+
+def test_run_verify_classifies_executor_failure(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "repo_executor_failure"
+    (project_dir / "src").mkdir(parents=True, exist_ok=True)
+    (project_dir / "src" / "foo.py").write_text("x = 1\n", encoding="utf-8")
+
+    command = "python -m pytest -q"
+
+    monkeypatch.setattr(orchestrator, "select_verify_commands", lambda config, changed_files=None: [command])
+    monkeypatch.setattr(
+        orchestrator,
+        "run_command",
+        lambda current_command, cwd, timeout_seconds: {
+            "command": current_command,
+            "exit_code": 1,
+            "duration_seconds": 0.02,
+            "stdout": "",
+            "stderr": "agent-accel process error: spawn failed",
+            "timed_out": False,
+            "cancelled": False,
+            "stalled": False,
+            "cancel_reason": "",
+        },
+    )
+
+    cfg = _base_config(tmp_path, fail_fast=False, cache_enabled=False)
+    result = run_verify(project_dir=project_dir, config=cfg, changed_files=["src/foo.py"])
+
+    assert result["status"] == "failed"
+    assert str(result.get("failure_kind")) == "executor_failed"
+    assert command in list(result.get("executor_failed_commands", []))
+    failure_counts = result.get("failure_counts", {})
+    assert isinstance(failure_counts, dict)
+    assert int(failure_counts.get("project_failed", 0)) == 0
+
+
+def test_run_verify_windows_make_target_compat_fallback(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "repo_windows_make_compat"
+    (project_dir / "src").mkdir(parents=True, exist_ok=True)
+    (project_dir / "src" / "foo.py").write_text("x = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        orchestrator,
+        "select_verify_commands",
+        lambda config, changed_files=None: ["make install-pre-commit-hooks"],
+    )
+
+    calls: list[str] = []
+
+    def fake_run_command(current_command: str, cwd: Path, timeout_seconds: int):
+        calls.append(current_command)
+        return {
+            "command": current_command,
+            "exit_code": 0,
+            "duration_seconds": 0.01,
+            "stdout": "ok",
+            "stderr": "",
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr(orchestrator, "run_command", fake_run_command)
+    monkeypatch.setattr(orchestrator.os, "name", "nt", raising=False)
+
+    def fake_which(binary: str):
+        token = str(binary).strip().lower()
+        if token == "make":
+            return None
+        if token == "python":
+            return "C:/Python/python.exe"
+        return f"C:/Tools/{token}.exe"
+
+    monkeypatch.setattr(orchestrator.shutil, "which", fake_which)
+
+    cfg = _base_config(tmp_path, fail_fast=False, cache_enabled=False)
+    result = run_verify(project_dir=project_dir, config=cfg, changed_files=["src/foo.py"])
+
+    assert result["status"] == "success"
+    assert calls == ["python -m pre_commit install"]
+
+
 def test_run_verify_with_callback_non_fail_fast_uses_cache_key_function(tmp_path: Path, monkeypatch) -> None:
     project_dir = tmp_path / "repo_callback_non_fail_fast"
     (project_dir / "src").mkdir(parents=True, exist_ok=True)

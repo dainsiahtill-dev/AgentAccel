@@ -16,7 +16,12 @@
   "runtime": {
     "verify_stall_timeout_seconds": 20.0,
     "verify_auto_cancel_on_stall": false,
-    "verify_max_wall_time_seconds": 3600.0
+    "verify_max_wall_time_seconds": 3600.0,
+    "context_rpc_timeout_seconds": 300.0,
+    "sync_verify_wait_seconds": 180.0,
+    "sync_index_wait_seconds": 180.0,
+    "sync_context_wait_seconds": 45.0,
+    "sync_context_timeout_action": "fallback_async"
   },
   "verify": {
     "python": ["pytest -q", "ruff check .", "mypy ."],

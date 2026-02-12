@@ -62,6 +62,11 @@ def test_runtime_workspace_and_preflight_env_overrides(tmp_path: Path, monkeypat
     monkeypatch.setenv("ACCEL_VERIFY_STALL_TIMEOUT_SECONDS", "7")
     monkeypatch.setenv("ACCEL_VERIFY_AUTO_CANCEL_ON_STALL", "1")
     monkeypatch.setenv("ACCEL_VERIFY_MAX_WALL_TIME_SECONDS", "88")
+    monkeypatch.setenv("ACCEL_CONTEXT_RPC_TIMEOUT_SECONDS", "155")
+    monkeypatch.setenv("ACCEL_SYNC_VERIFY_WAIT_SECONDS", "185")
+    monkeypatch.setenv("ACCEL_SYNC_INDEX_WAIT_SECONDS", "205")
+    monkeypatch.setenv("ACCEL_SYNC_CONTEXT_WAIT_SECONDS", "75")
+    monkeypatch.setenv("ACCEL_SYNC_CONTEXT_TIMEOUT_ACTION", "poll")
 
     cfg = resolve_effective_config(tmp_path)
     assert bool(cfg["runtime"]["verify_workspace_routing_enabled"]) is False
@@ -70,6 +75,11 @@ def test_runtime_workspace_and_preflight_env_overrides(tmp_path: Path, monkeypat
     assert float(cfg["runtime"]["verify_stall_timeout_seconds"]) == 7.0
     assert bool(cfg["runtime"]["verify_auto_cancel_on_stall"]) is True
     assert float(cfg["runtime"]["verify_max_wall_time_seconds"]) == 88.0
+    assert float(cfg["runtime"]["context_rpc_timeout_seconds"]) == 155.0
+    assert float(cfg["runtime"]["sync_verify_wait_seconds"]) == 185.0
+    assert float(cfg["runtime"]["sync_index_wait_seconds"]) == 205.0
+    assert float(cfg["runtime"]["sync_context_wait_seconds"]) == 75.0
+    assert str(cfg["runtime"]["sync_context_timeout_action"]) == "fallback_async"
 
 
 def test_constraint_mode_alias_normalization(tmp_path: Path, monkeypatch) -> None:
