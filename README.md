@@ -117,6 +117,10 @@ pip install -e .
 pip install -e ".[semantic]"      # CPU
 # or
 pip install -e ".[semantic-gpu]"  # CUDA/DirectML capable ONNX runtime
+
+# Optional: syntax parser + lexical search
+pip install -e ".[syntax]"        # Tree-sitter parser path
+pip install -e ".[search]"        # Tantivy lexical ranker path
 ```
 
 ### Verify Installation

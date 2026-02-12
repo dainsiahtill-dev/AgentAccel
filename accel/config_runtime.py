@@ -16,6 +16,9 @@ from .language_profiles import (
     resolve_selected_language_profiles,
 )
 
+_SYNTAX_PROVIDERS = {"off", "auto", "tree_sitter"}
+_LEXICAL_PROVIDERS = {"off", "auto", "tantivy"}
+
 
 def _cpu_count() -> int:
     return max(1, int(os.cpu_count() or 1))
@@ -115,6 +118,22 @@ def _normalize_constraint_mode(value: Any, default_value: str = "warn") -> str:
     elif fallback in {"on", "default"}:
         fallback = "warn"
     return fallback if fallback in {"off", "warn", "strict"} else "warn"
+
+
+def normalize_syntax_provider(value: Any, default_value: str = "off") -> str:
+    token = str(value or default_value).strip().lower()
+    if token in _SYNTAX_PROVIDERS:
+        return token
+    fallback = str(default_value or "off").strip().lower()
+    return fallback if fallback in _SYNTAX_PROVIDERS else "off"
+
+
+def normalize_lexical_provider(value: Any, default_value: str = "off") -> str:
+    token = str(value or default_value).strip().lower()
+    if token in _LEXICAL_PROVIDERS:
+        return token
+    fallback = str(default_value or "off").strip().lower()
+    return fallback if fallback in _LEXICAL_PROVIDERS else "off"
 
 
 def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
@@ -305,6 +324,36 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         runtime["semantic_cache_max_entries"] = _normalize_positive_int(
             os.environ["ACCEL_SEMANTIC_CACHE_MAX_ENTRIES"],
             int(runtime.get("semantic_cache_max_entries", 800)),
+        )
+    if os.environ.get("ACCEL_SYNTAX_PARSER_ENABLED") is not None:
+        runtime["syntax_parser_enabled"] = _normalize_bool(
+            os.environ["ACCEL_SYNTAX_PARSER_ENABLED"],
+            bool(runtime.get("syntax_parser_enabled", True)),
+        )
+    if os.environ.get("ACCEL_SYNTAX_PARSER_PROVIDER"):
+        runtime["syntax_parser_provider"] = normalize_syntax_provider(
+            os.environ["ACCEL_SYNTAX_PARSER_PROVIDER"],
+            str(runtime.get("syntax_parser_provider", "auto")),
+        )
+    if os.environ.get("ACCEL_LEXICAL_RANKER_ENABLED") is not None:
+        runtime["lexical_ranker_enabled"] = _normalize_bool(
+            os.environ["ACCEL_LEXICAL_RANKER_ENABLED"],
+            bool(runtime.get("lexical_ranker_enabled", True)),
+        )
+    if os.environ.get("ACCEL_LEXICAL_RANKER_PROVIDER"):
+        runtime["lexical_ranker_provider"] = normalize_lexical_provider(
+            os.environ["ACCEL_LEXICAL_RANKER_PROVIDER"],
+            str(runtime.get("lexical_ranker_provider", "auto")),
+        )
+    if os.environ.get("ACCEL_LEXICAL_RANKER_MAX_CANDIDATES"):
+        runtime["lexical_ranker_max_candidates"] = _normalize_positive_int(
+            os.environ["ACCEL_LEXICAL_RANKER_MAX_CANDIDATES"],
+            int(runtime.get("lexical_ranker_max_candidates", 200)),
+        )
+    if os.environ.get("ACCEL_LEXICAL_RANKER_WEIGHT"):
+        runtime["lexical_ranker_weight"] = _normalize_ratio(
+            os.environ["ACCEL_LEXICAL_RANKER_WEIGHT"],
+            float(runtime.get("lexical_ranker_weight", 0.2)),
         )
     if os.environ.get("ACCEL_SEMANTIC_RANKER_ENABLED") is not None:
         runtime["semantic_ranker_enabled"] = _normalize_bool(
@@ -602,6 +651,30 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
     runtime["semantic_cache_max_entries"] = _normalize_positive_int(
         runtime.get("semantic_cache_max_entries", 800),
         default_value=800,
+    )
+    runtime["syntax_parser_enabled"] = _normalize_bool(
+        runtime.get("syntax_parser_enabled", True),
+        default_value=True,
+    )
+    runtime["syntax_parser_provider"] = normalize_syntax_provider(
+        runtime.get("syntax_parser_provider", "auto"),
+        default_value="auto",
+    )
+    runtime["lexical_ranker_enabled"] = _normalize_bool(
+        runtime.get("lexical_ranker_enabled", True),
+        default_value=True,
+    )
+    runtime["lexical_ranker_provider"] = normalize_lexical_provider(
+        runtime.get("lexical_ranker_provider", "auto"),
+        default_value="auto",
+    )
+    runtime["lexical_ranker_max_candidates"] = _normalize_positive_int(
+        runtime.get("lexical_ranker_max_candidates", 200),
+        default_value=200,
+    )
+    runtime["lexical_ranker_weight"] = _normalize_ratio(
+        runtime.get("lexical_ranker_weight", 0.2),
+        default_value=0.2,
     )
     runtime["semantic_ranker_enabled"] = _normalize_bool(
         runtime.get("semantic_ranker_enabled", False),

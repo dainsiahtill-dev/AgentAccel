@@ -164,3 +164,32 @@ def test_semantic_ranker_env_overrides(tmp_path: Path, monkeypatch) -> None:
     assert bool(runtime.get("semantic_reranker_enabled", False)) is True
     assert int(runtime.get("semantic_reranker_top_k", 0)) == 36
     assert float(runtime.get("semantic_reranker_weight", 0.0)) == 0.27
+
+
+def test_syntax_and_lexical_env_overrides(tmp_path: Path, monkeypatch) -> None:
+    init_project(tmp_path)
+    monkeypatch.setenv("ACCEL_SYNTAX_PARSER_ENABLED", "1")
+    monkeypatch.setenv("ACCEL_SYNTAX_PARSER_PROVIDER", "auto")
+    monkeypatch.setenv("ACCEL_LEXICAL_RANKER_ENABLED", "1")
+    monkeypatch.setenv("ACCEL_LEXICAL_RANKER_PROVIDER", "tantivy")
+    monkeypatch.setenv("ACCEL_LEXICAL_RANKER_MAX_CANDIDATES", "256")
+    monkeypatch.setenv("ACCEL_LEXICAL_RANKER_WEIGHT", "0.35")
+
+    cfg = resolve_effective_config(tmp_path)
+    runtime = dict(cfg.get("runtime", {}))
+    assert bool(runtime.get("syntax_parser_enabled", False)) is True
+    assert str(runtime.get("syntax_parser_provider", "")) == "auto"
+    assert bool(runtime.get("lexical_ranker_enabled", False)) is True
+    assert str(runtime.get("lexical_ranker_provider", "")) == "tantivy"
+    assert int(runtime.get("lexical_ranker_max_candidates", 0)) == 256
+    assert float(runtime.get("lexical_ranker_weight", 0.0)) == 0.35
+
+
+def test_syntax_and_lexical_defaults_enabled(tmp_path: Path) -> None:
+    init_project(tmp_path)
+    cfg = resolve_effective_config(tmp_path)
+    runtime = dict(cfg.get("runtime", {}))
+    assert bool(runtime.get("syntax_parser_enabled", False)) is True
+    assert str(runtime.get("syntax_parser_provider", "")) == "auto"
+    assert bool(runtime.get("lexical_ranker_enabled", False)) is True
+    assert str(runtime.get("lexical_ranker_provider", "")) == "auto"

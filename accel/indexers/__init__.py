@@ -19,7 +19,7 @@ from typing import Any, Callable
 from ..language_profiles import resolve_extension_language_map
 from .deps import extract_dependencies
 from .references import extract_references
-from .symbols import extract_symbols
+from .symbols import extract_symbols, normalize_syntax_provider
 from .tests_ownership import build_test_ownership
 from .discovery import collect_source_files
 from ..storage.cache import ensure_project_dirs, project_paths, write_json
@@ -180,6 +180,17 @@ def _resolve_compact_threshold(config: dict[str, Any]) -> int:
     return max(1, parsed)
 
 
+def _resolve_syntax_runtime_cfg(config: dict[str, Any]) -> dict[str, Any]:
+    runtime_cfg = dict(config.get("runtime", {}))
+    return {
+        "syntax_parser_enabled": bool(runtime_cfg.get("syntax_parser_enabled", False)),
+        "syntax_parser_provider": normalize_syntax_provider(
+            runtime_cfg.get("syntax_parser_provider", "off"),
+            default_value="off",
+        ),
+    }
+
+
 def _unit_path(index_units_dir: Path, rel_path: str) -> Path:
     digest = hashlib.sha256(rel_path.encode("utf-8")).hexdigest()[:24]
     safe_name = rel_path.replace("/", "_").replace("\\", "_")
@@ -212,11 +223,16 @@ def _base_indexes_exist(index_dir: Path) -> bool:
     )
 
 
-def _process_file_for_index(job: tuple[str, str, str]) -> dict[str, Any]:
-    abs_path_str, rel_path, lang = job
+def _process_file_for_index(job: tuple[str, str, str, dict[str, Any]]) -> dict[str, Any]:
+    abs_path_str, rel_path, lang, syntax_runtime_cfg = job
     file_path = Path(abs_path_str)
     try:
-        symbols = extract_symbols(file_path, rel_path, lang)
+        symbols = extract_symbols(
+            file_path,
+            rel_path,
+            lang,
+            runtime_cfg=syntax_runtime_cfg,
+        )
         dependencies = extract_dependencies(file_path, rel_path, lang)
         references = extract_references(file_path, rel_path, lang)
     except Exception:
@@ -238,13 +254,19 @@ def _build_payloads_for_changed(
     current_states: dict[str, FileState],
     index_workers: int,
     index_parallel_backend: str,
+    syntax_runtime_cfg: dict[str, Any],
     progress_callback: IndexProgressCallback | None = None,
 ) -> dict[str, dict[str, Any]]:
     if not changed_paths:
         return {}
 
     jobs = [
-        (str(current_paths[rel_path]), rel_path, current_states[rel_path].lang)
+        (
+            str(current_paths[rel_path]),
+            rel_path,
+            current_states[rel_path].lang,
+            dict(syntax_runtime_cfg),
+        )
         for rel_path in changed_paths
     ]
 
@@ -614,6 +636,7 @@ def build_or_update_indexes(
     index_workers = _resolve_index_workers(config)
     index_parallel_backend = _resolve_index_parallel_backend(config)
     compact_threshold = _resolve_compact_threshold(config)
+    syntax_runtime_cfg = _resolve_syntax_runtime_cfg(config)
 
     if not full and not changed_paths and not removed_paths:
         manifest = _build_manifest_from_previous(
@@ -633,6 +656,7 @@ def build_or_update_indexes(
         current_states=current_states,
         index_workers=index_workers,
         index_parallel_backend=index_parallel_backend,
+        syntax_runtime_cfg=syntax_runtime_cfg,
         progress_callback=progress_callback,
     )
 

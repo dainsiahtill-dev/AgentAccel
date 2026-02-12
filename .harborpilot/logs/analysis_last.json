@@ -1,17 +1,18 @@
 {
-  "ts": "2026-02-12T19:54:39.491287+00:00",
-  "mode": "S2",
-  "goal": "Integrate FlagEmbedding + onnxruntime semantic ranking/rerank pipeline with config-driven enablement and safe fallback.",
-  "acceptance_criteria": [
-    "Default behavior unchanged when optional dependencies are absent.",
-    "Config and env toggles control semantic embedding/rerank pipeline.",
-    "Context ranking can blend semantic scores while preserving changed-file prioritization.",
-    "Runtime fallback reason is visible in diagnostics output.",
-    "Full gate passes."
-  ],
+  "run_id": "codex_default_enable_syntax_lexical_20260212T215000Z",
+  "ts": "2026-02-12T21:49:59.975361+00:00",
+  "mode": "S1",
   "capability_matrix": {
     "repo": "read/write",
     "terminal": "available",
     "network": "available"
+  },
+  "contract_snapshot": {
+    "goal": "Enable new syntax parser and lexical ranker features by default so users can use them without local config edits.",
+    "acceptance_criteria": [
+      "Default runtime config enables syntax parser and lexical ranker with provider auto.",
+      "Existing override env vars continue to work.",
+      "Tests and quality gates pass."
+    ]
   }
 }
