@@ -1,33 +1,17 @@
-﻿{
-  "run_id": "run_20260213_benchmark_independent_codex",
-  "ts_utc": "2026-02-12T16:49:53.996659+00:00",
+{
+  "ts": "2026-02-12T19:54:39.491287+00:00",
   "mode": "S2",
-  "contract_snapshot": {
-    "goal": "???????????????CLI?MCP??????benchmark???????????",
-    "acceptance_criteria": [
-      "$env:PYTHONPATH='.'; python -m pytest -q",
-      "$env:PYTHONPATH='.'; pytest -q tests/integration",
-      "$env:PYTHONPATH='.'; ruff check .",
-      "$env:PYTHONPATH='.'; mypy .",
-      "python scripts/run_benchmarks.py --project . --tasks examples/benchmarks/tasks.sample.json --index-mode update --out .harborpilot/logs/benchmark_independent_codex.json --out-md .harborpilot/logs/benchmark_independent_codex.md"
-    ],
-    "assumptions": [
-      "Primary objective is to make the listed full-gate and benchmark commands pass end-to-end in current workspace.",
-      "Unrendered criteria lines are treated as: no regression, outputs valid, and final status must be full gate (not reduced)."
-    ]
-  },
+  "goal": "Integrate FlagEmbedding + onnxruntime semantic ranking/rerank pipeline with config-driven enablement and safe fallback.",
+  "acceptance_criteria": [
+    "Default behavior unchanged when optional dependencies are absent.",
+    "Config and env toggles control semantic embedding/rerank pipeline.",
+    "Context ranking can blend semantic scores while preserving changed-file prioritization.",
+    "Runtime fallback reason is visible in diagnostics output.",
+    "Full gate passes."
+  ],
   "capability_matrix": {
     "repo": "read/write",
     "terminal": "available",
     "network": "available"
-  },
-  "risk_notes": [
-    "Workspace is dirty at start; only minimal targeted changes will be applied.",
-    "Benchmark command may expose latent runtime issues across multiple modules."
-  ],
-  "scope_budget": {
-    "touched_files_max": 50,
-    "changed_loc_max": 2000,
-    "dependencies": "no new deps"
   }
 }

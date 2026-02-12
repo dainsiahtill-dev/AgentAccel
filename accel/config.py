@@ -89,6 +89,15 @@ DEFAULT_LOCAL_CONFIG: dict[str, Any] = {
         "semantic_cache_ttl_seconds": 7200,
         "semantic_cache_hybrid_threshold": 0.86,
         "semantic_cache_max_entries": 800,
+        "semantic_ranker_enabled": False,
+        "semantic_ranker_provider": "off",
+        "semantic_ranker_use_onnx": False,
+        "semantic_ranker_max_candidates": 120,
+        "semantic_ranker_batch_size": 16,
+        "semantic_ranker_embed_weight": 0.3,
+        "semantic_reranker_enabled": False,
+        "semantic_reranker_top_k": 30,
+        "semantic_reranker_weight": 0.15,
         "command_plan_cache_enabled": True,
         "command_plan_cache_ttl_seconds": 900,
         "command_plan_cache_max_entries": 600,
@@ -98,7 +107,13 @@ DEFAULT_LOCAL_CONFIG: dict[str, Any] = {
         "per_command_timeout_seconds": 1200,
         "total_verify_timeout_seconds": 3600,
     },
-    "gpu": {"enabled": False, "policy": "off"},
+    "gpu": {
+        "enabled": False,
+        "policy": "off",
+        "device": "auto",
+        "embedding_model_path": "",
+        "reranker_model_path": "",
+    },
 }
 
 

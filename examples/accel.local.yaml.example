@@ -2,11 +2,22 @@
   "runtime": {
     "max_workers": 12,
     "accel_home": "C:/Users/<you>/AppData/Local/agent-accel",
+    "semantic_ranker_enabled": false,
+    "semantic_ranker_provider": "off",
+    "semantic_ranker_use_onnx": false,
+    "semantic_ranker_max_candidates": 120,
+    "semantic_ranker_embed_weight": 0.3,
+    "semantic_reranker_enabled": false,
+    "semantic_reranker_top_k": 30,
+    "semantic_reranker_weight": 0.15,
     "per_command_timeout_seconds": 1200,
     "total_verify_timeout_seconds": 3600
   },
   "gpu": {
     "enabled": false,
-    "policy": "off"
+    "policy": "off",
+    "device": "auto",
+    "embedding_model_path": "",
+    "reranker_model_path": ""
   }
 }

@@ -127,6 +127,53 @@ def test_context_pack_prioritizes_changed_files_in_top_order(tmp_path: Path, mon
     assert "accel/query/context_compiler.py" in top_paths
 
 
+def test_context_pack_changed_file_pin_survives_semantic_rerank(tmp_path: Path, monkeypatch) -> None:
+    _write(
+        tmp_path / "accel" / "query" / "ranker.py",
+        "def tune_ranker() -> str:\n    return 'ok'\n",
+    )
+    _write(
+        tmp_path / "accel" / "query" / "planner.py",
+        "def plan_scope() -> str:\n    return 'ok'\n",
+    )
+    _write(
+        tmp_path / "accel" / "query" / "context_compiler.py",
+        "def compile_pack() -> str:\n    return 'ok'\n",
+    )
+
+    init_project(tmp_path)
+    monkeypatch.setenv("ACCEL_HOME", str(tmp_path / ".accel-home"))
+
+    cfg = resolve_effective_config(tmp_path)
+    build_or_update_indexes(project_dir=tmp_path, config=cfg, mode="build", full=True)
+
+    def fake_apply_semantic_ranking(**kwargs):
+        ranked = [dict(item) for item in kwargs["ranked"]]
+        for row in ranked:
+            if str(row.get("path", "")) == "accel/query/context_compiler.py":
+                row["score"] = 999.0
+                row["reasons"] = list(row.get("reasons", [])) + ["semantic_embedding"]
+        ranked.sort(key=lambda item: (-float(item["score"]), str(item["path"])))
+        return ranked, {"enabled": True, "applied": True, "reason": "applied"}
+
+    monkeypatch.setattr(
+        "accel.query.context_compiler.apply_semantic_ranking",
+        fake_apply_semantic_ranking,
+    )
+
+    changed_files = ["accel/query/ranker.py"]
+    pack = compile_context_pack(
+        project_dir=tmp_path,
+        config=cfg,
+        task="Prioritize changed file even when semantic score over-favors other files.",
+        changed_files=changed_files,
+        budget_override={"top_n_files": 3, "max_snippets": 3, "max_chars": 4000},
+    )
+
+    top_paths = [str(item.get("path", "")) for item in pack.get("top_files", [])]
+    assert top_paths[0] == "accel/query/ranker.py"
+
+
 def test_index_update_uses_parallel_pool_and_delta_mmap(tmp_path: Path, monkeypatch) -> None:
     _write(
         tmp_path / "src" / "main.py",

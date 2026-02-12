@@ -112,3 +112,55 @@ def test_runtime_worker_defaults_support_auto(tmp_path: Path) -> None:
     assert int(cfg["runtime"]["index_workers"]) >= 1
     assert int(cfg["runtime"]["max_workers"]) <= min(12, cpu_count)
     assert int(cfg["runtime"]["index_workers"]) <= min(96, cpu_count)
+
+
+def test_gpu_policy_device_and_model_paths_env_overrides(tmp_path: Path, monkeypatch) -> None:
+    init_project(tmp_path)
+    monkeypatch.setenv("ACCEL_GPU_ENABLED", "1")
+    monkeypatch.setenv("ACCEL_GPU_POLICY", "force")
+    monkeypatch.setenv("ACCEL_GPU_DEVICE", "cuda:1")
+    monkeypatch.setenv(
+        "ACCEL_GPU_EMBEDDING_MODEL_PATH",
+        r"C:\Users\dains\Models\models--BAAI--bge-m3\snapshots\5617a9f61b028005a4858fdac845db406aefb181",
+    )
+    monkeypatch.setenv(
+        "ACCEL_GPU_RERANKER_MODEL_PATH",
+        r"C:\Users\dains\Models\models--BAAI--bge-reranker-v2-m3\snapshots\953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+    )
+
+    cfg = resolve_effective_config(tmp_path)
+    gpu = dict(cfg.get("gpu", {}))
+    assert bool(gpu.get("enabled", False)) is True
+    assert str(gpu.get("policy", "")) == "force"
+    assert str(gpu.get("device", "")) == "cuda:1"
+    assert str(gpu.get("embedding_model_path", "")).endswith(
+        r"models--BAAI--bge-m3\snapshots\5617a9f61b028005a4858fdac845db406aefb181"
+    )
+    assert str(gpu.get("reranker_model_path", "")).endswith(
+        r"models--BAAI--bge-reranker-v2-m3\snapshots\953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+    )
+
+
+def test_semantic_ranker_env_overrides(tmp_path: Path, monkeypatch) -> None:
+    init_project(tmp_path)
+    monkeypatch.setenv("ACCEL_SEMANTIC_RANKER_ENABLED", "1")
+    monkeypatch.setenv("ACCEL_SEMANTIC_RANKER_PROVIDER", "auto")
+    monkeypatch.setenv("ACCEL_SEMANTIC_RANKER_USE_ONNX", "1")
+    monkeypatch.setenv("ACCEL_SEMANTIC_RANKER_MAX_CANDIDATES", "180")
+    monkeypatch.setenv("ACCEL_SEMANTIC_RANKER_BATCH_SIZE", "12")
+    monkeypatch.setenv("ACCEL_SEMANTIC_RANKER_EMBED_WEIGHT", "0.42")
+    monkeypatch.setenv("ACCEL_SEMANTIC_RERANKER_ENABLED", "1")
+    monkeypatch.setenv("ACCEL_SEMANTIC_RERANKER_TOP_K", "36")
+    monkeypatch.setenv("ACCEL_SEMANTIC_RERANKER_WEIGHT", "0.27")
+
+    cfg = resolve_effective_config(tmp_path)
+    runtime = dict(cfg.get("runtime", {}))
+    assert bool(runtime.get("semantic_ranker_enabled", False)) is True
+    assert str(runtime.get("semantic_ranker_provider", "")) == "auto"
+    assert bool(runtime.get("semantic_ranker_use_onnx", False)) is True
+    assert int(runtime.get("semantic_ranker_max_candidates", 0)) == 180
+    assert int(runtime.get("semantic_ranker_batch_size", 0)) == 12
+    assert float(runtime.get("semantic_ranker_embed_weight", 0.0)) == 0.42
+    assert bool(runtime.get("semantic_reranker_enabled", False)) is True
+    assert int(runtime.get("semantic_reranker_top_k", 0)) == 36
+    assert float(runtime.get("semantic_reranker_weight", 0.0)) == 0.27

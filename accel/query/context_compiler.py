@@ -10,6 +10,7 @@ from ..language_profiles import (
     resolve_enabled_verify_groups,
     resolve_extension_verify_group_map,
 )
+from ..semantic_ranker import apply_semantic_ranking
 from .planner import build_candidate_files, normalize_task_tokens
 from .ranker import score_file
 from .rule_compressor import compress_snippet_content
@@ -211,6 +212,7 @@ def _build_verify_plan(
 
 def _rank_candidate_files(
     *,
+    config: dict[str, Any],
     manifest: dict[str, Any],
     changed_files: list[str],
     hints: list[str] | None,
@@ -219,7 +221,7 @@ def _rank_candidate_files(
     references_by_file: dict[str, list[dict[str, Any]]],
     deps_by_file: dict[str, list[dict[str, Any]]],
     tests_by_file: dict[str, list[dict[str, Any]]],
-) -> tuple[list[dict[str, Any]], list[str]]:
+) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
     task_tokens = normalize_task_tokens(task)
     changed_files = [item.replace("\\", "/") for item in changed_files]
     candidate_files = build_candidate_files(
@@ -252,8 +254,19 @@ def _rank_candidate_files(
                 )
         ranked.sort(key=lambda item: (-float(item["score"]), str(item["path"])))
 
+    ranked, semantic_meta = apply_semantic_ranking(
+        ranked=ranked,
+        config=config,
+        task=task,
+        task_tokens=task_tokens,
+        hints=hints,
+        symbols_by_file=symbols_by_file,
+        references_by_file=references_by_file,
+        deps_by_file=deps_by_file,
+        tests_by_file=tests_by_file,
+    )
     ranked = _apply_changed_scope_prioritization(ranked, changed_files)
-    return ranked, task_tokens
+    return ranked, task_tokens, semantic_meta
 
 
 def explain_context_selection(
@@ -285,7 +298,8 @@ def explain_context_selection(
     deps_by_file = _group_by_file(deps_rows, "edge_from")
     tests_by_file = _group_by_file(ownership_rows, "owns_file")
 
-    ranked, task_tokens = _rank_candidate_files(
+    ranked, task_tokens, semantic_meta = _rank_candidate_files(
+        config=config,
         manifest=manifest,
         changed_files=changed_files,
         hints=hints,
@@ -327,6 +341,7 @@ def explain_context_selection(
         "candidate_count": int(len(ranked)),
         "selected_count": int(len(selected)),
         "threshold_score": round(float(threshold_score), 6),
+        "semantic_ranking": semantic_meta,
         "selected": selected,
         "alternatives": alternatives_enriched,
     }
@@ -376,7 +391,8 @@ def compile_context_pack(
         )
     )
 
-    ranked, task_tokens = _rank_candidate_files(
+    ranked, task_tokens, semantic_meta = _rank_candidate_files(
+        config=config,
         manifest=manifest,
         changed_files=changed_files,
         hints=hints,
@@ -482,6 +498,7 @@ def compile_context_pack(
             "compression_rules_applied": compression_rule_counts,
             "compression_saved_chars": max(0, raw_snippet_chars - compacted_snippet_chars),
             "drift_reason": "",
+            "semantic_ranking": semantic_meta,
         },
     }
     if previous_attempt_feedback:

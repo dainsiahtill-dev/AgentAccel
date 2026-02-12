@@ -5,7 +5,6 @@ import json
 import os
 import platform
 import shutil
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +12,8 @@ from typing import Any
 from uuid import uuid4
 
 from .config import init_project, resolve_effective_config
+from .gpu_runtime import resolve_gpu_runtime
+from .semantic_ranker import probe_semantic_runtime
 from .indexers import build_or_update_indexes
 from .query.context_compiler import (
     compile_context_pack,
@@ -29,31 +30,6 @@ def _utc_now() -> str:
 
 def _normalize_path(path: Path) -> Path:
     return Path(os.path.abspath(str(path)))
-
-
-def _detect_cuda() -> dict[str, Any]:
-    nvidia_smi = shutil.which("nvidia-smi")
-    if not nvidia_smi:
-        return {"available": False, "reason": "nvidia-smi not found", "raw": ""}
-    try:
-        proc = subprocess.run(
-            [nvidia_smi, "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-        )
-        if proc.returncode != 0:
-            return {
-                "available": False,
-                "reason": proc.stderr.strip() or f"exit={proc.returncode}",
-                "raw": proc.stdout.strip(),
-            }
-        gpus = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-        return {"available": bool(gpus), "reason": "", "raw": gpus}
-    except Exception as exc:  # pragma: no cover - defensive path
-        return {"available": False, "reason": str(exc), "raw": ""}
 
 
 def _print_output(payload: dict[str, Any], output: str) -> None:
@@ -87,6 +63,11 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     project_dir = _normalize_path(Path(args.project))
     cfg = resolve_effective_config(project_dir)
+    gpu_runtime = resolve_gpu_runtime(
+        cfg.get("gpu", {}),
+        raise_on_force_unavailable=False,
+    )
+    semantic_runtime = probe_semantic_runtime(cfg)
 
     doctor = {
         "status": "ok",
@@ -105,7 +86,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "npm": shutil.which("npm") is not None,
             "pytest": shutil.which("pytest") is not None,
         },
-        "cuda": _detect_cuda(),
+        "cuda": dict(gpu_runtime.get("nvidia_smi", {})),
+        "gpu_runtime": gpu_runtime,
+        "semantic_runtime": semantic_runtime,
     }
     if args.print_config:
         doctor["effective_config"] = cfg

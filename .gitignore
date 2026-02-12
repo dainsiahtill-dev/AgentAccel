@@ -4,6 +4,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*/__pycache__/*.py[cod]
+*/__pycache__/
 
 # ------------------------------
 # Python packaging / build
@@ -56,3 +58,4 @@ Thumbs.db
 
 # Optional local context outputs
 context_pack*.json
+

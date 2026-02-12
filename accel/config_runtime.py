@@ -4,6 +4,13 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .gpu_runtime import (
+    normalize_gpu_config,
+    normalize_gpu_device,
+    normalize_gpu_model_path,
+    normalize_gpu_policy,
+)
+from .semantic_ranker import clamp_ratio, normalize_semantic_provider
 from .language_profiles import (
     resolve_language_profile_registry,
     resolve_selected_language_profiles,
@@ -57,6 +64,10 @@ def _normalize_positive_float(value: Any, default_value: float) -> float:
     if parsed <= 0:
         return float(default_value)
     return float(parsed)
+
+
+def _normalize_ratio(value: Any, default_value: float) -> float:
+    return clamp_ratio(value, default_value)
 
 
 def _normalize_bool(value: Any, default_value: bool = False) -> bool:
@@ -295,6 +306,51 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
             os.environ["ACCEL_SEMANTIC_CACHE_MAX_ENTRIES"],
             int(runtime.get("semantic_cache_max_entries", 800)),
         )
+    if os.environ.get("ACCEL_SEMANTIC_RANKER_ENABLED") is not None:
+        runtime["semantic_ranker_enabled"] = _normalize_bool(
+            os.environ["ACCEL_SEMANTIC_RANKER_ENABLED"],
+            bool(runtime.get("semantic_ranker_enabled", False)),
+        )
+    if os.environ.get("ACCEL_SEMANTIC_RANKER_PROVIDER"):
+        runtime["semantic_ranker_provider"] = normalize_semantic_provider(
+            os.environ["ACCEL_SEMANTIC_RANKER_PROVIDER"],
+            str(runtime.get("semantic_ranker_provider", "off")),
+        )
+    if os.environ.get("ACCEL_SEMANTIC_RANKER_USE_ONNX") is not None:
+        runtime["semantic_ranker_use_onnx"] = _normalize_bool(
+            os.environ["ACCEL_SEMANTIC_RANKER_USE_ONNX"],
+            bool(runtime.get("semantic_ranker_use_onnx", False)),
+        )
+    if os.environ.get("ACCEL_SEMANTIC_RANKER_MAX_CANDIDATES"):
+        runtime["semantic_ranker_max_candidates"] = _normalize_positive_int(
+            os.environ["ACCEL_SEMANTIC_RANKER_MAX_CANDIDATES"],
+            int(runtime.get("semantic_ranker_max_candidates", 120)),
+        )
+    if os.environ.get("ACCEL_SEMANTIC_RANKER_BATCH_SIZE"):
+        runtime["semantic_ranker_batch_size"] = _normalize_positive_int(
+            os.environ["ACCEL_SEMANTIC_RANKER_BATCH_SIZE"],
+            int(runtime.get("semantic_ranker_batch_size", 16)),
+        )
+    if os.environ.get("ACCEL_SEMANTIC_RANKER_EMBED_WEIGHT"):
+        runtime["semantic_ranker_embed_weight"] = _normalize_ratio(
+            os.environ["ACCEL_SEMANTIC_RANKER_EMBED_WEIGHT"],
+            float(runtime.get("semantic_ranker_embed_weight", 0.3)),
+        )
+    if os.environ.get("ACCEL_SEMANTIC_RERANKER_ENABLED") is not None:
+        runtime["semantic_reranker_enabled"] = _normalize_bool(
+            os.environ["ACCEL_SEMANTIC_RERANKER_ENABLED"],
+            bool(runtime.get("semantic_reranker_enabled", False)),
+        )
+    if os.environ.get("ACCEL_SEMANTIC_RERANKER_TOP_K"):
+        runtime["semantic_reranker_top_k"] = _normalize_positive_int(
+            os.environ["ACCEL_SEMANTIC_RERANKER_TOP_K"],
+            int(runtime.get("semantic_reranker_top_k", 30)),
+        )
+    if os.environ.get("ACCEL_SEMANTIC_RERANKER_WEIGHT"):
+        runtime["semantic_reranker_weight"] = _normalize_ratio(
+            os.environ["ACCEL_SEMANTIC_RERANKER_WEIGHT"],
+            float(runtime.get("semantic_reranker_weight", 0.15)),
+        )
     if os.environ.get("ACCEL_COMMAND_PLAN_CACHE_ENABLED") is not None:
         runtime["command_plan_cache_enabled"] = _normalize_bool(
             os.environ["ACCEL_COMMAND_PLAN_CACHE_ENABLED"],
@@ -337,6 +393,24 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         )
     if os.environ.get("ACCEL_GPU_ENABLED") is not None:
         gpu["enabled"] = _normalize_bool(os.environ["ACCEL_GPU_ENABLED"], False)
+    if os.environ.get("ACCEL_GPU_POLICY"):
+        gpu["policy"] = normalize_gpu_policy(
+            os.environ["ACCEL_GPU_POLICY"],
+            str(gpu.get("policy", "off")),
+        )
+    if os.environ.get("ACCEL_GPU_DEVICE"):
+        gpu["device"] = normalize_gpu_device(
+            os.environ["ACCEL_GPU_DEVICE"],
+            str(gpu.get("device", "auto")),
+        )
+    if os.environ.get("ACCEL_GPU_EMBEDDING_MODEL_PATH"):
+        gpu["embedding_model_path"] = normalize_gpu_model_path(
+            os.environ["ACCEL_GPU_EMBEDDING_MODEL_PATH"]
+        )
+    if os.environ.get("ACCEL_GPU_RERANKER_MODEL_PATH"):
+        gpu["reranker_model_path"] = normalize_gpu_model_path(
+            os.environ["ACCEL_GPU_RERANKER_MODEL_PATH"]
+        )
     if os.environ.get("ACCEL_LOCAL_CONFIG"):
         config["meta"] = dict(config.get("meta", {}))
         config["meta"]["local_config_path"] = os.environ["ACCEL_LOCAL_CONFIG"]
@@ -529,6 +603,42 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
         runtime.get("semantic_cache_max_entries", 800),
         default_value=800,
     )
+    runtime["semantic_ranker_enabled"] = _normalize_bool(
+        runtime.get("semantic_ranker_enabled", False),
+        default_value=False,
+    )
+    runtime["semantic_ranker_provider"] = normalize_semantic_provider(
+        runtime.get("semantic_ranker_provider", "off"),
+        default_value="off",
+    )
+    runtime["semantic_ranker_use_onnx"] = _normalize_bool(
+        runtime.get("semantic_ranker_use_onnx", False),
+        default_value=False,
+    )
+    runtime["semantic_ranker_max_candidates"] = _normalize_positive_int(
+        runtime.get("semantic_ranker_max_candidates", 120),
+        default_value=120,
+    )
+    runtime["semantic_ranker_batch_size"] = _normalize_positive_int(
+        runtime.get("semantic_ranker_batch_size", 16),
+        default_value=16,
+    )
+    runtime["semantic_ranker_embed_weight"] = _normalize_ratio(
+        runtime.get("semantic_ranker_embed_weight", 0.3),
+        default_value=0.3,
+    )
+    runtime["semantic_reranker_enabled"] = _normalize_bool(
+        runtime.get("semantic_reranker_enabled", False),
+        default_value=False,
+    )
+    runtime["semantic_reranker_top_k"] = _normalize_positive_int(
+        runtime.get("semantic_reranker_top_k", 30),
+        default_value=30,
+    )
+    runtime["semantic_reranker_weight"] = _normalize_ratio(
+        runtime.get("semantic_reranker_weight", 0.15),
+        default_value=0.15,
+    )
     runtime["command_plan_cache_enabled"] = _normalize_bool(
         runtime.get("command_plan_cache_enabled", True),
         default_value=True,
@@ -570,5 +680,4 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
     gpu = config.get("gpu", {})
     if not isinstance(gpu, dict):
         raise ValueError("gpu must be an object")
-    gpu["enabled"] = _normalize_bool(gpu.get("enabled", False), False)
-    config["gpu"] = gpu
+    config["gpu"] = normalize_gpu_config(gpu)
