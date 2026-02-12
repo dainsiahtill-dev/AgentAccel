@@ -130,8 +130,12 @@ class VerifyJob:
                 self._start_perf_counter = time.perf_counter()
                 self.elapsed_sec = 0.0
 
-    def mark_completed(self, status: str, exit_code: int, result: dict[str, Any] | None = None) -> None:
+    def try_mark_completed(
+        self, status: str, exit_code: int, result: dict[str, Any] | None = None
+    ) -> bool:
         with self._lock:
+            if self.state in (JobState.CANCELLING, JobState.CANCELLED):
+                return False
             self.state = JobState.COMPLETED
             self.stage = "completed"
             self.end_time = datetime.now(timezone.utc)
@@ -139,6 +143,12 @@ class VerifyJob:
             self.progress = 100.0
             if self.start_time:
                 self.elapsed_sec = (self.end_time - self.start_time).total_seconds()
+            return True
+
+    def mark_completed(
+        self, status: str, exit_code: int, result: dict[str, Any] | None = None
+    ) -> None:
+        self.try_mark_completed(status=status, exit_code=exit_code, result=result)
 
     def mark_failed(self, error: str) -> None:
         with self._lock:

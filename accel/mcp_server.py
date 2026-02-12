@@ -102,6 +102,14 @@ _SYNC_TIMEOUT_ACTIONS = {"poll", "cancel"}
 _CONTEXT_SYNC_TIMEOUT_ACTIONS = {"fallback_async", "cancel"}
 _SYNC_WAIT_SECONDS_MAX = 7200.0
 _SYNC_WAIT_RPC_SAFE_SECONDS = 45.0
+try:
+    _SYNC_CONTEXT_WAIT_RPC_SAFE_SECONDS = float(
+        os.environ.get("ACCEL_MCP_SYNC_CONTEXT_WAIT_RPC_SAFE_SECONDS", "52")
+    )
+except ValueError:
+    _SYNC_CONTEXT_WAIT_RPC_SAFE_SECONDS = 52.0
+if _SYNC_CONTEXT_WAIT_RPC_SAFE_SECONDS <= 0:
+    _SYNC_CONTEXT_WAIT_RPC_SAFE_SECONDS = 52.0
 _SEMANTIC_CACHE_MODE_ALIASES = {
     "readwrite": "hybrid",
     "read_write": "hybrid",
@@ -226,7 +234,12 @@ def _normalize_job_status_payload(status_payload: JSONDict) -> JSONDict:
         progress = min(progress, 99.9)
         consistency = "finalizing"
     elif (
-        state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
+        state == JobState.CANCELLED
+    ):
+        progress = min(progress, 99.9)
+        consistency = "cancelled"
+    elif (
+        state in {JobState.COMPLETED, JobState.FAILED}
         and total > 0
         and completed >= total
     ):
@@ -1025,7 +1038,14 @@ def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
                 "full": bool(full_value),
                 "timed_out": False,
             }
-            current.mark_completed("ok", 0, payload)
+            if not current.try_mark_completed("ok", 0, payload):
+                if current.state != JobState.CANCELLED:
+                    current.mark_cancelled()
+                current.add_event(
+                    "job_cancelled_finalized",
+                    {"reason": "index_worker_late_cancel_before_complete"},
+                )
+                return
             manifest_payload = payload.get("manifest", {})
             files = 0
             if isinstance(manifest_payload, dict):
@@ -3012,11 +3032,18 @@ def create_server() -> FastMCP:
                         "snippets": int(result.get("snippets", 0) or 0),
                     },
                 )
-                j.mark_completed(
+                if not j.try_mark_completed(
                     str(result.get("status", "ok")),
                     int(result.get("exit_code", 0) or 0),
                     result,
-                )
+                ):
+                    if j.state != JobState.CANCELLED:
+                        j.mark_cancelled()
+                    j.add_event(
+                        "job_cancelled_finalized",
+                        {"reason": "context_worker_late_cancel_before_complete"},
+                    )
+                    return
             except Exception as exc:
                 if j.state in (JobState.CANCELLING, JobState.CANCELLED):
                     if j.state != JobState.CANCELLED:
@@ -3135,6 +3162,7 @@ def create_server() -> FastMCP:
                 override_value=sync_wait_seconds,
                 runtime_key="sync_context_wait_seconds",
                 fallback_seconds=float(_effective_sync_context_wait_seconds()),
+                rpc_safe_cap_seconds=float(_SYNC_CONTEXT_WAIT_RPC_SAFE_SECONDS),
             )
             result = _wait_for_context_job_result(
                 job_id,
@@ -3469,9 +3497,18 @@ def create_server() -> FastMCP:
                         "job_cancelled_finalized", {"reason": "worker_observed_cancel"}
                     )
                     return
-                j.mark_completed(
-                    result.get("status", "unknown"), result.get("exit_code", 1), result
-                )
+                if not j.try_mark_completed(
+                    result.get("status", "unknown"),
+                    result.get("exit_code", 1),
+                    result,
+                ):
+                    if j.state != JobState.CANCELLED:
+                        j.mark_cancelled()
+                    j.add_event(
+                        "job_cancelled_finalized",
+                        {"reason": "worker_late_cancel_before_complete"},
+                    )
+                    return
             except Exception as exc:
                 if j.state in (JobState.CANCELLING, JobState.CANCELLED):
                     if j.state != JobState.CANCELLED:

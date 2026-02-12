@@ -184,6 +184,70 @@ def test_accel_context_sync_timeout_falls_back_to_async(tmp_path: Path, monkeypa
     assert final_status.get("state") == mcp_server.JobState.COMPLETED
 
 
+def test_sync_context_wait_runtime_default_is_capped_for_rpc_safety(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_dir = tmp_path / "sync_context_runtime_wait_project"
+    project_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda *args, **kwargs: {
+            "runtime": {
+                "accel_home": str(tmp_path / ".accel-home"),
+                "sync_context_wait_seconds": 180.0,
+                "sync_context_timeout_action": "fallback_async",
+                "semantic_cache_mode": "hybrid",
+                "constraint_mode": "warn",
+                "context_rpc_timeout_seconds": 300.0,
+            }
+        },
+    )
+    wait_seconds = mcp_server._resolve_sync_wait_seconds(
+        project_dir=project_dir,
+        override_value=None,
+        runtime_key="sync_context_wait_seconds",
+        fallback_seconds=10.0,
+        rpc_safe_cap_seconds=float(mcp_server._SYNC_CONTEXT_WAIT_RPC_SAFE_SECONDS),
+    )
+    assert float(wait_seconds) == float(
+        mcp_server._SYNC_CONTEXT_WAIT_RPC_SAFE_SECONDS
+    )
+
+
+def test_sync_context_wait_explicit_override_is_capped_for_rpc_safety(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_dir = tmp_path / "sync_context_explicit_wait_project"
+    project_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda *args, **kwargs: {
+            "runtime": {
+                "accel_home": str(tmp_path / ".accel-home"),
+                "sync_context_wait_seconds": 30.0,
+                "sync_context_timeout_action": "fallback_async",
+                "semantic_cache_mode": "hybrid",
+                "constraint_mode": "warn",
+                "context_rpc_timeout_seconds": 300.0,
+            }
+        },
+    )
+    wait_seconds = mcp_server._resolve_sync_wait_seconds(
+        project_dir=project_dir,
+        override_value=180,
+        runtime_key="sync_context_wait_seconds",
+        fallback_seconds=10.0,
+        rpc_safe_cap_seconds=float(mcp_server._SYNC_CONTEXT_WAIT_RPC_SAFE_SECONDS),
+    )
+    assert float(wait_seconds) == float(
+        mcp_server._SYNC_CONTEXT_WAIT_RPC_SAFE_SECONDS
+    )
+
+
 def test_accel_context_start_status_events_and_cancel(tmp_path: Path, monkeypatch) -> None:
     project_dir = tmp_path / "context_async_project"
     project_dir.mkdir(parents=True)
@@ -2290,6 +2354,20 @@ def test_verify_status_clamps_finalizing_progress_before_terminal_transition() -
     assert payload.get("state") == mcp_server.JobState.RUNNING
     assert float(payload.get("progress", 0.0)) < 100.0
     assert payload.get("state_consistency") == "finalizing"
+
+
+def test_normalize_job_status_payload_keeps_cancelled_progress_below_complete() -> None:
+    payload = mcp_server._normalize_job_status_payload(
+        {
+            "state": mcp_server.JobState.CANCELLED,
+            "stage": "cancelled",
+            "progress": 100.0,
+            "completed_commands": 5,
+            "total_commands": 5,
+        }
+    )
+    assert payload.get("state_consistency") == "cancelled"
+    assert float(payload.get("progress", 100.0)) < 100.0
 
 
 def test_sync_index_timeout_returns_running_then_completes(tmp_path: Path, monkeypatch) -> None:

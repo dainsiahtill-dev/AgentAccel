@@ -6,6 +6,7 @@ from accel.config import init_project, resolve_effective_config
 from accel.indexers import build_or_update_indexes
 import accel.verify.sharding as sharding
 from accel.verify.sharding import _with_targeted_pytests, _with_targeted_pytests_shards, select_verify_commands
+from accel.verify.sharding_workspace import _apply_workspace_routing
 
 
 def _write(path: Path, content: str) -> None:
@@ -192,6 +193,36 @@ def test_verify_sharding_workspace_routing_can_be_disabled(tmp_path: Path) -> No
 
     cmds = select_verify_commands(cfg, changed_files=["frontend/src/app.ts"])
     assert cmds == ["npm run lint"]
+
+
+def test_workspace_routing_rewrites_pytest_targets_to_workspace_relative(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "workspace_pytest_project"
+    backend_dir = project_dir / "src" / "backend"
+    tests_dir = backend_dir / "tests"
+    tests_dir.mkdir(parents=True, exist_ok=True)
+    (backend_dir / "pyproject.toml").write_text("[project]\nname='backend'\n", encoding="utf-8")
+    (tests_dir / "test_smoke.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    (backend_dir / "service.py").write_text("def run() -> int:\n    return 1\n", encoding="utf-8")
+
+    config = {
+        "runtime": {"verify_workspace_routing_enabled": True},
+        "meta": {"project_dir": str(project_dir)},
+    }
+    command = "python -m pytest -q src/backend/tests/test_smoke.py"
+
+    routed = _apply_workspace_routing(
+        commands=[command],
+        config=config,
+        changed_files=["src/backend/service.py"],
+    )
+
+    assert len(routed) == 1
+    normalized = str(routed[0]).replace("\\", "/")
+    assert "src/backend/tests/test_smoke.py" not in normalized
+    assert "tests/test_smoke.py" in normalized
+    assert "src/backend" in normalized
 
 
 def test_verify_sharding_respects_custom_language_profile_registry() -> None:

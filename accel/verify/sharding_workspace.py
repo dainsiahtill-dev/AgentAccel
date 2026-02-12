@@ -193,6 +193,129 @@ def _wrap_command_with_workspace(command: str, workspace_rel: str) -> str:
     return f'cd "{safe_rel}" && {command_text}'
 
 
+def _join_command_tokens(tokens: list[str]) -> str:
+    out: list[str] = []
+    for token in tokens:
+        text = str(token)
+        if os.name == "nt":
+            if any(ch.isspace() for ch in text):
+                escaped = text.replace('"', '\\"')
+                out.append(f'"{escaped}"')
+            else:
+                out.append(text)
+        else:
+            out.append(shlex.quote(text))
+    return " ".join(out).strip()
+
+
+def _pytest_args_start_index(tokens: list[str]) -> int:
+    if not tokens:
+        return -1
+    binary = str(tokens[0]).strip().lower()
+    if binary == "pytest" or binary.endswith("/pytest") or binary.endswith("\\pytest"):
+        return 1
+    if binary in {"python", "python3", "py"}:
+        for idx in range(1, len(tokens) - 1):
+            if str(tokens[idx]).strip() != "-m":
+                continue
+            module = str(tokens[idx + 1]).strip().lower()
+            if module == "pytest":
+                return idx + 2
+    return -1
+
+
+def _split_pytest_node_target(token: str) -> tuple[str, str]:
+    text = str(token or "").strip()
+    if "::" not in text:
+        return text, ""
+    path_part, node_part = text.split("::", 1)
+    return path_part, node_part
+
+
+def _is_likely_pytest_path_token(token: str) -> bool:
+    value = str(token or "").strip()
+    if not value or value.startswith("-"):
+        return False
+    if value.lower().endswith(".py"):
+        return True
+    if "/" in value or "\\" in value:
+        return True
+    if value.startswith("."):
+        return True
+    return False
+
+
+def _rebase_pytest_target_for_workspace(
+    token: str,
+    *,
+    workspace_rel: str,
+    project_dir: Path,
+) -> str:
+    rel = str(workspace_rel).strip()
+    if not rel or rel == ".":
+        return token
+    path_part, node_part = _split_pytest_node_target(token)
+    if not _is_likely_pytest_path_token(path_part):
+        return token
+
+    project_root = project_dir.resolve()
+    workspace_path = (project_root / rel).resolve()
+    normalized = _normalize_path(path_part)
+    if normalized.startswith("../"):
+        return token
+
+    try:
+        if Path(normalized).is_absolute():
+            candidate_abs = Path(normalized).resolve()
+        else:
+            candidate_abs = (project_root / Path(normalized)).resolve()
+    except OSError:
+        return token
+
+    if not candidate_abs.exists():
+        return token
+
+    try:
+        rebased = candidate_abs.relative_to(workspace_path).as_posix()
+    except ValueError:
+        return token
+
+    rebuilt = rebased
+    if node_part:
+        rebuilt = f"{rebuilt}::{node_part}"
+    return rebuilt
+
+
+def _rewrite_pytest_targets_for_workspace(
+    command: str,
+    *,
+    workspace_rel: str,
+    project_dir: Path,
+) -> str:
+    tokens = _parse_command_tokens(command)
+    args_start = _pytest_args_start_index(tokens)
+    if args_start < 0:
+        return command
+
+    changed = False
+    rewritten = list(tokens)
+    for idx in range(args_start, len(rewritten)):
+        token = str(rewritten[idx]).strip()
+        if not token or token.startswith("-"):
+            continue
+        updated = _rebase_pytest_target_for_workspace(
+            token,
+            workspace_rel=workspace_rel,
+            project_dir=project_dir,
+        )
+        if updated != token:
+            rewritten[idx] = updated
+            changed = True
+    if not changed:
+        return command
+    return _join_command_tokens(rewritten)
+
+
 def _apply_workspace_routing(
     *,
     commands: list[str],
@@ -235,5 +358,10 @@ def _apply_workspace_routing(
                 workspaces=python_workspaces,
                 kind="python",
             )
-        routed.append(_wrap_command_with_workspace(command, workspace_rel))
+        rewritten_command = _rewrite_pytest_targets_for_workspace(
+            command,
+            workspace_rel=workspace_rel,
+            project_dir=project_dir,
+        )
+        routed.append(_wrap_command_with_workspace(rewritten_command, workspace_rel))
     return routed
