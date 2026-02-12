@@ -84,6 +84,49 @@ def test_context_pack_snippet_dedupe_and_metrics(tmp_path: Path, monkeypatch) ->
     assert len(pack.get("snippets", [])) >= 1
 
 
+def test_context_pack_prioritizes_changed_files_in_top_order(tmp_path: Path, monkeypatch) -> None:
+    _write(
+        tmp_path / "accel" / "query" / "ranker.py",
+        "def tune_ranker() -> str:\n    return 'ok'\n",
+    )
+    _write(
+        tmp_path / "accel" / "query" / "planner.py",
+        "def plan_scope() -> str:\n    return 'ok'\n",
+    )
+    _write(
+        tmp_path / "accel" / "query" / "context_compiler.py",
+        "def compile_pack() -> str:\n    return 'ok'\n",
+    )
+    _write(
+        tmp_path / "accel" / "mcp_server.py",
+        "def verify_events_contract() -> str:\n    return 'stable'\n",
+    )
+    _write(
+        tmp_path / "tests" / "test_mcp.py",
+        "from accel.mcp_server import verify_events_contract\n\n"
+        "def test_verify_events_contract():\n    assert verify_events_contract() == 'stable'\n",
+    )
+
+    init_project(tmp_path)
+    monkeypatch.setenv("ACCEL_HOME", str(tmp_path / ".accel-home"))
+
+    cfg = resolve_effective_config(tmp_path)
+    build_or_update_indexes(project_dir=tmp_path, config=cfg, mode="build", full=True)
+
+    changed_files = ["accel/query/ranker.py", "accel/query/planner.py"]
+    pack = compile_context_pack(
+        project_dir=tmp_path,
+        config=cfg,
+        task="Tune multi-signal ranking to reduce false positives for scoped bugfix tasks.",
+        changed_files=changed_files,
+        budget_override={"top_n_files": 4, "max_snippets": 8, "max_chars": 12000},
+    )
+
+    top_paths = [str(item.get("path", "")) for item in pack.get("top_files", [])]
+    assert top_paths[:2] == changed_files
+    assert "accel/query/context_compiler.py" in top_paths
+
+
 def test_index_update_uses_parallel_pool_and_delta_mmap(tmp_path: Path, monkeypatch) -> None:
     _write(
         tmp_path / "src" / "main.py",

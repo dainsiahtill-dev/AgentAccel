@@ -53,6 +53,87 @@ def _snippet_fingerprint(content: str) -> str:
     return hashlib.sha1(normalized.encode("utf-8", errors="replace")).hexdigest()
 
 
+def _normalize_path_key(path: str) -> str:
+    return str(path or "").replace("\\", "/").strip().lower()
+
+
+def _changed_scope_prefixes(changed_files: list[str]) -> list[str]:
+    prefixes: set[str] = set()
+    for raw_path in changed_files:
+        normalized = _normalize_path_key(raw_path)
+        if not normalized or "/" not in normalized:
+            continue
+        parent = normalized.rsplit("/", 1)[0]
+        if parent:
+            prefixes.add(parent + "/")
+    return sorted(prefixes, key=len, reverse=True)
+
+
+def _apply_changed_scope_prioritization(
+    ranked: list[dict[str, Any]],
+    changed_files: list[str],
+) -> list[dict[str, Any]]:
+    changed_norm = [_normalize_path_key(item) for item in changed_files]
+    changed_set = {item for item in changed_norm if item}
+    if not changed_set:
+        return ranked
+    prefixes = _changed_scope_prefixes(changed_files)
+
+    changed_index: dict[str, int] = {}
+    for idx, path in enumerate(changed_norm):
+        if path and path not in changed_index:
+            changed_index[path] = idx
+
+    adjusted: list[dict[str, Any]] = []
+    for item in ranked:
+        row = dict(item)
+        row_path = _normalize_path_key(str(row.get("path", "")))
+        reasons = list(row.get("reasons", []))
+        signals = list(row.get("signals", []))
+        score = float(row.get("score", 0.0))
+
+        if row_path in changed_set:
+            if "changed_scope_pin" not in reasons:
+                reasons.append("changed_scope_pin")
+            if not any(
+                str(signal.get("signal_name", "")) == "changed_scope_pin"
+                for signal in signals
+                if isinstance(signal, dict)
+            ):
+                signals.append({"signal_name": "changed_scope_pin", "score": 1.0})
+        elif any(row_path.startswith(prefix) for prefix in prefixes):
+            score = round(score + 0.08, 6)
+            if "scope_affinity" not in reasons:
+                reasons.append("scope_affinity")
+            if not any(
+                str(signal.get("signal_name", "")) == "scope_affinity"
+                for signal in signals
+                if isinstance(signal, dict)
+            ):
+                signals.append({"signal_name": "scope_affinity", "score": 0.08})
+
+        row["score"] = round(score, 6)
+        row["reasons"] = reasons
+        row["signals"] = signals
+        adjusted.append(row)
+
+    adjusted.sort(key=lambda item: (-float(item["score"]), str(item["path"])))
+    pinned = [
+        item for item in adjusted if _normalize_path_key(str(item.get("path", ""))) in changed_set
+    ]
+    pinned.sort(
+        key=lambda item: (
+            changed_index.get(_normalize_path_key(str(item.get("path", ""))), 10**9),
+            -float(item.get("score", 0.0)),
+            str(item.get("path", "")),
+        )
+    )
+    remaining = [
+        item for item in adjusted if _normalize_path_key(str(item.get("path", ""))) not in changed_set
+    ]
+    return pinned + remaining
+
+
 def _build_verify_plan(
     config: dict[str, Any],
     top_files: list[dict[str, Any]],
@@ -140,6 +221,7 @@ def _rank_candidate_files(
     tests_by_file: dict[str, list[dict[str, Any]]],
 ) -> tuple[list[dict[str, Any]], list[str]]:
     task_tokens = normalize_task_tokens(task)
+    changed_files = [item.replace("\\", "/") for item in changed_files]
     candidate_files = build_candidate_files(
         list(manifest.get("indexed_files", [])),
         changed_files=changed_files,
@@ -170,6 +252,7 @@ def _rank_candidate_files(
                 )
         ranked.sort(key=lambda item: (-float(item["score"]), str(item["path"])))
 
+    ranked = _apply_changed_scope_prioritization(ranked, changed_files)
     return ranked, task_tokens
 
 
