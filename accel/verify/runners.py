@@ -5,7 +5,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 OUTPUT_TAIL_LIMIT = 12000
 
@@ -16,6 +16,16 @@ def _normalize_output(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
+
+
+def _resolve_preexec_fn() -> Callable[[], None] | None:
+    """Return a safe preexec function for Unix-like systems only."""
+    if os.name == "nt":
+        return None
+    setsid = getattr(os, "setsid", None)
+    if callable(setsid):
+        return setsid
+    return None
 
 
 def _kill_process_tree(process: subprocess.Popen[str]) -> None:
@@ -84,11 +94,15 @@ def _kill_process_tree(process: subprocess.Popen[str]) -> None:
     else:
         # Unix-like systems: use process group
         try:
-            if hasattr(os, 'killpg'):
-                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            killpg = getattr(os, "killpg", None)
+            getpgid = getattr(os, "getpgid", None)
+            if callable(killpg) and callable(getpgid):
+                pgid = int(getpgid(pid))
+                killpg(pgid, signal.SIGTERM)
                 time.sleep(0.1)  # Give it a moment to terminate
                 if process.poll() is None:
-                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+                    killpg(pgid, sigkill)
             else:
                 process.terminate()
                 time.sleep(0.1)
@@ -122,7 +136,7 @@ def run_command(command: str, cwd: Path, timeout_seconds: int) -> dict[str, Any]
             encoding="utf-8",
             errors="replace",
             # Set process group for better termination on Unix
-            preexec_fn=None if os.name == "nt" else os.setsid,
+            preexec_fn=_resolve_preexec_fn(),
         )
         
         # Use communicate with timeout

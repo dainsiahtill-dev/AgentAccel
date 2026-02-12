@@ -1,0 +1,16 @@
+﻿VERIFICATION_START phase1_semantic_cache_rule_constraint_20260212_03 2026-02-12T02:46:01.0757456Z
+ENV branch=main commit=fd6de56d861c34f75b7e765e1c7dc0843a7a1ad9 python=3.14.2 (tags/v3.14.2:df79316, Dec  5 2025, 17:18:21) [MSC v.1944 64 bit (AMD64)]
+CMD python -m ruff check .
+EXIT_CODE 0
+All checks passed!
+CMD python -m mypy .
+EXIT_CODE 0
+Success: no issues found in 36 source files
+CMD python -m pytest -q tests/unit
+EXIT_CODE 0
+...................................................................      [100%]
+67 passed in 8.52s
+CMD set PYTHONPATH=x:\MCPs\agent-accel&& python .harborpilot/tmp/mcp_regression_phase1_semantic_cache_rule_constraint_20260212_02.py
+EXIT_CODE 0
+{"index_update": {"status": "ok", "files": 380}, "context": {"status": "ok", "token_reduction_ratio": 0.994702, "cache_first_hit": true, "cache_second_hit": true, "compression_saved_chars": 85, "constraint_repair_count": 1}, "verify_start": {"status": "started", "job_id": "verify_6bd891157a88"}, "verify": {"status_seen": ["running", "completed"], "cancel_status": "completed", "final_state": "completed", "events_latest_state": "completed", "events_state_source": "status_terminal", "events_count": 7}}
+VERIFICATION_END phase1_semantic_cache_rule_constraint_20260212_03 2026-02-12T02:46:17.3665119Z

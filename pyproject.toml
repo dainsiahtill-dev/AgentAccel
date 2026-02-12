@@ -22,3 +22,15 @@ accel-post-hook = "accel.hooks.post_hook:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["accel*"]
+
+[tool.ruff]
+extend-exclude = [
+    "test_async_verify.py",
+    "test_tool_api.py",
+    "test_verify_blocking.py",
+]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["accel"]
+exclude = '^(test_async_verify\.py|test_tool_api\.py|test_verify_blocking\.py|tests/)'

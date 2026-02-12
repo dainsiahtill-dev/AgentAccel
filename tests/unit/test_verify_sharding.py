@@ -4,6 +4,7 @@ from pathlib import Path
 
 from accel.config import init_project, resolve_effective_config
 from accel.indexers import build_or_update_indexes
+import accel.verify.sharding as sharding
 from accel.verify.sharding import _with_targeted_pytests, _with_targeted_pytests_shards, select_verify_commands
 
 
@@ -109,3 +110,37 @@ def test_with_targeted_pytests_shards_ignores_non_py() -> None:
     assert "tests/a.py" in commands[0]
     assert "tests/b.spec.ts" not in commands[0]
     assert "tests/c.ts" not in commands[0]
+
+
+def test_verify_sharding_command_plan_cache_hits(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "cache_project"
+    project_dir.mkdir(parents=True)
+    cfg = {
+        "verify": {"python": ["pytest -q"], "node": []},
+        "runtime": {
+            "accel_home": str(tmp_path / ".accel-home"),
+            "command_plan_cache_enabled": True,
+            "command_plan_cache_ttl_seconds": 3600,
+            "command_plan_cache_max_entries": 100,
+            "verify_max_target_tests": 16,
+            "verify_pytest_shard_size": 8,
+            "verify_pytest_max_shards": 2,
+            "verify_fail_fast": False,
+        },
+        "meta": {"project_dir": str(project_dir)},
+    }
+
+    calls = {"count": 0}
+
+    def fake_load_index_inputs(config):
+        calls["count"] += 1
+        return set(), [], []
+
+    monkeypatch.setattr(sharding, "_load_index_inputs", fake_load_index_inputs)
+
+    first = select_verify_commands(cfg, changed_files=["src/auth.py"])
+    second = select_verify_commands(cfg, changed_files=["src/auth.py"])
+
+    assert first == ["pytest -q"]
+    assert second == ["pytest -q"]
+    assert calls["count"] == 1

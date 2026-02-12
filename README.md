@@ -222,6 +222,9 @@ Generate a budgeted context pack for a task.
 | `strict_changed_files` | boolean \| string | `null` | Strict mode: require explicit `changed_files` or git delta (skip index/planner fallback) |
 | `snippets_only` | boolean \| string | `false` | Output lightweight pack containing only snippets |
 | `include_metadata` | boolean \| string | `true` | Include `meta` in generated pack payload |
+| `semantic_cache` | boolean \| string | `true` | Enable semantic context cache lookup/store |
+| `semantic_cache_mode` | string | `hybrid` | Cache lookup mode: `exact` or `hybrid` |
+| `constraint_mode` | string | `warn` | Output constraint behavior: `off` \| `warn` \| `strict` |
 
 `budget` string presets are aliases for common token envelopes. Example:
 
@@ -255,6 +258,13 @@ Generate a budgeted context pack for a task.
 - `output_mode`: `full` | `snippets_only`
 - `selected_tests_count`: number of tests selected in `verify_plan.target_tests`
 - `selected_checks_count`: number of checks selected in `verify_plan.target_checks`
+- `semantic_cache_hit`: whether current context came from semantic cache
+- `semantic_cache_mode_used`: `off` | `exact` | `hybrid` | `miss`
+- `semantic_cache_similarity`: hybrid cache similarity score when applicable
+- `compression_rules_applied`: per-rule compression counters
+- `compression_saved_chars`: total chars reduced by snippet rule compression
+- `constraint_repair_count`: automatic repair count produced by constraints layer
+- `constraint_warnings`: repair warning messages (empty when fully compliant)
 - `budget_source` / `budget_preset`: whether budget came from user input or auto policy
 - `changed_files_source`: `user` | `git_auto` | `manifest_recent` | `planner_fallback` | `index_head_fallback` | `none`
 - `token_estimator`: backend/model/encoding/calibration metadata used for estimation
@@ -291,6 +301,8 @@ Start incremental verification with runtime override options.
 | `verify_cache_ttl_seconds` | integer \| string | `null` | TTL for successful cache entries |
 | `verify_cache_failed_ttl_seconds` | integer \| string | `null` | TTL for failed cache entries (short-term) |
 | `verify_cache_max_entries` | integer \| string | `null` | Max retained command cache entries |
+| `command_plan_cache_enabled` | boolean \| string | `null` | Cache `select_verify_commands` planning output |
+| `constraint_mode` | string | `null` | Summary/output contract mode: `off` \| `warn` \| `strict` |
 | `wait_for_completion` | boolean \| string | `false` | Synchronous bounded wait for final result |
 | `sync_wait_seconds` | integer \| string | `null` | Override synchronous wait window (clamped) |
 | `sync_timeout_action` | string | `poll` | Timeout action: `poll` (default) or `cancel` |
@@ -323,6 +335,7 @@ Start incremental verification with runtime override options.
 - heartbeat events may include command-level fields: `current_command`, `command_elapsed_sec`, `command_timeout_sec`, `command_progress_pct`
 - command completion events may include tails: `stdout_tail`, `stderr_tail`, plus `completed` / `total`
 - verify jsonl command events include structured fields: `mode`, `fail_fast`, `cache_hits`, `cache_misses`, `fail_fast_skipped`, `command_index`
+- summary payload includes `state_source` and `constraint_repair_count`
 
 Tokenizer estimation runtime knobs (via `accel.local.yaml` runtime or env):
 - `token_estimator_backend`: `auto` | `tiktoken` | `heuristic`
@@ -330,6 +343,16 @@ Tokenizer estimation runtime knobs (via `accel.local.yaml` runtime or env):
 - `token_estimator_model`: optional model name for encoder resolution
 - `token_estimator_calibration`: positive float multiplier (default `1.0`)
 - `token_estimator_fallback_chars_per_token`: fallback ratio when tokenizer is unavailable (default `4.0`)
+- `semantic_cache_enabled`: enable context semantic cache (default `true`)
+- `semantic_cache_mode`: `exact` | `hybrid` (default `hybrid`)
+- `semantic_cache_ttl_seconds`: context cache TTL (default `7200`)
+- `semantic_cache_hybrid_threshold`: hybrid similarity threshold (default `0.86`)
+- `semantic_cache_max_entries`: max cached context entries (default `800`)
+- `command_plan_cache_enabled`: enable verify command-plan cache (default `true`)
+- `command_plan_cache_ttl_seconds`: verify plan cache TTL (default `900`)
+- `command_plan_cache_max_entries`: max cached verify plans (default `600`)
+- `constraint_mode`: output constraint mode `off|warn|strict` (default `warn`)
+- `rule_compression_enabled`: enable snippet rule compression (default `true`)
 - `sync_verify_timeout_action`: `poll` | `cancel` (default `poll`)
 - `sync_verify_cancel_grace_seconds`: grace period after auto-cancel request (default `5.0`)
 

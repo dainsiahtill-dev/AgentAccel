@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+
 
 IMPORT_FROM_RE = re.compile(
     r"""^\s*import\s+.+?\s+from\s+["']([^"']+)["']""", re.MULTILINE

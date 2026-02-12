@@ -1,0 +1,29 @@
+{
+  "index_update": {
+    "status": "ok",
+    "files": 380
+  },
+  "context": {
+    "status": "ok",
+    "token_reduction_ratio": 0.994702,
+    "cache_first_hit": true,
+    "cache_second_hit": true,
+    "compression_saved_chars": 85,
+    "constraint_repair_count": 1
+  },
+  "verify_start": {
+    "status": "started",
+    "job_id": "verify_6bd891157a88"
+  },
+  "verify": {
+    "status_seen": [
+      "running",
+      "completed"
+    ],
+    "cancel_status": "completed",
+    "final_state": "completed",
+    "events_latest_state": "completed",
+    "events_state_source": "status_terminal",
+    "events_count": 7
+  }
+}

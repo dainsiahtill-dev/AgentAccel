@@ -262,68 +262,82 @@ def _build_payloads_for_changed(
             if index_parallel_backend == "thread":
                 _log_deadlock_info("Using ThreadPoolExecutor")
                 with ThreadPoolExecutor(max_workers=workers) as pool:
-                    future_map = {pool.submit(_process_file_for_index, job): job for job in jobs}
-                    
-                    results = []
-                    for future in as_completed(future_map, timeout=overall_timeout):
-                        job = future_map[future]
-                        try:
-                            result = future.result(timeout=timeout_per_file)
-                            results.append(result)
+                    if hasattr(pool, "submit"):
+                        future_map = {pool.submit(_process_file_for_index, job): job for job in jobs}
+                        
+                        results = []
+                        for future in as_completed(future_map, timeout=overall_timeout):
+                            job = future_map[future]
+                            try:
+                                result = future.result(timeout=timeout_per_file)
+                                results.append(result)
+                                _log_deadlock_info(f"Completed job: {job[1]}")
+                            except TimeoutError:
+                                _log_deadlock_info(f"Timeout for job: {job[1]}")
+                                # Add a failure result for timed out jobs
+                                results.append({
+                                    "file": job[1],
+                                    "lang": job[2],
+                                    "symbols": [],
+                                    "dependencies": [],
+                                    "references": [],
+                                    "error": "timeout"
+                                })
+                            except Exception as exc:
+                                _log_deadlock_info(f"Error for job {job[1]}: {exc!r}")
+                                results.append({
+                                    "file": job[1],
+                                    "lang": job[2],
+                                    "symbols": [],
+                                    "dependencies": [],
+                                    "references": [],
+                                    "error": str(exc)
+                                })
+                    else:
+                        # Compatibility path for lightweight test doubles exposing only map().
+                        _log_deadlock_info("Executor missing submit(), falling back to map()")
+                        results = list(pool.map(_process_file_for_index, jobs))
+                        for job in jobs:
                             _log_deadlock_info(f"Completed job: {job[1]}")
-                        except TimeoutError:
-                            _log_deadlock_info(f"Timeout for job: {job[1]}")
-                            # Add a failure result for timed out jobs
-                            results.append({
-                                "file": job[1],
-                                "lang": job[2],
-                                "symbols": [],
-                                "dependencies": [],
-                                "references": [],
-                                "error": "timeout"
-                            })
-                        except Exception as exc:
-                            _log_deadlock_info(f"Error for job {job[1]}: {exc!r}")
-                            results.append({
-                                "file": job[1],
-                                "lang": job[2],
-                                "symbols": [],
-                                "dependencies": [],
-                                "references": [],
-                                "error": str(exc)
-                            })
             else:
                 _log_deadlock_info("Using ProcessPoolExecutor")
                 with ProcessPoolExecutor(max_workers=workers) as pool:
-                    future_map = {pool.submit(_process_file_for_index, job): job for job in jobs}
-                    
-                    results = []
-                    for future in as_completed(future_map, timeout=overall_timeout):
-                        job = future_map[future]
-                        try:
-                            result = future.result(timeout=timeout_per_file)
-                            results.append(result)
+                    if hasattr(pool, "submit"):
+                        future_map = {pool.submit(_process_file_for_index, job): job for job in jobs}
+                        
+                        results = []
+                        for future in as_completed(future_map, timeout=overall_timeout):
+                            job = future_map[future]
+                            try:
+                                result = future.result(timeout=timeout_per_file)
+                                results.append(result)
+                                _log_deadlock_info(f"Completed job: {job[1]}")
+                            except TimeoutError:
+                                _log_deadlock_info(f"Timeout for job: {job[1]}")
+                                results.append({
+                                    "file": job[1],
+                                    "lang": job[2],
+                                    "symbols": [],
+                                    "dependencies": [],
+                                    "references": [],
+                                    "error": "timeout"
+                                })
+                            except Exception as exc:
+                                _log_deadlock_info(f"Error for job {job[1]}: {exc!r}")
+                                results.append({
+                                    "file": job[1],
+                                    "lang": job[2],
+                                    "symbols": [],
+                                    "dependencies": [],
+                                    "references": [],
+                                    "error": str(exc)
+                                })
+                    else:
+                        # Compatibility path for lightweight test doubles exposing only map().
+                        _log_deadlock_info("Executor missing submit(), falling back to map()")
+                        results = list(pool.map(_process_file_for_index, jobs))
+                        for job in jobs:
                             _log_deadlock_info(f"Completed job: {job[1]}")
-                        except TimeoutError:
-                            _log_deadlock_info(f"Timeout for job: {job[1]}")
-                            results.append({
-                                "file": job[1],
-                                "lang": job[2],
-                                "symbols": [],
-                                "dependencies": [],
-                                "references": [],
-                                "error": "timeout"
-                            })
-                        except Exception as exc:
-                            _log_deadlock_info(f"Error for job {job[1]}: {exc!r}")
-                            results.append({
-                                "file": job[1],
-                                "lang": job[2],
-                                "symbols": [],
-                                "dependencies": [],
-                                "references": [],
-                                "error": str(exc)
-                            })
                             
         except TimeoutError:
             _log_deadlock_info(f"Overall timeout after {overall_timeout}s, falling back to sequential")

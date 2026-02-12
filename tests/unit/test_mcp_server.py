@@ -106,6 +106,9 @@ def test_tool_context_budget_and_list_string_compat(tmp_path: Path) -> None:
     assert context["changed_files_source"] == "user"
     assert int(context["selected_tests_count"]) >= 0
     assert int(context["selected_checks_count"]) >= 1
+    assert "semantic_cache_hit" in context
+    assert "constraint_repair_count" in context
+    assert "compression_rules_applied" in context
     token_estimator = context.get("token_estimator", {})
     assert isinstance(token_estimator, dict)
     assert str(token_estimator.get("backend_used", "")) != ""
@@ -177,6 +180,67 @@ def test_tool_context_auto_budget_and_git_changed_files(tmp_path: Path, monkeypa
     assert float(result["compression_ratio"]) < 1.0
     assert captured["changed_files"] == ["src/auto_changed.py"]
     assert isinstance(captured["budget_override"], dict) and int(captured["budget_override"]["max_chars"]) > 0
+
+
+def test_tool_context_semantic_cache_hit_on_repeat(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_semantic_cache_project"
+    project_dir.mkdir(parents=True)
+    out_path = project_dir / "context_semantic_cache.json"
+
+    compile_calls = {"count": 0}
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {
+            "runtime": {
+                "accel_home": str(tmp_path / ".accel-home"),
+                "semantic_cache_enabled": True,
+                "semantic_cache_mode": "hybrid",
+                "semantic_cache_ttl_seconds": 7200,
+                "semantic_cache_hybrid_threshold": 0.5,
+                "semantic_cache_max_entries": 100,
+                "rule_compression_enabled": True,
+                "constraint_mode": "warn",
+            }
+        },
+    )
+    monkeypatch.setattr(mcp_server, "_discover_changed_files_from_git", lambda project_dir, limit=200: ["src/a.py"])
+
+    def fake_compile_context_pack(**kwargs):
+        compile_calls["count"] += 1
+        return {
+            "version": 1,
+            "task": str(kwargs.get("task", "")),
+            "generated_at": "2026-02-12T00:00:00+00:00",
+            "budget": {"max_chars": 9000, "max_snippets": 16, "top_n_files": 6},
+            "top_files": [{"path": "src/a.py", "score": 0.9, "reasons": ["changed_file"], "signals": []}],
+            "snippets": [{"path": "src/a.py", "start_line": 1, "end_line": 2, "symbol": "", "reason": "", "content": "print('ok')"}],
+            "verify_plan": {"target_tests": [], "target_checks": ["pytest -q"]},
+            "meta": {"source_chars_est": 9000, "compression_rules_applied": {"trim_import_block": 1}, "compression_saved_chars": 10},
+        }
+
+    monkeypatch.setattr(mcp_server, "compile_context_pack", fake_compile_context_pack)
+
+    first = mcp_server._tool_context(
+        project=str(project_dir),
+        task="cache semantic context",
+        changed_files=["src/a.py"],
+        out=str(out_path),
+        semantic_cache=True,
+    )
+    second = mcp_server._tool_context(
+        project=str(project_dir),
+        task="cache semantic context",
+        changed_files=["src/a.py"],
+        out=str(out_path),
+        semantic_cache=True,
+    )
+
+    assert compile_calls["count"] == 1
+    assert bool(first.get("semantic_cache_hit")) is False
+    assert bool(second.get("semantic_cache_hit")) is True
+    assert str(second.get("semantic_cache_mode_used", "")) == "exact"
 
 
 def test_tool_context_accepts_non_string_budget_value(tmp_path: Path, monkeypatch) -> None:
@@ -763,6 +827,8 @@ def test_verify_events_compact_summary_and_tail() -> None:
     summary = payload.get("summary", {})
     assert isinstance(summary, dict)
     assert summary.get("latest_state") == mcp_server.JobState.COMPLETED
+    assert summary.get("state_source") in {"events", "event_terminal", "status_terminal"}
+    assert int(summary.get("constraint_repair_count", 0)) >= 0
     assert bool(summary.get("terminal_event_seen")) is True
     event_type_counts = summary.get("event_type_counts", {})
     assert isinstance(event_type_counts, dict)
@@ -788,6 +854,8 @@ def test_verify_events_summary_prefers_terminal_state_over_late_heartbeat() -> N
     summary = payload.get("summary", {})
     assert isinstance(summary, dict)
     assert summary.get("latest_state") == mcp_server.JobState.CANCELLED
+    assert summary.get("state_source") == "status_terminal"
+    assert int(summary.get("constraint_repair_count", 0)) >= 0
     assert bool(summary.get("terminal_event_seen")) is True
 
 

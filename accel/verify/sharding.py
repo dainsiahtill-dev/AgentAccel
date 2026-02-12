@@ -7,6 +7,7 @@ from typing import Any
 
 from ..storage.cache import project_paths
 from ..storage.index_cache import load_index_rows
+from ..storage.semantic_cache import SemanticCacheStore, make_stable_hash, normalize_changed_files
 
 
 def _normalize_path(value: str) -> str:
@@ -111,11 +112,39 @@ def _resolve_dependency_targets(
         normalized_to.replace(".", "/"),
         normalized_to.strip("/"),
     }
+    dotted = normalized_to.replace("/", ".").strip(".")
+    if dotted:
+        parts = dotted.split(".")
+        # Some dependency indexers emit symbol-level targets (e.g. src.auth.login).
+        # Walk up segments to recover module-level aliases (src.auth).
+        for idx in range(len(parts), 0, -1):
+            candidate_dotted = ".".join(parts[:idx]).strip(".")
+            candidate_slash = candidate_dotted.replace(".", "/")
+            alias_candidates.add(candidate_dotted)
+            alias_candidates.add(candidate_slash)
     for alias in alias_candidates:
         if alias in module_aliases:
             resolved.update(module_aliases[alias])
 
     return resolved
+
+
+def _runtime_fingerprint(runtime_cfg: dict[str, Any]) -> str:
+    payload = {
+        "verify_max_target_tests": int(runtime_cfg.get("verify_max_target_tests", 64)),
+        "verify_pytest_shard_size": int(runtime_cfg.get("verify_pytest_shard_size", 16)),
+        "verify_pytest_max_shards": int(runtime_cfg.get("verify_pytest_max_shards", 6)),
+        "verify_fail_fast": bool(runtime_cfg.get("verify_fail_fast", False)),
+    }
+    return make_stable_hash(payload)
+
+
+def _verify_config_hash(config: dict[str, Any]) -> str:
+    payload = {
+        "verify": config.get("verify", {}),
+        "index": config.get("index", {}),
+    }
+    return make_stable_hash(payload)
 
 
 def _load_index_inputs(config: dict[str, Any]) -> tuple[set[str], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -215,6 +244,41 @@ def _collect_impacted_files(changed_files: list[str], indexed_files: set[str], r
     return impacted
 
 
+def _collect_textual_dependents(project_dir: Path, changed_files: list[str], indexed_files: set[str]) -> set[str]:
+    module_tokens: set[str] = set()
+    for changed in changed_files:
+        normalized = _normalize_path(changed)
+        stem = Path(normalized).with_suffix("").as_posix()
+        if stem:
+            module_tokens.add(stem.replace("/", "."))
+            module_tokens.add(stem.split("/")[-1])
+        basename = Path(normalized).stem
+        if basename:
+            module_tokens.add(basename)
+
+    if not module_tokens:
+        return set()
+
+    dependents: set[str] = set()
+    for rel_path in indexed_files:
+        if rel_path in changed_files:
+            continue
+        candidate = project_dir / rel_path
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        if candidate.suffix.lower() not in {".py", ".ts", ".tsx", ".js", ".jsx"}:
+            continue
+        try:
+            if candidate.stat().st_size > 1_000_000:
+                continue
+            text = candidate.read_text(encoding="utf-8", errors="replace").lower()
+        except OSError:
+            continue
+        if any(token and token.lower() in text for token in module_tokens):
+            dependents.add(rel_path)
+    return dependents
+
+
 def _collect_impacted_tests(
     impacted_files: set[str],
     ownership_rows: list[dict[str, Any]],
@@ -305,6 +369,38 @@ def select_verify_commands(
     has_js = any(item.endswith((".ts", ".tsx", ".js", ".jsx")) for item in changed_files_low)
     run_all = len(changed_files_low) == 0
 
+    runtime_cfg = dict(config.get("runtime", {}))
+    meta_cfg = dict(config.get("meta", {}))
+    project_dir_text = str(meta_cfg.get("project_dir", "")).strip()
+    accel_home_text = str(runtime_cfg.get("accel_home", "")).strip()
+    plan_cache_enabled = bool(runtime_cfg.get("command_plan_cache_enabled", True))
+    plan_cache_ttl = max(1, int(runtime_cfg.get("command_plan_cache_ttl_seconds", 900)))
+    plan_cache_max_entries = max(1, int(runtime_cfg.get("command_plan_cache_max_entries", 600)))
+    cache_store: SemanticCacheStore | None = None
+    cache_key = ""
+    if plan_cache_enabled and project_dir_text and accel_home_text:
+        changed_norm = normalize_changed_files(raw_changed_files)
+        changed_fingerprint = make_stable_hash({"changed_files": changed_norm})
+        runtime_hash = _runtime_fingerprint(runtime_cfg)
+        config_hash = _verify_config_hash(config)
+        cache_key = make_stable_hash(
+            {
+                "changed_fingerprint": changed_fingerprint,
+                "runtime_hash": runtime_hash,
+                "config_hash": config_hash,
+            }
+        )
+        try:
+            project_dir = Path(project_dir_text)
+            accel_home = Path(accel_home_text).resolve()
+            paths = project_paths(accel_home, project_dir)
+            cache_store = SemanticCacheStore(paths["state"] / "semantic_cache.db")
+            cached_commands = cache_store.get_verify_plan(cache_key)
+            if isinstance(cached_commands, list):
+                return cached_commands
+        except OSError:
+            cache_store = None
+
     commands: list[str] = []
 
     if run_all or has_py:
@@ -322,6 +418,13 @@ def select_verify_commands(
                     indexed_files=indexed_files,
                     reverse_graph=reverse_graph,
                 )
+                if impacted_files and len(impacted_files) <= len(set(normalized_changed)):
+                    textual_dependents = _collect_textual_dependents(
+                        project_dir=project_dir,
+                        changed_files=normalized_changed,
+                        indexed_files=indexed_files,
+                    )
+                    impacted_files.update(textual_dependents)
                 runtime_cfg = config.get("runtime", {})
                 max_tests = max(1, int(runtime_cfg.get("verify_max_target_tests", 64)))
                 shard_size = max(1, int(runtime_cfg.get("verify_pytest_shard_size", 16)))
@@ -348,5 +451,17 @@ def select_verify_commands(
 
     if run_all or has_js:
         commands.extend(node_cmds)
+
+    if cache_store is not None and cache_key:
+        changed_norm = normalize_changed_files(raw_changed_files)
+        cache_store.put_verify_plan(
+            cache_key=cache_key,
+            changed_fingerprint=make_stable_hash({"changed_files": changed_norm}),
+            runtime_fingerprint=_runtime_fingerprint(runtime_cfg),
+            config_hash=_verify_config_hash(config),
+            commands=commands,
+            ttl_seconds=plan_cache_ttl,
+            max_entries=plan_cache_max_entries,
+        )
 
     return commands

@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+
 
 CALL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 

@@ -1,0 +1,208 @@
+﻿VERIFICATION_START phase1_semantic_cache_rule_constraint_20260212_01 2026-02-12T02:17:51.5181379Z
+ENV branch=main commit=fd6de56d861c34f75b7e765e1c7dc0843a7a1ad9 python=3.14.2 (tags/v3.14.2:df79316, Dec  5 2025, 17:18:21) [MSC v.1944 64 bit (AMD64)]
+CMD python -m pytest -q tests/unit/test_semantic_cache.py tests/unit/test_rule_compressor.py tests/unit/test_output_constraints.py tests/unit/test_verify_sharding.py tests/unit/test_mcp_server.py
+EXIT_CODE 0
+..............................................                           [100%]
+46 passed in 6.59s
+CMD python -m pytest -q tests/unit
+EXIT_CODE 1
+...F.FF............................................................      [100%]
+================================== FAILURES ===================================
+______________________ test_index_build_and_context_pack ______________________
+
+tmp_path = WindowsPath('C:/Users/dains/AppData/Local/Temp/pytest-of-dains/pytest-306/test_index_build_and_context_p0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000021DB626BAD0>
+
+    def test_index_build_and_context_pack(tmp_path: Path, monkeypatch) -> None:
+        _write(
+            tmp_path / "src" / "main.py",
+            "def build_context(task: str) -> str:\n    return task.upper()\n",
+        )
+        _write(
+            tmp_path / "src" / "helper.ts",
+            "export function normalizeTask(input: string) { return input.trim(); }\n",
+        )
+        _write(
+            tmp_path / "tests" / "test_main.py",
+            "from src.main import build_context\n\ndef test_build_context():\n    assert build_context('a') == 'A'\n",
+        )
+    
+        init_project(tmp_path)
+        monkeypatch.setenv("ACCEL_HOME", str(tmp_path / ".accel-home"))
+    
+        cfg = resolve_effective_config(tmp_path)
+        manifest = build_or_update_indexes(project_dir=tmp_path, config=cfg, mode="build", full=True)
+        assert manifest["counts"]["files"] >= 2
+>       assert manifest["counts"]["symbols"] >= 1
+E       assert 0 >= 1
+
+tests\unit\test_index_and_context.py:37: AssertionError
+------------------------------ Captured log call ------------------------------
+DEBUG    accel_deadlock_detection:__init__.py:70 File scan completed: 18 files scanned, 3 files selected in 0.0s
+DEBUG    accel_deadlock_detection:__init__.py:70 Starting parallel processing: 3 jobs, 96 workers, thread backend
+DEBUG    accel_deadlock_detection:__init__.py:70 Using parallel processing: 3 workers
+DEBUG    accel_deadlock_detection:__init__.py:70 Using ThreadPoolExecutor
+DEBUG    accel_deadlock_detection:__init__.py:70 Completed job: src/helper.ts
+DEBUG    accel_deadlock_detection:__init__.py:70 Completed job: src/main.py
+DEBUG    accel_deadlock_detection:__init__.py:70 Completed job: tests/test_main.py
+DEBUG    accel_deadlock_detection:__init__.py:70 Parallel processing completed in 0.002s
+_____________ test_index_update_uses_parallel_pool_and_delta_mmap _____________
+
+tmp_path = WindowsPath('C:/Users/dains/AppData/Local/Temp/pytest-of-dains/pytest-306/test_index_update_uses_paralle0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000021DB63E8C00>
+
+    def test_index_update_uses_parallel_pool_and_delta_mmap(tmp_path: Path, monkeypatch) -> None:
+        _write(
+            tmp_path / "src" / "main.py",
+            "def alpha() -> str:\n    return 'alpha'\n",
+        )
+        _write(
+            tmp_path / "src" / "helper.py",
+            "def helper() -> str:\n    return 'helper'\n",
+        )
+        _write(
+            tmp_path / "src" / "util.ts",
+            "export function utilValue() { return 'util'; }\n",
+        )
+        _write(
+            tmp_path / "tests" / "test_main.py",
+            "from src.main import alpha\n\ndef test_alpha():\n    assert alpha() == 'alpha'\n",
+        )
+    
+        init_project(tmp_path)
+        monkeypatch.setenv("ACCEL_HOME", str(tmp_path / ".accel-home"))
+    
+        cfg = resolve_effective_config(
+            tmp_path,
+            cli_overrides={
+                "runtime": {
+                    "index_workers": 96,
+                    "index_delta_compact_every": 1000,
+                    "index_parallel_backend": "process",
+                }
+            },
+        )
+    
+        calls: dict[str, int] = {"max_workers": 0, "map_calls": 0}
+    
+        class FakePool:
+            def __init__(self, max_workers: int) -> None:
+                calls["max_workers"] = int(max_workers)
+    
+            def __enter__(self) -> "FakePool":
+                return self
+    
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+    
+            def map(self, func, iterable, chunksize: int = 1):
+                calls["map_calls"] += 1
+                return [func(item) for item in iterable]
+    
+        monkeypatch.setattr("accel.indexers.ProcessPoolExecutor", FakePool)
+        monkeypatch.setattr("accel.indexers.os.cpu_count", lambda: 96)
+    
+        manifest_build = build_or_update_indexes(project_dir=tmp_path, config=cfg, mode="build", full=True)
+        processed_files = int(manifest_build["performance"]["processed_files"])
+        assert processed_files > 1
+>       assert calls["map_calls"] == 1
+E       assert 0 == 1
+
+tests\unit\test_index_and_context.py:141: AssertionError
+------------------------------ Captured log call ------------------------------
+DEBUG    accel_deadlock_detection:__init__.py:70 File scan completed: 19 files scanned, 4 files selected in 0.0s
+DEBUG    accel_deadlock_detection:__init__.py:70 Starting parallel processing: 4 jobs, 96 workers, process backend
+DEBUG    accel_deadlock_detection:__init__.py:70 Using parallel processing: 4 workers
+DEBUG    accel_deadlock_detection:__init__.py:70 Using ProcessPoolExecutor
+DEBUG    accel_deadlock_detection:__init__.py:70 Parallel execution failed: AttributeError("'FakePool' object has no attribute 'submit'"), falling back to sequential
+DEBUG    accel_deadlock_detection:__init__.py:70 Parallel processing completed in 0.000s
+_____________ test_index_auto_backend_uses_thread_pool_on_windows _____________
+
+tmp_path = WindowsPath('C:/Users/dains/AppData/Local/Temp/pytest-of-dains/pytest-306/test_index_auto_backend_uses_t0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000021DB63ADF50>
+
+    def test_index_auto_backend_uses_thread_pool_on_windows(tmp_path: Path, monkeypatch) -> None:
+        _write(
+            tmp_path / "src" / "main.py",
+            "def alpha() -> str:\n    return 'alpha'\n",
+        )
+        _write(
+            tmp_path / "src" / "helper.py",
+            "def helper() -> str:\n    return 'helper'\n",
+        )
+        _write(
+            tmp_path / "src" / "util.ts",
+            "export function utilValue() { return 'util'; }\n",
+        )
+    
+        init_project(tmp_path)
+        monkeypatch.setenv("ACCEL_HOME", str(tmp_path / ".accel-home"))
+    
+        cfg = resolve_effective_config(
+            tmp_path,
+            cli_overrides={
+                "runtime": {
+                    "index_workers": 48,
+                    "index_parallel_backend": "auto",
+                }
+            },
+        )
+    
+        calls: dict[str, int] = {"process_map_calls": 0, "thread_map_calls": 0, "max_workers": 0}
+    
+        class FakeProcessPool:
+            def __init__(self, max_workers: int) -> None:
+                calls["max_workers"] = int(max_workers)
+    
+            def __enter__(self) -> "FakeProcessPool":
+                return self
+    
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+    
+            def map(self, func, iterable, chunksize: int = 1):
+                calls["process_map_calls"] += 1
+                return [func(item) for item in iterable]
+    
+        class FakeThreadPool:
+            def __init__(self, max_workers: int) -> None:
+                calls["max_workers"] = int(max_workers)
+    
+            def __enter__(self) -> "FakeThreadPool":
+                return self
+    
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+    
+            def map(self, func, iterable):
+                calls["thread_map_calls"] += 1
+                return [func(item) for item in iterable]
+    
+        monkeypatch.setattr("accel.indexers.ProcessPoolExecutor", FakeProcessPool)
+        monkeypatch.setattr("accel.indexers.ThreadPoolExecutor", FakeThreadPool)
+        monkeypatch.setattr("accel.indexers.os.name", "nt")
+        monkeypatch.setattr("accel.indexers.os.cpu_count", lambda: 48)
+    
+        manifest_build = build_or_update_indexes(project_dir=tmp_path, config=cfg, mode="build", full=True)
+        processed_files = int(manifest_build["performance"]["processed_files"])
+        assert processed_files > 1
+>       assert calls["thread_map_calls"] == 1
+E       assert 0 == 1
+
+tests\unit\test_index_and_context.py:234: AssertionError
+------------------------------ Captured log call ------------------------------
+DEBUG    accel_deadlock_detection:__init__.py:70 File scan completed: 17 files scanned, 3 files selected in 0.0s
+DEBUG    accel_deadlock_detection:__init__.py:70 Starting parallel processing: 3 jobs, 48 workers, thread backend
+DEBUG    accel_deadlock_detection:__init__.py:70 Using parallel processing: 3 workers
+DEBUG    accel_deadlock_detection:__init__.py:70 Using ThreadPoolExecutor
+DEBUG    accel_deadlock_detection:__init__.py:70 Parallel execution failed: AttributeError("'FakeThreadPool' object has no attribute 'submit'"), falling back to sequential
+DEBUG    accel_deadlock_detection:__init__.py:70 Parallel processing completed in 0.000s
+=========================== short test summary info ===========================
+FAILED tests/unit/test_index_and_context.py::test_index_build_and_context_pack
+FAILED tests/unit/test_index_and_context.py::test_index_update_uses_parallel_pool_and_delta_mmap
+FAILED tests/unit/test_index_and_context.py::test_index_auto_backend_uses_thread_pool_on_windows
+3 failed, 64 passed in 8.73s
+DEGRADE_REASON: existing unrelated baseline failures in tests/unit/test_index_and_context.py
+RISK: full unit gate remains red on indexer expectations; phase-1 changes validated by targeted suite
+VERIFICATION_END phase1_semantic_cache_rule_constraint_20260212_01 2026-02-12T02:18:12.6888000Z
+BACKFILL_PLAN: owner=codex commands="python -m pytest -q tests/unit/test_index_and_context.py" deadline_utc=2026-02-13T00:00:00Z

@@ -8,6 +8,7 @@ from typing import Any
 
 from .planner import build_candidate_files, normalize_task_tokens
 from .ranker import score_file
+from .rule_compressor import compress_snippet_content
 from .snippet_extractor import extract_snippet
 from ..storage.cache import project_paths
 from ..storage.index_cache import load_index_rows
@@ -46,62 +47,6 @@ def _estimate_source_bytes(project_dir: Path, indexed_files: list[str], sample_l
 def _snippet_fingerprint(content: str) -> str:
     normalized = " ".join(str(content).lower().split())
     return hashlib.sha1(normalized.encode("utf-8", errors="replace")).hexdigest()
-
-
-def _compact_snippet_content(content: str, max_chars: int) -> tuple[str, int]:
-    original = str(content or "")
-    lines = [line.rstrip() for line in original.splitlines()]
-
-    # Drop long leading banner comments/blank lines to keep more executable context.
-    leading = 0
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            leading += 1
-            continue
-        if stripped.startswith(("#", "//", "/*", "*", "*/", '"""', "'''")):
-            leading += 1
-            continue
-        break
-    if leading >= 8:
-        lines = lines[leading:]
-
-    compact_lines: list[str] = []
-    blank_run = 0
-    import_run = 0
-    suppressed_imports = 0
-    for line in lines:
-        stripped_line = line.strip()
-        is_import_line = stripped_line.startswith(("import ", "from ")) and "(" not in stripped_line and ")" not in stripped_line
-        if is_import_line:
-            import_run += 1
-            # Keep a short import header but avoid spending budget on large import blocks.
-            if import_run > 12:
-                suppressed_imports += 1
-                continue
-        else:
-            import_run = 0
-
-        if not line.strip():
-            blank_run += 1
-            if blank_run <= 1:
-                compact_lines.append("")
-            continue
-        blank_run = 0
-        compact_lines.append(line)
-
-    if suppressed_imports > 0:
-        compact_lines.append(f"# ... [omitted {suppressed_imports} import lines]")
-
-    compact = "\n".join(compact_lines).strip("\n")
-    if len(compact) > max_chars:
-        marker = "\n... [truncated]"
-        keep = max(0, max_chars - len(marker))
-        compact = compact[:keep].rstrip() + marker
-
-    if not compact:
-        compact = original[:max_chars]
-    return compact, max(0, len(original) - len(compact))
 
 
 def _build_verify_plan(
@@ -210,7 +155,9 @@ def compile_context_pack(
     raw_snippet_chars = 0
     compacted_snippet_chars = 0
     deduped_snippet_count = 0
+    low_signal_dropped_count = 0
     seen_fingerprints: set[str] = set()
+    compression_rule_counts: dict[str, int] = {}
     for top_item in top_files:
         file_path = top_item["path"]
         symbol_rows = symbols_by_file.get(file_path, [])
@@ -225,7 +172,18 @@ def compile_context_pack(
         if snippet is None:
             continue
         raw_content = str(snippet.get("content", ""))
-        compact_content, _ = _compact_snippet_content(raw_content, per_snippet_max_chars)
+        compact_content, compression = compress_snippet_content(
+            raw_content,
+            max_chars=per_snippet_max_chars,
+            task_tokens=task_tokens,
+            symbol=str(snippet.get("symbol", "")),
+            enable_rules=bool(config.get("runtime", {}).get("rule_compression_enabled", True)),
+        )
+        for rule_name, count in dict(compression.get("rules", {})).items():
+            compression_rule_counts[rule_name] = int(compression_rule_counts.get(rule_name, 0)) + int(count)
+        if bool(compression.get("dropped", False)):
+            low_signal_dropped_count += 1
+            continue
         if not compact_content.strip():
             continue
         snippet["content"] = compact_content
@@ -280,6 +238,9 @@ def compile_context_pack(
             "snippet_chars": compacted_snippet_chars,
             "snippet_saved_chars": max(0, raw_snippet_chars - compacted_snippet_chars),
             "snippet_deduped_count": deduped_snippet_count,
+            "snippet_low_signal_dropped_count": low_signal_dropped_count,
+            "compression_rules_applied": compression_rule_counts,
+            "compression_saved_chars": max(0, raw_snippet_chars - compacted_snippet_chars),
             "drift_reason": "",
         },
     }

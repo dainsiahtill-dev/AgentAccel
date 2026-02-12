@@ -162,17 +162,18 @@ class JobManager:
     MAX_JOBS = 100
     _instance: "JobManager | None" = None
     _lock = threading.Lock()
+    _initialized: bool
 
     def __new__(cls) -> "JobManager":
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
-                    cls._instance._initialized = False
+                    setattr(cls._instance, "_initialized", False)
         return cls._instance
 
     def __init__(self) -> None:
-        if self._initialized:
+        if getattr(self, "_initialized", False):
             return
         self._jobs: dict[str, VerifyJob] = {}
         self._lock = threading.Lock()

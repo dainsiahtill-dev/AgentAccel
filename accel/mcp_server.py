@@ -20,6 +20,20 @@ from .indexers import build_or_update_indexes
 from .query.context_compiler import compile_context_pack, write_context_pack
 from .query.planner import normalize_task_tokens
 from .storage.cache import ensure_project_dirs, project_paths
+from .storage.semantic_cache import (
+    SemanticCacheStore,
+    context_changed_fingerprint,
+    make_stable_hash,
+    normalize_changed_files,
+    normalize_token_list,
+    task_signature,
+)
+from .schema.contracts import (
+    enforce_context_pack_contract,
+    enforce_context_payload_contract,
+    enforce_verify_summary_contract,
+    normalize_constraint_mode,
+)
 from .token_estimator import estimate_tokens_for_text, estimate_tokens_from_chars
 from .verify.orchestrator import run_verify, run_verify_with_callback
 from .verify.callbacks import VerifyProgressCallback, VerifyStage
@@ -308,6 +322,21 @@ def _write_context_metadata_sidecar(out_path: Path, payload: JSONDict) -> Path:
         },
         "selected_tests_count": int(payload.get("selected_tests_count", 0) or 0),
         "selected_checks_count": int(payload.get("selected_checks_count", 0) or 0),
+        "semantic_cache": {
+            "enabled": bool(payload.get("semantic_cache_enabled", False)),
+            "hit": bool(payload.get("semantic_cache_hit", False)),
+            "mode": str(payload.get("semantic_cache_mode_used", "off")),
+            "similarity": float(payload.get("semantic_cache_similarity", 0.0) or 0.0),
+        },
+        "compression": {
+            "rules_applied": dict(payload.get("compression_rules_applied", {})),
+            "saved_chars": int(payload.get("compression_saved_chars", 0) or 0),
+        },
+        "constraints": {
+            "mode": str(payload.get("constraint_mode", "warn")),
+            "repair_count": int(payload.get("constraint_repair_count", 0) or 0),
+            "warnings": list(payload.get("constraint_warnings", [])),
+        },
         "warnings": list(payload.get("warnings", [])),
     }
     sidecar_path.write_text(json.dumps(sidecar_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -377,19 +406,24 @@ def _summarize_verify_events(events: list[dict[str, Any]], status: JSONDict) -> 
             latest_state = state
 
     status_state = str(status.get("state", "")).strip().lower()
+    state_source = "events"
     if status_state in terminal_states:
         latest_state = status_state
         latest_stage = str(status.get("stage", latest_stage)).strip() or latest_stage
         terminal_event_seen = True
+        state_source = "status_terminal"
     elif terminal_state_from_event:
         latest_state = terminal_state_from_event
         if terminal_stage_from_event:
             latest_stage = terminal_stage_from_event
+        state_source = "event_terminal"
 
     return {
         "latest_state": latest_state or str(status.get("state", "")),
         "latest_stage": latest_stage or str(status.get("stage", "")),
         "terminal_event_seen": bool(terminal_event_seen),
+        "state_source": state_source,
+        "constraint_repair_count": 0,
         "event_type_counts": event_type_counts,
         "command_stats": {
             "started": int(command_start),
@@ -858,6 +892,48 @@ def _resolve_context_budget(
     return dict(_BUDGET_PRESETS[auto_preset]), "auto", auto_preset, auto_reason
 
 
+def _context_config_hash(config: JSONDict) -> str:
+    context_cfg = dict(config.get("context", {}))
+    runtime_cfg = dict(config.get("runtime", {}))
+    payload = {
+        "context": context_cfg,
+        "runtime": {
+            "rule_compression_enabled": bool(runtime_cfg.get("rule_compression_enabled", True)),
+            "constraint_mode": str(runtime_cfg.get("constraint_mode", "warn")),
+            "token_estimator_backend": str(runtime_cfg.get("token_estimator_backend", "auto")),
+            "token_estimator_encoding": str(runtime_cfg.get("token_estimator_encoding", "cl100k_base")),
+            "token_estimator_model": str(runtime_cfg.get("token_estimator_model", "")),
+            "token_estimator_calibration": float(runtime_cfg.get("token_estimator_calibration", 1.0)),
+        },
+    }
+    return make_stable_hash(payload)
+
+
+def _context_budget_fingerprint(
+    budget_effective: dict[str, Any],
+    *,
+    snippets_only: bool,
+    include_metadata: bool,
+) -> str:
+    payload = {
+        "budget": dict(budget_effective or {}),
+        "snippets_only": bool(snippets_only),
+        "include_metadata": bool(include_metadata),
+    }
+    return make_stable_hash(payload)
+
+
+def _safe_semantic_cache_store(project_dir: Path, config: JSONDict) -> SemanticCacheStore | None:
+    try:
+        runtime_cfg = dict(config.get("runtime", {}))
+        accel_home = Path(str(runtime_cfg.get("accel_home", "") or "")).resolve()
+        paths = project_paths(accel_home, project_dir)
+        ensure_project_dirs(paths)
+        return SemanticCacheStore(paths["state"] / "semantic_cache.db")
+    except OSError:
+        return None
+
+
 def _tool_index_build(project: str = ".", full: bool = True) -> JSONDict:
     _debug_log(f"accel_index_build called: project={project}, full={full}")
     project_dir = _normalize_project_dir(project)
@@ -899,6 +975,9 @@ def _tool_context(
     strict_changed_files: Any = None,
     snippets_only: Any = False,
     include_metadata: Any = True,
+    semantic_cache: Any = None,
+    semantic_cache_mode: Any = None,
+    constraint_mode: Any = None,
 ) -> JSONDict:
     _debug_log("_tool_context: begin")
     project_dir = _normalize_project_dir(project)
@@ -923,6 +1002,16 @@ def _tool_context(
     require_changed_files = bool(runtime_cfg.get("context_require_changed_files", False))
     strict_changed_files_override = _coerce_optional_bool(strict_changed_files)
     strict_changed_files_effective = bool(strict_changed_files_override) if strict_changed_files_override is not None else False
+    semantic_cache_default = bool(runtime_cfg.get("semantic_cache_enabled", True))
+    semantic_cache_enabled = _coerce_bool(semantic_cache, semantic_cache_default)
+    semantic_cache_mode_default = str(runtime_cfg.get("semantic_cache_mode", "hybrid")).strip().lower()
+    semantic_cache_mode_value = str(semantic_cache_mode or semantic_cache_mode_default).strip().lower()
+    if semantic_cache_mode_value not in {"exact", "hybrid"}:
+        semantic_cache_mode_value = "hybrid"
+    constraint_mode_value = normalize_constraint_mode(
+        constraint_mode if constraint_mode is not None else runtime_cfg.get("constraint_mode", "warn"),
+        default_mode=str(runtime_cfg.get("constraint_mode", "warn")),
+    )
 
     changed_files_source = "user" if changed_files_list else "none"
     changed_files_fallback_reason = ""
@@ -987,17 +1076,106 @@ def _tool_context(
         feedback_payload = json.loads(resolved_feedback_path.read_text(encoding="utf-8"))
     _debug_log("_tool_context: feedback loaded")
 
-    _debug_log("_tool_context: compile_context_pack start")
-    pack = compile_context_pack(
-        project_dir=project_dir,
-        config=config,
-        task=task_text,
-        changed_files=changed_files_list,
-        hints=hints_list,
-        previous_attempt_feedback=feedback_payload,
-        budget_override=budget_override,
+    task_tokens = normalize_task_tokens(task_text)
+    hint_tokens: list[str] = []
+    for hint in hints_list:
+        hint_tokens.extend(normalize_task_tokens(str(hint)))
+    hint_tokens = normalize_token_list(hint_tokens)
+    changed_files_normalized = normalize_changed_files(changed_files_list)
+    changed_fingerprint = context_changed_fingerprint(changed_files_normalized)
+    budget_fingerprint = _context_budget_fingerprint(
+        budget_override,
+        snippets_only=snippets_only_flag,
+        include_metadata=include_metadata_flag,
     )
-    _debug_log("_tool_context: compile_context_pack done")
+    config_hash = _context_config_hash(config)
+    task_sig = task_signature(task_tokens, hint_tokens)
+    semantic_cache_key = make_stable_hash(
+        {
+            "task_signature": task_sig,
+            "changed_fingerprint": changed_fingerprint,
+            "budget_fingerprint": budget_fingerprint,
+            "config_hash": config_hash,
+        }
+    )
+    semantic_cache_hit = False
+    semantic_cache_similarity = 0.0
+    semantic_cache_mode_used = "off"
+    semantic_store: SemanticCacheStore | None = None
+    pack: JSONDict
+
+    if semantic_cache_enabled:
+        semantic_store = _safe_semantic_cache_store(project_dir, config)
+
+    if semantic_store is not None and semantic_cache_enabled:
+        cached_exact = semantic_store.get_context_exact(semantic_cache_key)
+        if isinstance(cached_exact, dict):
+            pack = cached_exact
+            semantic_cache_hit = True
+            semantic_cache_similarity = 1.0
+            semantic_cache_mode_used = "exact"
+        else:
+            cached_hybrid: JSONDict | None = None
+            hybrid_similarity = 0.0
+            if semantic_cache_mode_value == "hybrid":
+                cached_hybrid, hybrid_similarity = semantic_store.get_context_hybrid(
+                    task_tokens=task_tokens,
+                    hint_tokens=hint_tokens,
+                    changed_files=changed_files_normalized,
+                    budget_fingerprint=budget_fingerprint,
+                    config_hash=config_hash,
+                    threshold=float(runtime_cfg.get("semantic_cache_hybrid_threshold", 0.86)),
+                )
+            if isinstance(cached_hybrid, dict):
+                pack = cached_hybrid
+                semantic_cache_hit = True
+                semantic_cache_similarity = float(hybrid_similarity)
+                semantic_cache_mode_used = "hybrid"
+            else:
+                _debug_log("_tool_context: compile_context_pack start (cache miss)")
+                pack = compile_context_pack(
+                    project_dir=project_dir,
+                    config=config,
+                    task=task_text,
+                    changed_files=changed_files_list,
+                    hints=hints_list,
+                    previous_attempt_feedback=feedback_payload,
+                    budget_override=budget_override,
+                )
+                _debug_log("_tool_context: compile_context_pack done")
+                semantic_cache_mode_used = "miss"
+                semantic_store.put_context(
+                    cache_key=semantic_cache_key,
+                    task_signature_value=task_sig,
+                    task_tokens=task_tokens,
+                    hint_tokens=hint_tokens,
+                    changed_files=changed_files_normalized,
+                    changed_fingerprint=changed_fingerprint,
+                    budget_fingerprint=budget_fingerprint,
+                    config_hash=config_hash,
+                    payload=pack,
+                    ttl_seconds=int(runtime_cfg.get("semantic_cache_ttl_seconds", 7200)),
+                    max_entries=int(runtime_cfg.get("semantic_cache_max_entries", 800)),
+                )
+    else:
+        _debug_log("_tool_context: compile_context_pack start (semantic cache disabled)")
+        pack = compile_context_pack(
+            project_dir=project_dir,
+            config=config,
+            task=task_text,
+            changed_files=changed_files_list,
+            hints=hints_list,
+            previous_attempt_feedback=feedback_payload,
+            budget_override=budget_override,
+        )
+        _debug_log("_tool_context: compile_context_pack done")
+
+    pack_contract_warnings: list[str] = []
+    pack_repair_count = 0
+    pack, pack_contract_warnings, pack_repair_count = enforce_context_pack_contract(
+        pack,
+        mode=constraint_mode_value,
+    )
     pack_for_output = _build_context_output_pack(
         pack,
         snippets_only=snippets_only_flag,
@@ -1087,6 +1265,11 @@ def _tool_context(
     target_checks = verify_plan.get("target_checks", [])
     selected_tests_count = len(target_tests) if isinstance(target_tests, list) else 0
     selected_checks_count = len(target_checks) if isinstance(target_checks, list) else 0
+    compression_rules_applied = {}
+    compression_saved_chars = 0
+    if isinstance(meta.get("compression_rules_applied", {}), dict):
+        compression_rules_applied = dict(meta.get("compression_rules_applied", {}))
+    compression_saved_chars = int(meta.get("compression_saved_chars", meta.get("snippet_saved_chars", 0)) or 0)
 
     payload: JSONDict = {
         "status": "ok",
@@ -1149,6 +1332,13 @@ def _tool_context(
         "fallback_confidence": round(float(fallback_confidence), 6),
         "output_mode": "snippets_only" if snippets_only_flag else "full",
         "include_metadata": include_metadata_flag,
+        "semantic_cache_enabled": bool(semantic_cache_enabled),
+        "semantic_cache_hit": bool(semantic_cache_hit),
+        "semantic_cache_mode_used": str(semantic_cache_mode_used),
+        "semantic_cache_similarity": round(float(semantic_cache_similarity), 6),
+        "compression_rules_applied": compression_rules_applied,
+        "compression_saved_chars": int(compression_saved_chars),
+        "constraint_mode": constraint_mode_value,
     }
     if token_reduction_vs_changed_files is not None:
         payload["token_reduction_ratio_vs_changed_files"] = round(token_reduction_vs_changed_files, 6)
@@ -1161,6 +1351,21 @@ def _tool_context(
         payload["warnings"] = warnings
     if include_pack_flag:
         payload["pack"] = pack_for_output
+
+    payload_contract_warnings: list[str] = []
+    payload_repair_count = 0
+    payload, payload_contract_warnings, payload_repair_count = enforce_context_payload_contract(
+        payload,
+        mode=constraint_mode_value,
+    )
+    all_constraint_warnings = pack_contract_warnings + payload_contract_warnings
+    constraint_repair_count = int(pack_repair_count) + int(payload_repair_count)
+    payload["constraint_warnings"] = all_constraint_warnings
+    payload["constraint_repair_count"] = int(constraint_repair_count)
+    if all_constraint_warnings:
+        merged_warnings = list(payload.get("warnings", [])) if isinstance(payload.get("warnings"), list) else []
+        merged_warnings.extend([f"contract:{item}" for item in all_constraint_warnings])
+        payload["warnings"] = merged_warnings
 
     sidecar_path = _write_context_metadata_sidecar(out_path, payload)
     payload["out_meta"] = str(sidecar_path)
@@ -1185,6 +1390,8 @@ def _tool_verify(
     verify_cache_ttl_seconds: int | None = None,
     verify_cache_max_entries: int | None = None,
     verify_cache_failed_ttl_seconds: int | None = None,
+    command_plan_cache_enabled: bool | str | None = None,
+    constraint_mode: str | None = None,
 ) -> JSONDict:
     # Normalize changed_files: handle comma-separated string
     if isinstance(changed_files, str):
@@ -1210,6 +1417,10 @@ def _tool_verify(
         runtime_overrides["verify_cache_max_entries"] = int(verify_cache_max_entries)
     if verify_cache_failed_ttl_seconds is not None:
         runtime_overrides["verify_cache_failed_ttl_seconds"] = int(verify_cache_failed_ttl_seconds)
+    if command_plan_cache_enabled is not None:
+        runtime_overrides["command_plan_cache_enabled"] = _coerce_bool(command_plan_cache_enabled, True)
+    if constraint_mode is not None:
+        runtime_overrides["constraint_mode"] = normalize_constraint_mode(constraint_mode, default_mode="warn")
 
     if evidence_run and not fast_loop:
         runtime_overrides["verify_fail_fast"] = False
@@ -1290,6 +1501,9 @@ def create_server() -> FastMCP:
         strict_changed_files: Any = None,
         snippets_only: Any = False,
         include_metadata: Any = True,
+        semantic_cache: Any = None,
+        semantic_cache_mode: Any = None,
+        constraint_mode: Any = None,
     ) -> JSONDict:
         try:
             return _with_timeout(_tool_context, timeout_seconds=300)(
@@ -1304,6 +1518,9 @@ def create_server() -> FastMCP:
                 strict_changed_files=strict_changed_files,
                 snippets_only=snippets_only,
                 include_metadata=include_metadata,
+                semantic_cache=semantic_cache,
+                semantic_cache_mode=semantic_cache_mode,
+                constraint_mode=constraint_mode,
             )
         except Exception as exc:
             _debug_log(f"accel_context failed: {exc!r}")
@@ -1323,6 +1540,8 @@ def create_server() -> FastMCP:
         verify_cache_ttl_seconds: Any = None,
         verify_cache_max_entries: Any = None,
         verify_cache_failed_ttl_seconds: Any = None,
+        command_plan_cache_enabled: bool | str | None = None,
+        constraint_mode: str | None = None,
     ) -> VerifyJob:
         changed_files_list = _to_string_list(changed_files)
 
@@ -1336,6 +1555,7 @@ def create_server() -> FastMCP:
         verify_cache_ttl_value = _coerce_optional_int(verify_cache_ttl_seconds)
         verify_cache_max_entries_value = _coerce_optional_int(verify_cache_max_entries)
         verify_cache_failed_ttl_value = _coerce_optional_int(verify_cache_failed_ttl_seconds)
+        command_plan_cache_enabled_normalized = _coerce_optional_bool(command_plan_cache_enabled)
 
         _debug_log(f"_start_verify_job called: project={project}, changed_files={len(changed_files_list)}")
         project_dir = _normalize_project_dir(project)
@@ -1351,6 +1571,10 @@ def create_server() -> FastMCP:
             runtime_overrides["verify_cache_max_entries"] = int(verify_cache_max_entries_value)
         if verify_cache_failed_ttl_value is not None:
             runtime_overrides["verify_cache_failed_ttl_seconds"] = int(verify_cache_failed_ttl_value)
+        if command_plan_cache_enabled_normalized is not None:
+            runtime_overrides["command_plan_cache_enabled"] = bool(command_plan_cache_enabled_normalized)
+        if constraint_mode is not None:
+            runtime_overrides["constraint_mode"] = normalize_constraint_mode(constraint_mode, default_mode="warn")
 
         if evidence_run_normalized and not fast_loop_normalized:
             runtime_overrides["verify_fail_fast"] = False
@@ -1459,6 +1683,8 @@ def create_server() -> FastMCP:
         verify_cache_ttl_seconds: Any = None,
         verify_cache_max_entries: Any = None,
         verify_cache_failed_ttl_seconds: Any = None,
+        command_plan_cache_enabled: Any = None,
+        constraint_mode: Any = None,
         wait_for_completion: Any = False,
         sync_wait_seconds: Any = None,
         sync_timeout_action: Any = None,
@@ -1480,6 +1706,8 @@ def create_server() -> FastMCP:
                 verify_cache_ttl_seconds=verify_cache_ttl_seconds,
                 verify_cache_max_entries=verify_cache_max_entries,
                 verify_cache_failed_ttl_seconds=verify_cache_failed_ttl_seconds,
+                command_plan_cache_enabled=command_plan_cache_enabled,
+                constraint_mode=str(constraint_mode) if constraint_mode is not None else None,
             )
             job_id = str(job.job_id).strip()
 
@@ -1672,6 +1900,8 @@ def create_server() -> FastMCP:
         verify_cache_ttl_seconds: Any = None,
         verify_cache_max_entries: Any = None,
         verify_cache_failed_ttl_seconds: Any = None,
+        command_plan_cache_enabled: Any = None,
+        constraint_mode: Any = None,
     ) -> JSONDict:
         try:
             job = _start_verify_job(
@@ -1687,6 +1917,8 @@ def create_server() -> FastMCP:
                 verify_cache_ttl_seconds=verify_cache_ttl_seconds,
                 verify_cache_max_entries=verify_cache_max_entries,
                 verify_cache_failed_ttl_seconds=verify_cache_failed_ttl_seconds,
+                command_plan_cache_enabled=command_plan_cache_enabled,
+                constraint_mode=str(constraint_mode) if constraint_mode is not None else None,
             )
             _debug_log(f"accel_verify_start created job: {job.job_id}")
             return {"job_id": job.job_id, "status": "started"}
@@ -1706,7 +1938,10 @@ def create_server() -> FastMCP:
             job = jm.get_job(job_id)
             if job is None:
                 return {"error": "job_not_found", "job_id": job_id}
-            return job.to_status()
+            status_payload = job.to_status()
+            status_payload["state_source"] = "job_state"
+            status_payload["constraint_repair_count"] = 0
+            return status_payload
         except Exception as exc:
             _debug_log(f"accel_verify_status failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
@@ -1754,7 +1989,18 @@ def create_server() -> FastMCP:
                 "since_seq": since_seq_value,
             }
             if include_summary_flag:
-                payload["summary"] = _summarize_verify_events(events_all, job.to_status())
+                status_payload = job.to_status()
+                summary = _summarize_verify_events(events_all, status_payload)
+                summary_mode = normalize_constraint_mode(os.environ.get("ACCEL_CONSTRAINT_MODE", "warn"), default_mode="warn")
+                summary, summary_warnings, summary_repair_count = enforce_verify_summary_contract(
+                    summary,
+                    status=status_payload,
+                    mode=summary_mode,
+                )
+                summary["constraint_repair_count"] = int(summary_repair_count)
+                if summary_warnings:
+                    summary["constraint_warnings"] = summary_warnings
+                payload["summary"] = summary
             return payload
         except Exception as exc:
             _debug_log(f"accel_verify_events failed: {exc!r}")

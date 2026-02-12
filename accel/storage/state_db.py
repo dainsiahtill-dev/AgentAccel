@@ -23,6 +23,7 @@ def _connect(db_path: Path, timeout_seconds: int = 30) -> sqlite3.Connection:
     
     # Try multiple times with increasing backoff
     max_attempts = 3
+    last_exc: sqlite3.OperationalError | None = None
     for attempt in range(max_attempts):
         try:
             conn = sqlite3.connect(
@@ -45,6 +46,7 @@ def _connect(db_path: Path, timeout_seconds: int = 30) -> sqlite3.Connection:
             )
             return conn
         except sqlite3.OperationalError as exc:
+            last_exc = exc
             if "database is locked" in str(exc).lower() and attempt < max_attempts - 1:
                 # Exponential backoff: 1s, 2s, 4s
                 backoff = 2 ** attempt
@@ -52,6 +54,9 @@ def _connect(db_path: Path, timeout_seconds: int = 30) -> sqlite3.Connection:
                 continue
             else:
                 raise RuntimeError(f"Failed to connect to database after {max_attempts} attempts: {exc}") from exc
+    raise RuntimeError(
+        f"Failed to connect to database after {max_attempts} attempts: {last_exc or 'unknown error'}"
+    ) from last_exc
 
 
 def compute_hash(file_path: Path, max_file_size: int = 50 * 1024 * 1024) -> str:

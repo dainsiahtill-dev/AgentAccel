@@ -29,3 +29,29 @@ accel context --project . --task "fix headers input issue" --out context_pack.js
 ```powershell
 accel verify --project . --changed-files src\foo.py src\bar.ts
 ```
+
+## Phase-1 Runtime Knobs (Optional)
+Create `accel.local.yaml` (or use env vars) to control semantic cache, verify plan cache, and constraints:
+
+```yaml
+runtime:
+  semantic_cache_enabled: true
+  semantic_cache_mode: hybrid   # exact|hybrid
+  semantic_cache_ttl_seconds: 7200
+  semantic_cache_hybrid_threshold: 0.86
+  semantic_cache_max_entries: 800
+
+  command_plan_cache_enabled: true
+  command_plan_cache_ttl_seconds: 900
+  command_plan_cache_max_entries: 600
+
+  constraint_mode: warn         # off|warn|strict
+  rule_compression_enabled: true
+```
+
+Tool usage examples:
+
+```powershell
+accel context --project . --task "fix verify timeout" --changed-files accel/mcp_server.py --out context_pack.json
+accel verify --project . --changed-files accel/mcp_server.py
+```

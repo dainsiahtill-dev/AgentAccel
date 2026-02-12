@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+
 
 def _py_symbols_from_ast(tree: ast.AST, rel_path: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []

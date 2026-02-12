@@ -50,6 +50,16 @@ DEFAULT_LOCAL_CONFIG: dict[str, Any] = {
         "token_estimator_calibration": 1.0,
         "token_estimator_fallback_chars_per_token": 4.0,
         "context_require_changed_files": False,
+        "semantic_cache_enabled": True,
+        "semantic_cache_mode": "hybrid",
+        "semantic_cache_ttl_seconds": 7200,
+        "semantic_cache_hybrid_threshold": 0.86,
+        "semantic_cache_max_entries": 800,
+        "command_plan_cache_enabled": True,
+        "command_plan_cache_ttl_seconds": 900,
+        "command_plan_cache_max_entries": 600,
+        "constraint_mode": "warn",
+        "rule_compression_enabled": True,
         "accel_home": "",
         "per_command_timeout_seconds": 1200,
         "total_verify_timeout_seconds": 3600,
@@ -181,6 +191,14 @@ def _normalize_timeout_action(value: Any, default_value: str = "poll") -> str:
     return fallback if fallback in {"poll", "cancel"} else "poll"
 
 
+def _normalize_constraint_mode(value: Any, default_value: str = "warn") -> str:
+    token = str(value or default_value).strip().lower()
+    if token in {"off", "warn", "strict"}:
+        return token
+    fallback = str(default_value or "warn").strip().lower()
+    return fallback if fallback in {"off", "warn", "strict"} else "warn"
+
+
 def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
     runtime = dict(config.get("runtime", {}))
     gpu = dict(config.get("gpu", {}))
@@ -266,6 +284,53 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         runtime["context_require_changed_files"] = _normalize_bool(
             os.environ["ACCEL_CONTEXT_REQUIRE_CHANGED_FILES"],
             bool(runtime.get("context_require_changed_files", False)),
+        )
+    if os.environ.get("ACCEL_SEMANTIC_CACHE_ENABLED") is not None:
+        runtime["semantic_cache_enabled"] = _normalize_bool(
+            os.environ["ACCEL_SEMANTIC_CACHE_ENABLED"],
+            bool(runtime.get("semantic_cache_enabled", True)),
+        )
+    if os.environ.get("ACCEL_SEMANTIC_CACHE_MODE"):
+        runtime["semantic_cache_mode"] = str(os.environ["ACCEL_SEMANTIC_CACHE_MODE"]).strip().lower()
+    if os.environ.get("ACCEL_SEMANTIC_CACHE_TTL_SECONDS"):
+        runtime["semantic_cache_ttl_seconds"] = _normalize_positive_int(
+            os.environ["ACCEL_SEMANTIC_CACHE_TTL_SECONDS"],
+            int(runtime.get("semantic_cache_ttl_seconds", 7200)),
+        )
+    if os.environ.get("ACCEL_SEMANTIC_CACHE_HYBRID_THRESHOLD"):
+        runtime["semantic_cache_hybrid_threshold"] = _normalize_positive_float(
+            os.environ["ACCEL_SEMANTIC_CACHE_HYBRID_THRESHOLD"],
+            float(runtime.get("semantic_cache_hybrid_threshold", 0.86)),
+        )
+    if os.environ.get("ACCEL_SEMANTIC_CACHE_MAX_ENTRIES"):
+        runtime["semantic_cache_max_entries"] = _normalize_positive_int(
+            os.environ["ACCEL_SEMANTIC_CACHE_MAX_ENTRIES"],
+            int(runtime.get("semantic_cache_max_entries", 800)),
+        )
+    if os.environ.get("ACCEL_COMMAND_PLAN_CACHE_ENABLED") is not None:
+        runtime["command_plan_cache_enabled"] = _normalize_bool(
+            os.environ["ACCEL_COMMAND_PLAN_CACHE_ENABLED"],
+            bool(runtime.get("command_plan_cache_enabled", True)),
+        )
+    if os.environ.get("ACCEL_COMMAND_PLAN_CACHE_TTL_SECONDS"):
+        runtime["command_plan_cache_ttl_seconds"] = _normalize_positive_int(
+            os.environ["ACCEL_COMMAND_PLAN_CACHE_TTL_SECONDS"],
+            int(runtime.get("command_plan_cache_ttl_seconds", 900)),
+        )
+    if os.environ.get("ACCEL_COMMAND_PLAN_CACHE_MAX_ENTRIES"):
+        runtime["command_plan_cache_max_entries"] = _normalize_positive_int(
+            os.environ["ACCEL_COMMAND_PLAN_CACHE_MAX_ENTRIES"],
+            int(runtime.get("command_plan_cache_max_entries", 600)),
+        )
+    if os.environ.get("ACCEL_CONSTRAINT_MODE"):
+        runtime["constraint_mode"] = _normalize_constraint_mode(
+            os.environ["ACCEL_CONSTRAINT_MODE"],
+            str(runtime.get("constraint_mode", "warn")),
+        )
+    if os.environ.get("ACCEL_RULE_COMPRESSION_ENABLED") is not None:
+        runtime["rule_compression_enabled"] = _normalize_bool(
+            os.environ["ACCEL_RULE_COMPRESSION_ENABLED"],
+            bool(runtime.get("rule_compression_enabled", True)),
         )
     if os.environ.get("ACCEL_SYNC_VERIFY_TIMEOUT_ACTION"):
         runtime["sync_verify_timeout_action"] = _normalize_timeout_action(
@@ -358,6 +423,47 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
     runtime["context_require_changed_files"] = _normalize_bool(
         runtime.get("context_require_changed_files", False),
         default_value=False,
+    )
+    runtime["semantic_cache_enabled"] = _normalize_bool(
+        runtime.get("semantic_cache_enabled", True),
+        default_value=True,
+    )
+    runtime["semantic_cache_mode"] = str(runtime.get("semantic_cache_mode", "hybrid")).strip().lower()
+    if runtime["semantic_cache_mode"] not in {"exact", "hybrid"}:
+        runtime["semantic_cache_mode"] = "hybrid"
+    runtime["semantic_cache_ttl_seconds"] = _normalize_positive_int(
+        runtime.get("semantic_cache_ttl_seconds", 7200),
+        default_value=7200,
+    )
+    runtime["semantic_cache_hybrid_threshold"] = _normalize_positive_float(
+        runtime.get("semantic_cache_hybrid_threshold", 0.86),
+        default_value=0.86,
+    )
+    if runtime["semantic_cache_hybrid_threshold"] > 1.0:
+        runtime["semantic_cache_hybrid_threshold"] = 1.0
+    runtime["semantic_cache_max_entries"] = _normalize_positive_int(
+        runtime.get("semantic_cache_max_entries", 800),
+        default_value=800,
+    )
+    runtime["command_plan_cache_enabled"] = _normalize_bool(
+        runtime.get("command_plan_cache_enabled", True),
+        default_value=True,
+    )
+    runtime["command_plan_cache_ttl_seconds"] = _normalize_positive_int(
+        runtime.get("command_plan_cache_ttl_seconds", 900),
+        default_value=900,
+    )
+    runtime["command_plan_cache_max_entries"] = _normalize_positive_int(
+        runtime.get("command_plan_cache_max_entries", 600),
+        default_value=600,
+    )
+    runtime["constraint_mode"] = _normalize_constraint_mode(
+        runtime.get("constraint_mode", "warn"),
+        default_value="warn",
+    )
+    runtime["rule_compression_enabled"] = _normalize_bool(
+        runtime.get("rule_compression_enabled", True),
+        default_value=True,
     )
     runtime["sync_verify_timeout_action"] = _normalize_timeout_action(
         runtime.get("sync_verify_timeout_action", "poll"),
