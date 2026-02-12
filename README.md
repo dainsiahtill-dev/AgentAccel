@@ -219,6 +219,9 @@ Generate a budgeted context pack for a task.
 | `hints` | string[] \| string | `null` | Additional context hints (array, JSON-array string, or comma-separated) |
 | `include_pack` | boolean \| string | `false` | Include full pack in response (`true/false` or boolean-like string) |
 | `budget` | object \| string | `null` | Budget override object or preset (`tiny`/`small`/`medium`/`large`/`xlarge`) |
+| `strict_changed_files` | boolean \| string | `null` | Strict mode: require explicit `changed_files` or git delta (skip index/planner fallback) |
+| `snippets_only` | boolean \| string | `false` | Output lightweight pack containing only snippets |
+| `include_metadata` | boolean \| string | `true` | Include `meta` in generated pack payload |
 
 `budget` string presets are aliases for common token envelopes. Example:
 
@@ -240,8 +243,16 @@ Generate a budgeted context pack for a task.
 **Key response fields:**
 - `estimated_tokens`: tokenizer-based estimate for generated context payload (calibration applied)
 - `estimated_source_tokens`: source baseline estimate derived from tokenizer chars-per-token ratio
+- `estimated_changed_files_tokens`: token baseline from resolved `changed_files` content
+- `estimated_snippets_only_tokens`: token baseline from snippets-only payload
 - `compression_ratio`: `context_chars / source_chars` (smaller is better)
 - `token_reduction_ratio`: `1 - compression_ratio`
+- `token_reduction`: structured three-baseline comparison:
+  - `vs_full_index`
+  - `vs_changed_files`
+  - `vs_snippets_only`
+- `fallback_confidence`: confidence score for non-user changed-files inference (especially planner/index fallback)
+- `output_mode`: `full` | `snippets_only`
 - `selected_tests_count`: number of tests selected in `verify_plan.target_tests`
 - `selected_checks_count`: number of checks selected in `verify_plan.target_checks`
 - `budget_source` / `budget_preset`: whether budget came from user input or auto policy
@@ -272,8 +283,13 @@ Start incremental verification with runtime override options.
 | `evidence_run` | boolean \| string | `false` | Evidence collection mode |
 | `fast_loop` | boolean \| string | `false` | Fast verification loop |
 | `verify_fail_fast` | boolean \| string | `null` | Stop on first failure |
+| `verify_cache_enabled` | boolean \| string | `null` | Enable verification result cache |
+| `verify_cache_failed_results` | boolean \| string | `null` | Also cache failed/timed-out command results |
 | `verify_workers` | integer \| string | `null` | Number of parallel workers |
 | `per_command_timeout_seconds` | integer \| string | `null` | Timeout per command |
+| `verify_cache_ttl_seconds` | integer \| string | `null` | TTL for successful cache entries |
+| `verify_cache_failed_ttl_seconds` | integer \| string | `null` | TTL for failed cache entries (short-term) |
+| `verify_cache_max_entries` | integer \| string | `null` | Max retained command cache entries |
 
 **Response behavior:**
 - Returns quickly with `status=started` and `job_id` to avoid MCP 60s call timeouts.
@@ -297,6 +313,7 @@ Start incremental verification with runtime override options.
 - `include_summary`: include aggregate counters and latest stage/state for model-friendly ingestion
 - heartbeat events may include command-level fields: `current_command`, `command_elapsed_sec`, `command_timeout_sec`, `command_progress_pct`
 - command completion events may include tails: `stdout_tail`, `stderr_tail`, plus `completed` / `total`
+- verify jsonl command events include structured fields: `mode`, `fail_fast`, `cache_hits`, `cache_misses`, `fail_fast_skipped`, `command_index`
 
 Tokenizer estimation runtime knobs (via `accel.local.yaml` runtime or env):
 - `token_estimator_backend`: `auto` | `tiktoken` | `heuristic`

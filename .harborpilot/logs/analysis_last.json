@@ -1,20 +1,19 @@
 {
-  "ts": "2026-02-11T23:50:43.753055+00:00",
-  "task": "cancel_heartbeat_consistency_fix",
+  "ts": "2026-02-12T00:47:53.734031+00:00",
+  "task": "all_recommendations_fullfix",
   "capability_matrix": {
     "repo": "read/write",
     "terminal": true,
     "network": true
   },
   "findings": [
-    "Late running heartbeat could be appended after cancel due callback race.",
-    "Fix applied via VerifyJob live-event terminal gate and callback heartbeat guards.",
-    "Direct cancel retest shows zero running heartbeat events after job_cancelled_finalized."
+    "Implemented accel_context strict_changed_files/fallback_confidence plus snippets_only/include_metadata lightweight output controls.",
+    "Added three-baseline token reduction metrics (vs_full_index, vs_changed_files, vs_snippets_only) with explicit baseline token counters.",
+    "Added verify failed-result cache controls (verify_cache_failed_results + verify_cache_failed_ttl_seconds) and extended verify jsonl structured fields (mode/fail_fast/cache_hits/cache_misses/fail_fast_skipped/command_index).",
+    "Touched-scope gates passed (ruff + pytest on mcp_server/orchestrator tests); full-repo gates still fail due pre-existing baseline issues unrelated to this change."
   ],
   "verification": {
-    "targeted_gate": "passed",
-    "full_gate": "reduced_due_baseline_non_scope_checks",
-    "evidence_log": ".harborpilot/logs/verification_mcp_cancel_consistency_20260212_01.log",
-    "direct_cancel_retest": ".harborpilot/logs/tool_api_direct_cancel_retest_latest.json"
+    "log": ".harborpilot/logs/verification_all_recommendations_fullfix_20260212_02.log",
+    "status": "verified-pending"
   }
 }

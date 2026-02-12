@@ -1,0 +1,57 @@
+﻿{
+    "id":  "snap_20260212_083058_emcun5",
+    "created_utc":  "2026-02-12T00:30:58.5167476Z",
+    "mode":  "S2",
+    "base_ref":  "628be6dc063b5f6fc46e33dedd222a357fb1c4dd",
+    "files":  [
+                  {
+                      "path":  ".harborpilot/logs/analysis_last.json",
+                      "sha256":  "5982a0ba9a924da230717623faad815fe02e08c181c24bc679dcb1ea2eea9abc"
+                  },
+                  {
+                      "path":  ".harborpilot/runtime/events.jsonl",
+                      "sha256":  "bf02a066721aa0f1f6ed9fc6c5efab02aa5e93b9460fe8750aa408ecd7f0e183"
+                  },
+                  {
+                      "path":  "accel/__pycache__/mcp_server.cpython-314.pyc",
+                      "sha256":  "4eb86d29cbb13ed5952a2038f5da3aa15fb942e9f9c58be7f33f9330a376ee2a"
+                  },
+                  {
+                      "path":  "accel/mcp_server.py",
+                      "sha256":  "331b0954dcf16a7f8442300db8bf5ec95bc190dce0596cee561fde3041f45807"
+                  },
+                  {
+                      "path":  "accel/verify/__pycache__/orchestrator.cpython-314.pyc",
+                      "sha256":  "8bd79a02b6a3952935c1504e5c074188358cbb98b12eb42ebccc3c5f5de68061"
+                  },
+                  {
+                      "path":  "accel/verify/orchestrator.py",
+                      "sha256":  "c66b7ecf3de4de6a3fd564b858216017cfbd958e269e878937e88e0d0335eea4"
+                  },
+                  {
+                      "path":  "tests/unit/__pycache__/test_verify_orchestrator.cpython-314-pytest-9.0.2.pyc",
+                      "sha256":  "4e93551ac0da4bdda3cbe907ee40028348898abff7bcc18c0e7f289e03a71524"
+                  },
+                  {
+                      "path":  "tests/unit/test_verify_orchestrator.py",
+                      "sha256":  "952626cf918799bb4e5e981af5880a7ed514d4f1bc0067658e4ec86a7a074a88"
+                  },
+                  {
+                      "path":  ".harborpilot/docs/blueprints/plan_20260212_all_recommendations_fullfix.md",
+                      "sha256":  "953b94cfbbfd91f830b8228f54e3a8f6bec3d693fbb27056f8b915b36e82e268"
+                  },
+                  {
+                      "path":  ".harborpilot/docs/blueprints/plan_20260212_fast_loop_cache_key_fix.md",
+                      "sha256":  "b13591cf6c3011229c932be6354a6c37676a17302ae49ddef71d42198e5451d9"
+                  },
+                  {
+                      "path":  ".harborpilot/logs/verification_fast_loop_cache_key_fix_20260212_01.log",
+                      "sha256":  "2b7e8032d2ba46f1619d2607cda8f11f56e53645625c3032c3443f8d25421e82"
+                  },
+                  {
+                      "path":  ".harborpilot/snapshots/",
+                      "sha256":  ""
+                  }
+              ],
+    "notes":  "Pre-change snapshot before all-recommendations fullfix implementation."
+}

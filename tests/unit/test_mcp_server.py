@@ -432,6 +432,142 @@ def test_tool_context_uses_manifest_recent_changed_files_fallback(tmp_path: Path
     assert any("manifest_recent" in str(item) for item in warnings)
 
 
+def test_tool_context_strict_changed_files_blocks_non_git_fallback(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_strict_project"
+    project_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {"runtime": {"accel_home": str(tmp_path / ".accel-home")}},
+    )
+    monkeypatch.setattr(mcp_server, "_discover_changed_files_from_git", lambda project_dir, limit=200: [])
+    monkeypatch.setattr(
+        mcp_server,
+        "_discover_changed_files_from_index_fallback",
+        lambda *args, **kwargs: (["src/fallback.py"], "planner_fallback", 0.42),
+    )
+
+    try:
+        mcp_server._tool_context(
+            project=str(project_dir),
+            task="strict mode should reject inferred changed files",
+            changed_files=None,
+            strict_changed_files=True,
+        )
+    except ValueError as exc:
+        assert "strict_changed_files=true" in str(exc)
+    else:
+        raise AssertionError("expected strict_changed_files to block non-git fallback")
+
+
+def test_tool_context_exposes_fallback_confidence_and_token_reduction_baselines(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_confidence_project"
+    (project_dir / "src").mkdir(parents=True)
+    (project_dir / "src" / "fallback.py").write_text("def foo() -> int:\n    return 1\n", encoding="utf-8")
+    out_path = project_dir / "context_confidence.json"
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {"runtime": {"accel_home": str(tmp_path / ".accel-home")}},
+    )
+    monkeypatch.setattr(mcp_server, "_discover_changed_files_from_git", lambda project_dir, limit=200: [])
+    monkeypatch.setattr(
+        mcp_server,
+        "_discover_changed_files_from_index_fallback",
+        lambda *args, **kwargs: (["src/fallback.py"], "planner_fallback", 0.42),
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "compile_context_pack",
+        lambda **kwargs: {
+            "version": 1,
+            "task": str(kwargs.get("task", "")),
+            "generated_at": "2026-02-12T00:00:00+00:00",
+            "budget": {"max_chars": 6000, "max_snippets": 16, "top_n_files": 6},
+            "top_files": [{"path": "src/fallback.py", "score": 0.9, "reasons": ["fallback"], "signals": []}],
+            "snippets": [{"path": "src/fallback.py", "content": "def foo() -> int:\n    return 1", "start_line": 1, "end_line": 2}],
+            "verify_plan": {"target_tests": [], "target_checks": ["pytest -q"]},
+            "meta": {"source_chars_est": 25000},
+        },
+    )
+
+    result = mcp_server._tool_context(
+        project=str(project_dir),
+        task="fallback confidence and token baseline metrics",
+        changed_files=None,
+        out=str(out_path),
+    )
+
+    assert result["status"] == "ok"
+    assert result["changed_files_source"] == "planner_fallback"
+    assert float(result["fallback_confidence"]) == 0.42
+    token_reduction = result.get("token_reduction", {})
+    assert isinstance(token_reduction, dict)
+    assert "vs_full_index" in token_reduction
+    assert "vs_changed_files" in token_reduction
+    assert "vs_snippets_only" in token_reduction
+    assert "token_reduction_ratio_vs_full_index" in result
+    assert "token_reduction_ratio_vs_snippets_only" in result
+    assert int(result.get("estimated_changed_files_tokens", 0)) > 0
+    warnings = result.get("warnings", [])
+    assert isinstance(warnings, list)
+    assert any("low" in str(item).lower() for item in warnings)
+
+
+def test_tool_context_snippets_only_and_include_metadata_controls_output(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_snippets_only_project"
+    project_dir.mkdir(parents=True)
+    out_path = project_dir / "context_snippets_only.json"
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {"runtime": {"accel_home": str(tmp_path / ".accel-home")}},
+    )
+    monkeypatch.setattr(mcp_server, "_discover_changed_files_from_git", lambda project_dir, limit=200: ["src/a.py"])
+    monkeypatch.setattr(
+        mcp_server,
+        "compile_context_pack",
+        lambda **kwargs: {
+            "version": 1,
+            "task": str(kwargs.get("task", "")),
+            "generated_at": "2026-02-12T00:00:00+00:00",
+            "budget": {"max_chars": 6000, "max_snippets": 16, "top_n_files": 6},
+            "top_files": [{"path": "src/a.py", "score": 1.0, "reasons": ["changed_file"], "signals": []}],
+            "snippets": [{"path": "src/a.py", "content": "print('ok')", "start_line": 1, "end_line": 1}],
+            "verify_plan": {"target_tests": [], "target_checks": ["pytest -q"]},
+            "meta": {"source_chars_est": 7000, "snippet_chars": 11},
+        },
+    )
+
+    result = mcp_server._tool_context(
+        project=str(project_dir),
+        task="return snippets only for quick ask",
+        changed_files=None,
+        snippets_only=True,
+        include_metadata=False,
+        include_pack=True,
+        out=str(out_path),
+    )
+
+    assert result["status"] == "ok"
+    assert result["output_mode"] == "snippets_only"
+    assert bool(result["include_metadata"]) is False
+    assert int(result["top_files"]) == 0
+    packed = result.get("pack", {})
+    assert isinstance(packed, dict)
+    assert "snippets" in packed
+    assert "top_files" not in packed
+    assert "meta" not in packed
+
+    persisted = json.loads(out_path.read_text(encoding="utf-8"))
+    assert "snippets" in persisted
+    assert "top_files" not in persisted
+    assert "meta" not in persisted
+
+
 def test_tool_verify_runs_with_evidence_mode(tmp_path: Path) -> None:
     project_dir = tmp_path / "verify_project"
     (project_dir / "src").mkdir(parents=True)
@@ -970,7 +1106,9 @@ def test_verify_start_accepts_string_runtime_overrides(tmp_path: Path, monkeypat
         fast_loop="false",
         verify_workers="2",
         per_command_timeout_seconds="10",
+        verify_cache_failed_results="true",
         verify_cache_ttl_seconds="300",
+        verify_cache_failed_ttl_seconds="90",
         verify_cache_max_entries="200",
     )
     assert started["status"] == "started"

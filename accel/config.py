@@ -38,7 +38,9 @@ DEFAULT_LOCAL_CONFIG: dict[str, Any] = {
         "verify_pytest_max_shards": 6,
         "verify_fail_fast": False,
         "verify_cache_enabled": True,
+        "verify_cache_failed_results": False,
         "verify_cache_ttl_seconds": 900,
+        "verify_cache_failed_ttl_seconds": 120,
         "verify_cache_max_entries": 400,
         "token_estimator_backend": "auto",
         "token_estimator_encoding": "cl100k_base",
@@ -216,9 +218,19 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         runtime["verify_cache_enabled"] = _normalize_bool(
             os.environ["ACCEL_VERIFY_CACHE_ENABLED"], bool(runtime.get("verify_cache_enabled", True))
         )
+    if os.environ.get("ACCEL_VERIFY_CACHE_FAILED_RESULTS") is not None:
+        runtime["verify_cache_failed_results"] = _normalize_bool(
+            os.environ["ACCEL_VERIFY_CACHE_FAILED_RESULTS"],
+            bool(runtime.get("verify_cache_failed_results", False)),
+        )
     if os.environ.get("ACCEL_VERIFY_CACHE_TTL_SECONDS"):
         runtime["verify_cache_ttl_seconds"] = _normalize_positive_int(
             os.environ["ACCEL_VERIFY_CACHE_TTL_SECONDS"], int(runtime.get("verify_cache_ttl_seconds", 900))
+        )
+    if os.environ.get("ACCEL_VERIFY_CACHE_FAILED_TTL_SECONDS"):
+        runtime["verify_cache_failed_ttl_seconds"] = _normalize_positive_int(
+            os.environ["ACCEL_VERIFY_CACHE_FAILED_TTL_SECONDS"],
+            int(runtime.get("verify_cache_failed_ttl_seconds", 120)),
         )
     if os.environ.get("ACCEL_VERIFY_CACHE_MAX_ENTRIES"):
         runtime["verify_cache_max_entries"] = _normalize_positive_int(
@@ -298,8 +310,14 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
     runtime["verify_cache_enabled"] = _normalize_bool(
         runtime.get("verify_cache_enabled", True), default_value=True
     )
+    runtime["verify_cache_failed_results"] = _normalize_bool(
+        runtime.get("verify_cache_failed_results", False), default_value=False
+    )
     runtime["verify_cache_ttl_seconds"] = _normalize_positive_int(
         runtime.get("verify_cache_ttl_seconds", 900), default_value=900
+    )
+    runtime["verify_cache_failed_ttl_seconds"] = _normalize_positive_int(
+        runtime.get("verify_cache_failed_ttl_seconds", 120), default_value=120
     )
     runtime["verify_cache_max_entries"] = _normalize_positive_int(
         runtime.get("verify_cache_max_entries", 400), default_value=400

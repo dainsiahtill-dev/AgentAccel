@@ -1,0 +1,21 @@
+﻿VERIFICATION_START fast_loop_cache_key_fix_20260212_01 2026-02-12T00:12:59.5758301Z
+ENV cwd=X:\MCPs\agent-accel
+ENV git_head=628be6dc063b5f6fc46e33dedd222a357fb1c4dd
+CMD ruff check accel/verify/orchestrator.py tests/unit/test_verify_orchestrator.py accel/mcp_server.py
+All checks passed!
+EXIT_CODE 0
+CMD PYTHONPATH=x:/MCPs/agent-accel pytest -q tests/unit/test_verify_orchestrator.py
+........                                                                 [100%]
+8 passed in 0.22s
+EXIT_CODE 0
+CMD PYTHONPATH=x:/MCPs/agent-accel pytest -q tests/unit/test_mcp_server.py
+.....................                                                    [100%]
+21 passed in 5.02s
+EXIT_CODE 0
+CMD python fast_loop smoke
+FAST_LOOP_SMOKE_OK completed
+EXIT_CODE 0
+DEGRADE_REASON: full-repo gate not rerun
+RISK: unrelated baseline scripts may still fail in full-suite run
+BACKFILL_PLAN: owner=codex commands='ruff check . && PYTHONPATH=x:/MCPs/agent-accel pytest -q' deadline_utc=2026-02-13T00:00:00Z
+VERIFICATION_END fast_loop_cache_key_fix_20260212_01 2026-02-12T00:13:10.9844877Z

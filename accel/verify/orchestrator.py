@@ -189,7 +189,6 @@ def _prune_cache_entries(
     max_entries: int,
 ) -> tuple[dict[str, dict[str, Any]], bool]:
     now = datetime.now(timezone.utc)
-    ttl = timedelta(seconds=max(1, ttl_seconds))
     max_count = max(1, max_entries)
 
     valid: list[tuple[str, datetime, dict[str, Any]]] = []
@@ -197,7 +196,9 @@ def _prune_cache_entries(
         saved_at = _parse_utc(entry.get("saved_utc"))
         if saved_at is None:
             continue
-        if now - saved_at > ttl:
+        entry_ttl_seconds = _normalize_positive_int(entry.get("ttl_seconds", ttl_seconds), ttl_seconds)
+        entry_ttl = timedelta(seconds=max(1, entry_ttl_seconds))
+        if now - saved_at > entry_ttl:
             continue
         valid.append((key, saved_at, entry))
 
@@ -256,6 +257,7 @@ def _normalize_cached_result(command: str, entry: dict[str, Any]) -> dict[str, A
     stored = entry.get("result", {})
     if not isinstance(stored, dict):
         stored = {}
+    cache_kind = str(entry.get("cache_kind", "success") or "success")
     return {
         "command": command,
         "exit_code": int(stored.get("exit_code", 1)),
@@ -264,6 +266,7 @@ def _normalize_cached_result(command: str, entry: dict[str, Any]) -> dict[str, A
         "stderr": str(stored.get("stderr", "")),
         "timed_out": bool(stored.get("timed_out", False)),
         "cached": True,
+        "cache_kind": cache_kind,
     }
 
 
@@ -342,17 +345,25 @@ def _start_command_tick_thread(
     return stop_event, started, thread
 
 
-def _store_success_result(
+def _store_cache_result(
     entries: dict[str, dict[str, Any]],
     key: str,
     command: str,
     result: dict[str, Any],
+    *,
+    cache_failed_results: bool,
+    failed_ttl_seconds: int,
 ) -> bool:
-    if _is_failure(result) or bool(result.get("timed_out", False)):
+    is_failure = _is_failure(result) or bool(result.get("timed_out", False))
+    if is_failure and not cache_failed_results:
         return False
+    cache_kind = "failure" if is_failure else "success"
+    ttl_seconds = _normalize_positive_int(failed_ttl_seconds, 120) if is_failure else None
     entries[key] = {
         "saved_utc": _utc_now(),
         "command": command,
+        "cache_kind": cache_kind,
+        "ttl_seconds": ttl_seconds,
         "result": {
             "exit_code": int(result.get("exit_code", 0)),
             "duration_seconds": float(result.get("duration_seconds", 0.0)),
@@ -364,7 +375,19 @@ def _store_success_result(
     return True
 
 
-def _log_command_result(log_path: Path, jsonl_path: Path, result: dict[str, Any]) -> None:
+def _log_command_result(
+    log_path: Path,
+    jsonl_path: Path,
+    result: dict[str, Any],
+    *,
+    mode: str,
+    fail_fast: bool,
+    cache_hits: int,
+    cache_misses: int,
+    command_index: int | None = None,
+    total_commands: int | None = None,
+    fail_fast_skipped: bool = False,
+) -> None:
     _append_line(log_path, f"CMD {result['command']}")
     _append_line(log_path, f"EXIT {result['exit_code']} DURATION {result['duration_seconds']}s")
     if result["stdout"]:
@@ -381,6 +404,14 @@ def _log_command_result(log_path: Path, jsonl_path: Path, result: dict[str, Any]
             "duration_seconds": result["duration_seconds"],
             "timed_out": result["timed_out"],
             "cached": bool(result.get("cached", False)),
+            "cache_kind": str(result.get("cache_kind", "success")),
+            "mode": str(mode),
+            "fail_fast": bool(fail_fast),
+            "cache_hits": int(cache_hits),
+            "cache_misses": int(cache_misses),
+            "fail_fast_skipped": bool(fail_fast_skipped),
+            "command_index": int(command_index) if command_index is not None else None,
+            "total_commands": int(total_commands) if total_commands is not None else None,
         },
     )
 
@@ -399,8 +430,14 @@ def run_verify(
     per_command_timeout = int(runtime_cfg.get("per_command_timeout_seconds", 1200))
     verify_fail_fast = _normalize_bool(runtime_cfg.get("verify_fail_fast", False), False)
     verify_cache_enabled_cfg = _normalize_bool(runtime_cfg.get("verify_cache_enabled", True), True)
+    verify_cache_failed_results = _normalize_bool(runtime_cfg.get("verify_cache_failed_results", False), False)
     verify_cache_ttl_seconds = _normalize_positive_int(runtime_cfg.get("verify_cache_ttl_seconds", 900), 900)
     verify_cache_max_entries = _normalize_positive_int(runtime_cfg.get("verify_cache_max_entries", 400), 400)
+    verify_cache_failed_ttl_seconds = _normalize_positive_int(
+        runtime_cfg.get("verify_cache_failed_ttl_seconds", 120),
+        120,
+    )
+    verify_mode = "fail_fast" if verify_fail_fast else ("parallel" if verify_workers > 1 else "sequential")
 
     nonce = uuid4().hex[:12]
     log_path = paths["verify"] / f"verify_{nonce}.log"
@@ -409,7 +446,18 @@ def run_verify(
 
     _append_line(log_path, f"VERIFICATION_START {nonce} {_utc_now()}")
     _append_line(log_path, f"ENV cwd={project_dir} python={shutil.which('python') or ''}")
-    _append_jsonl(jsonl_path, {"event": "verification_start", "nonce": nonce, "ts": _utc_now()})
+    _append_jsonl(
+        jsonl_path,
+        {
+            "event": "verification_start",
+            "nonce": nonce,
+            "ts": _utc_now(),
+            "mode": verify_mode,
+            "fail_fast": bool(verify_fail_fast),
+            "cache_failed_results": bool(verify_cache_failed_results),
+            "cache_failed_ttl_seconds": int(verify_cache_failed_ttl_seconds),
+        },
+    )
 
     changed_fingerprint = _build_changed_files_fingerprint(project_dir=project_dir, changed_files=changed_files)
     cache_enabled = bool(verify_cache_enabled_cfg and changed_fingerprint)
@@ -441,7 +489,17 @@ def run_verify(
             _append_line(log_path, f"SKIP {command} ({reason})")
             _append_jsonl(
                 jsonl_path,
-                {"event": "command_skipped", "command": command, "reason": reason, "ts": _utc_now()},
+                {
+                    "event": "command_skipped",
+                    "command": command,
+                    "reason": reason,
+                    "ts": _utc_now(),
+                    "mode": verify_mode,
+                    "fail_fast": bool(verify_fail_fast),
+                    "cache_hits": int(cache_hits),
+                    "cache_misses": int(cache_misses),
+                    "fail_fast_skipped": False,
+                },
             )
             continue
         runnable_commands.append(command)
@@ -468,8 +526,21 @@ def run_verify(
                         jsonl_path,
                         {"event": "command_cache_hit", "command": command, "ts": _utc_now()},
                     )
-                    _log_command_result(log_path, jsonl_path, cached_result)
-                    if _is_failure(cached_result):
+                    cache_failure = _is_failure(cached_result)
+                    fail_fast_skip_flag = bool(cache_failure and (index < (len(runnable_commands) - 1)))
+                    _log_command_result(
+                        log_path,
+                        jsonl_path,
+                        cached_result,
+                        mode=verify_mode,
+                        fail_fast=verify_fail_fast,
+                        cache_hits=cache_hits,
+                        cache_misses=cache_misses,
+                        command_index=index + 1,
+                        total_commands=len(runnable_commands),
+                        fail_fast_skipped=fail_fast_skip_flag,
+                    )
+                    if cache_failure:
                         fail_fast_skipped_commands = runnable_commands[index + 1 :]
                         break
                     continue
@@ -477,16 +548,35 @@ def run_verify(
 
             live_result = _normalize_live_result(run_command(command, project_dir, per_command_timeout))
             results.append(live_result)
-            _log_command_result(log_path, jsonl_path, live_result)
+            fail_fast_skip_flag = bool(_is_failure(live_result) and (index < (len(runnable_commands) - 1)))
+            _log_command_result(
+                log_path,
+                jsonl_path,
+                live_result,
+                mode=verify_mode,
+                fail_fast=verify_fail_fast,
+                cache_hits=cache_hits,
+                cache_misses=cache_misses,
+                command_index=index + 1,
+                total_commands=len(runnable_commands),
+                fail_fast_skipped=fail_fast_skip_flag,
+            )
             if cache_enabled and cache_key:
-                if _store_success_result(cache_entries, cache_key, command, live_result):
+                if _store_cache_result(
+                    cache_entries,
+                    cache_key,
+                    command,
+                    live_result,
+                    cache_failed_results=verify_cache_failed_results,
+                    failed_ttl_seconds=verify_cache_failed_ttl_seconds,
+                ):
                     cache_dirty = True
             if _is_failure(live_result):
                 fail_fast_skipped_commands = runnable_commands[index + 1 :]
                 break
     else:
-        runnable_with_keys: list[tuple[str, str | None]] = []
-        for command in runnable_commands:
+        runnable_with_keys: list[tuple[str, str | None, int]] = []
+        for index, command in enumerate(runnable_commands):
             cache_key = None
             if cache_enabled:
                 cache_key = _cache_key(
@@ -504,10 +594,21 @@ def run_verify(
                         jsonl_path,
                         {"event": "command_cache_hit", "command": command, "ts": _utc_now()},
                     )
-                    _log_command_result(log_path, jsonl_path, cached_result)
+                    _log_command_result(
+                        log_path,
+                        jsonl_path,
+                        cached_result,
+                        mode=verify_mode,
+                        fail_fast=verify_fail_fast,
+                        cache_hits=cache_hits,
+                        cache_misses=cache_misses,
+                        command_index=index + 1,
+                        total_commands=len(runnable_commands),
+                        fail_fast_skipped=False,
+                    )
                     continue
                 cache_misses += 1
-            runnable_with_keys.append((command, cache_key))
+            runnable_with_keys.append((command, cache_key, index))
 
         if runnable_with_keys:
             # Add overall timeout detection for the entire parallel execution
@@ -517,18 +618,36 @@ def run_verify(
             try:
                 with ThreadPoolExecutor(max_workers=min(verify_workers, len(runnable_with_keys))) as pool:
                     future_map = {
-                        pool.submit(_run_with_timeout_detection, command, project_dir, per_command_timeout, log_path, jsonl_path): (command, cache_key)
-                        for command, cache_key in runnable_with_keys
+                        pool.submit(_run_with_timeout_detection, command, project_dir, per_command_timeout, log_path, jsonl_path): (command, cache_key, index)
+                        for command, cache_key, index in runnable_with_keys
                     }
                     
                     for future in as_completed(future_map, timeout=max_overall_timeout):
-                        command, cache_key = future_map[future]
+                        command, cache_key, command_index = future_map[future]
                         try:
                             live_result = _normalize_live_result(future.result(timeout=per_command_timeout))
                             results.append(live_result)
-                            _log_command_result(log_path, jsonl_path, live_result)
+                            _log_command_result(
+                                log_path,
+                                jsonl_path,
+                                live_result,
+                                mode=verify_mode,
+                                fail_fast=verify_fail_fast,
+                                cache_hits=cache_hits,
+                                cache_misses=cache_misses,
+                                command_index=command_index + 1,
+                                total_commands=len(runnable_commands),
+                                fail_fast_skipped=False,
+                            )
                             if cache_enabled and cache_key:
-                                if _store_success_result(cache_entries, cache_key, command, live_result):
+                                if _store_cache_result(
+                                    cache_entries,
+                                    cache_key,
+                                    command,
+                                    live_result,
+                                    cache_failed_results=verify_cache_failed_results,
+                                    failed_ttl_seconds=verify_cache_failed_ttl_seconds,
+                                ):
                                     cache_dirty = True
                         except TimeoutError:
                             # Handle individual future timeout
@@ -542,7 +661,18 @@ def run_verify(
                                 "timed_out": True,
                             }
                             results.append(timeout_result)
-                            _log_command_result(log_path, jsonl_path, timeout_result)
+                            _log_command_result(
+                                log_path,
+                                jsonl_path,
+                                timeout_result,
+                                mode=verify_mode,
+                                fail_fast=verify_fail_fast,
+                                cache_hits=cache_hits,
+                                cache_misses=cache_misses,
+                                command_index=command_index + 1,
+                                total_commands=len(runnable_commands),
+                                fail_fast_skipped=False,
+                            )
                             _append_line(log_path, f"FUTURE_TIMEOUT {command}")
                         except Exception as exc:
                             # Handle other future errors
@@ -556,7 +686,18 @@ def run_verify(
                                 "timed_out": False,
                             }
                             results.append(error_result)
-                            _log_command_result(log_path, jsonl_path, error_result)
+                            _log_command_result(
+                                log_path,
+                                jsonl_path,
+                                error_result,
+                                mode=verify_mode,
+                                fail_fast=verify_fail_fast,
+                                cache_hits=cache_hits,
+                                cache_misses=cache_misses,
+                                command_index=command_index + 1,
+                                total_commands=len(runnable_commands),
+                                fail_fast_skipped=False,
+                            )
                             _append_line(log_path, f"FUTURE_ERROR {command} ERROR={exc!r}")
                             
             except TimeoutError:
@@ -564,7 +705,7 @@ def run_verify(
                 elapsed = time.perf_counter() - overall_start
                 _append_line(log_path, f"THREADPOOL_TIMEOUT overall_timeout={max_overall_timeout}s elapsed={elapsed:.3f}s")
                 # Add failure results for any remaining commands
-                for command, cache_key in runnable_with_keys:
+                for command, cache_key, command_index in runnable_with_keys:
                     if not any(r["command"] == command for r in results):
                         timeout_result = {
                             "command": command,
@@ -575,20 +716,49 @@ def run_verify(
                             "timed_out": True,
                         }
                         results.append(timeout_result)
-                        _log_command_result(log_path, jsonl_path, timeout_result)
+                        _log_command_result(
+                            log_path,
+                            jsonl_path,
+                            timeout_result,
+                            mode=verify_mode,
+                            fail_fast=verify_fail_fast,
+                            cache_hits=cache_hits,
+                            cache_misses=cache_misses,
+                            command_index=command_index + 1,
+                            total_commands=len(runnable_commands),
+                            fail_fast_skipped=False,
+                        )
             except Exception as exc:
                 # Handle ThreadPool creation/execution errors
                 elapsed = time.perf_counter() - overall_start
                 _append_line(log_path, f"THREADPOOL_ERROR ERROR={exc!r}")
                 # Fallback to sequential execution
                 _append_line(log_path, "FALLBACK_SEQUENTIAL_EXECUTION")
-                for command, cache_key in runnable_with_keys:
+                for command, cache_key, command_index in runnable_with_keys:
                     if not any(r["command"] == command for r in results):
                         live_result = _normalize_live_result(_run_with_timeout_detection(command, project_dir, per_command_timeout, log_path, jsonl_path))
                         results.append(live_result)
-                        _log_command_result(log_path, jsonl_path, live_result)
+                        _log_command_result(
+                            log_path,
+                            jsonl_path,
+                            live_result,
+                            mode=verify_mode,
+                            fail_fast=verify_fail_fast,
+                            cache_hits=cache_hits,
+                            cache_misses=cache_misses,
+                            command_index=command_index + 1,
+                            total_commands=len(runnable_commands),
+                            fail_fast_skipped=False,
+                        )
                         if cache_enabled and cache_key:
-                            if _store_success_result(cache_entries, cache_key, command, live_result):
+                            if _store_cache_result(
+                                cache_entries,
+                                cache_key,
+                                command,
+                                live_result,
+                                cache_failed_results=verify_cache_failed_results,
+                                failed_ttl_seconds=verify_cache_failed_ttl_seconds,
+                            ):
                                 cache_dirty = True
 
     if fail_fast_skipped_commands:
@@ -596,7 +766,17 @@ def run_verify(
             _append_line(log_path, f"SKIP {command} (fail-fast)")
             _append_jsonl(
                 jsonl_path,
-                {"event": "command_skipped", "command": command, "reason": "fail_fast", "ts": _utc_now()},
+                {
+                    "event": "command_skipped",
+                    "command": command,
+                    "reason": "fail_fast",
+                    "ts": _utc_now(),
+                    "mode": verify_mode,
+                    "fail_fast": bool(verify_fail_fast),
+                    "cache_hits": int(cache_hits),
+                    "cache_misses": int(cache_misses),
+                    "fail_fast_skipped": True,
+                },
             )
 
     if cache_enabled and cache_dirty:
@@ -638,6 +818,13 @@ def run_verify(
             "status": status,
             "exit_code": exit_code,
             "ts": _utc_now(),
+            "mode": verify_mode,
+            "fail_fast": bool(verify_fail_fast),
+            "cache_hits": int(cache_hits),
+            "cache_misses": int(cache_misses),
+            "fail_fast_skipped": int(len(fail_fast_skipped_commands)),
+            "cache_failed_results": bool(verify_cache_failed_results),
+            "cache_failed_ttl_seconds": int(verify_cache_failed_ttl_seconds),
         },
     )
 
@@ -655,6 +842,9 @@ def run_verify(
         "cache_enabled": cache_enabled,
         "cache_hits": cache_hits,
         "cache_misses": cache_misses,
+        "mode": verify_mode,
+        "cache_failed_results": verify_cache_failed_results,
+        "cache_failed_ttl_seconds": verify_cache_failed_ttl_seconds,
     }
 
 
@@ -676,8 +866,14 @@ def run_verify_with_callback(
     per_command_timeout = int(runtime_cfg.get("per_command_timeout_seconds", 1200))
     verify_fail_fast = _normalize_bool(runtime_cfg.get("verify_fail_fast", False), False)
     verify_cache_enabled_cfg = _normalize_bool(runtime_cfg.get("verify_cache_enabled", True), True)
+    verify_cache_failed_results = _normalize_bool(runtime_cfg.get("verify_cache_failed_results", False), False)
     verify_cache_ttl_seconds = _normalize_positive_int(runtime_cfg.get("verify_cache_ttl_seconds", 900), 900)
     verify_cache_max_entries = _normalize_positive_int(runtime_cfg.get("verify_cache_max_entries", 400), 400)
+    verify_cache_failed_ttl_seconds = _normalize_positive_int(
+        runtime_cfg.get("verify_cache_failed_ttl_seconds", 120),
+        120,
+    )
+    verify_mode = "fail_fast" if verify_fail_fast else ("parallel" if verify_workers > 1 else "sequential")
 
     nonce = uuid4().hex[:12]
     log_path = paths["verify"] / f"verify_{nonce}.log"
@@ -688,7 +884,18 @@ def run_verify_with_callback(
 
     _append_line(log_path, f"VERIFICATION_START {nonce} {_utc_now()}")
     _append_line(log_path, f"ENV cwd={project_dir} python={shutil.which('python') or ''}")
-    _append_jsonl(jsonl_path, {"event": "verification_start", "nonce": nonce, "ts": _utc_now()})
+    _append_jsonl(
+        jsonl_path,
+        {
+            "event": "verification_start",
+            "nonce": nonce,
+            "ts": _utc_now(),
+            "mode": verify_mode,
+            "fail_fast": bool(verify_fail_fast),
+            "cache_failed_results": bool(verify_cache_failed_results),
+            "cache_failed_ttl_seconds": int(verify_cache_failed_ttl_seconds),
+        },
+    )
 
     changed_fingerprint = _build_changed_files_fingerprint(project_dir=project_dir, changed_files=changed_files)
     cache_enabled = bool(verify_cache_enabled_cfg and changed_fingerprint)
@@ -725,7 +932,17 @@ def run_verify_with_callback(
             _append_line(log_path, f"SKIP {command} ({reason})")
             _append_jsonl(
                 jsonl_path,
-                {"event": "command_skipped", "command": command, "reason": reason, "ts": _utc_now()},
+                {
+                    "event": "command_skipped",
+                    "command": command,
+                    "reason": reason,
+                    "ts": _utc_now(),
+                    "mode": verify_mode,
+                    "fail_fast": bool(verify_fail_fast),
+                    "cache_hits": int(cache_hits),
+                    "cache_misses": int(cache_misses),
+                    "fail_fast_skipped": False,
+                },
             )
             callback.on_skip("verify_" + nonce, command, reason)
             continue
@@ -758,7 +975,20 @@ def run_verify_with_callback(
                         jsonl_path,
                         {"event": "command_cache_hit", "command": command, "ts": _utc_now()},
                     )
-                    _log_command_result(log_path, jsonl_path, cached_result)
+                    cache_failure = _is_failure(cached_result)
+                    fail_fast_skip_flag = bool(cache_failure and (index < (len(runnable_commands) - 1)))
+                    _log_command_result(
+                        log_path,
+                        jsonl_path,
+                        cached_result,
+                        mode=verify_mode,
+                        fail_fast=verify_fail_fast,
+                        cache_hits=cache_hits,
+                        cache_misses=cache_misses,
+                        command_index=index + 1,
+                        total_commands=len(runnable_commands),
+                        fail_fast_skipped=fail_fast_skip_flag,
+                    )
                     callback.on_cache_hit("verify_" + nonce, command)
                     _emit_command_complete_event(
                         callback,
@@ -769,7 +999,7 @@ def run_verify_with_callback(
                         total=len(runnable_commands),
                     )
                     callback.on_progress("verify_" + nonce, index + 1, len(runnable_commands), "")
-                    if _is_failure(cached_result):
+                    if cache_failure:
                         fail_fast_skipped_commands = runnable_commands[index + 1 :]
                         break
                     continue
@@ -808,17 +1038,36 @@ def run_verify_with_callback(
                 total=len(runnable_commands),
             )
             results.append(live_result)
-            _log_command_result(log_path, jsonl_path, live_result)
+            fail_fast_skip_flag = bool(_is_failure(live_result) and (index < (len(runnable_commands) - 1)))
+            _log_command_result(
+                log_path,
+                jsonl_path,
+                live_result,
+                mode=verify_mode,
+                fail_fast=verify_fail_fast,
+                cache_hits=cache_hits,
+                cache_misses=cache_misses,
+                command_index=index + 1,
+                total_commands=len(runnable_commands),
+                fail_fast_skipped=fail_fast_skip_flag,
+            )
             if cache_enabled and cache_key:
-                if _store_success_result(cache_entries, cache_key, command, live_result):
+                if _store_cache_result(
+                    cache_entries,
+                    cache_key,
+                    command,
+                    live_result,
+                    cache_failed_results=verify_cache_failed_results,
+                    failed_ttl_seconds=verify_cache_failed_ttl_seconds,
+                ):
                     cache_dirty = True
             callback.on_progress("verify_" + nonce, index + 1, len(runnable_commands), "")
             if _is_failure(live_result):
                 fail_fast_skipped_commands = runnable_commands[index + 1 :]
                 break
     else:
-        runnable_with_keys: list[tuple[str, str | None]] = []
-        for command in runnable_commands:
+        runnable_with_keys: list[tuple[str, str | None, int]] = []
+        for index, command in enumerate(runnable_commands):
             cache_key = None
             if cache_enabled:
                 cache_key = _cache_key(
@@ -836,11 +1085,22 @@ def run_verify_with_callback(
                         jsonl_path,
                         {"event": "command_cache_hit", "command": command, "ts": _utc_now()},
                     )
-                    _log_command_result(log_path, jsonl_path, cached_result)
+                    _log_command_result(
+                        log_path,
+                        jsonl_path,
+                        cached_result,
+                        mode=verify_mode,
+                        fail_fast=verify_fail_fast,
+                        cache_hits=cache_hits,
+                        cache_misses=cache_misses,
+                        command_index=index + 1,
+                        total_commands=len(runnable_commands),
+                        fail_fast_skipped=False,
+                    )
                     callback.on_cache_hit("verify_" + nonce, command)
                     continue
                 cache_misses += 1
-            runnable_with_keys.append((command, cache_key))
+            runnable_with_keys.append((command, cache_key, index))
 
         if runnable_with_keys:
             overall_start = time.perf_counter()
@@ -853,7 +1113,7 @@ def run_verify_with_callback(
                     future_map: dict[Any, tuple[str, str | None, float, int, threading.Event, threading.Thread]] = {}
                     total_commands = len(runnable_with_keys)
                     completed_count = 0
-                    for index, (command, cache_key) in enumerate(runnable_with_keys):
+                    for index, (command, cache_key, command_index) in enumerate(runnable_with_keys):
                         callback.on_command_start("verify_" + nonce, command, index, total_commands)
                         callback.on_progress("verify_" + nonce, completed_count, total_commands, command)
                         stop_tick, cmd_started, tick_thread = _start_command_tick_thread(
@@ -870,10 +1130,10 @@ def run_verify_with_callback(
                             log_path,
                             jsonl_path,
                         )
-                        future_map[future] = (command, cache_key, cmd_started, index, stop_tick, tick_thread)
+                        future_map[future] = (command, cache_key, cmd_started, command_index, stop_tick, tick_thread)
 
                     for future in as_completed(future_map, timeout=max_overall_timeout):
-                        command, cache_key, started_at, _index, stop_tick, tick_thread = future_map[future]
+                        command, cache_key, started_at, command_index, stop_tick, tick_thread = future_map[future]
 
                         try:
                             live_result = _normalize_live_result(future.result(timeout=per_command_timeout))
@@ -899,9 +1159,27 @@ def run_verify_with_callback(
                                 total=total_commands,
                             )
                             results.append(live_result)
-                            _log_command_result(log_path, jsonl_path, live_result)
+                            _log_command_result(
+                                log_path,
+                                jsonl_path,
+                                live_result,
+                                mode=verify_mode,
+                                fail_fast=verify_fail_fast,
+                                cache_hits=cache_hits,
+                                cache_misses=cache_misses,
+                                command_index=command_index + 1,
+                                total_commands=len(runnable_commands),
+                                fail_fast_skipped=False,
+                            )
                             if cache_enabled and cache_key:
-                                if _store_success_result(cache_entries, cache_key, command, live_result):
+                                if _store_cache_result(
+                                    cache_entries,
+                                    cache_key,
+                                    command,
+                                    live_result,
+                                    cache_failed_results=verify_cache_failed_results,
+                                    failed_ttl_seconds=verify_cache_failed_ttl_seconds,
+                                ):
                                     cache_dirty = True
                         except TimeoutError:
                             elapsed = time.perf_counter() - overall_start
@@ -935,7 +1213,18 @@ def run_verify_with_callback(
                                 total=total_commands,
                             )
                             results.append(timeout_result)
-                            _log_command_result(log_path, jsonl_path, timeout_result)
+                            _log_command_result(
+                                log_path,
+                                jsonl_path,
+                                timeout_result,
+                                mode=verify_mode,
+                                fail_fast=verify_fail_fast,
+                                cache_hits=cache_hits,
+                                cache_misses=cache_misses,
+                                command_index=command_index + 1,
+                                total_commands=len(runnable_commands),
+                                fail_fast_skipped=False,
+                            )
                             _append_line(log_path, f"FUTURE_TIMEOUT {command}")
                         except Exception as exc:
                             elapsed = time.perf_counter() - overall_start
@@ -969,7 +1258,18 @@ def run_verify_with_callback(
                                 total=total_commands,
                             )
                             results.append(error_result)
-                            _log_command_result(log_path, jsonl_path, error_result)
+                            _log_command_result(
+                                log_path,
+                                jsonl_path,
+                                error_result,
+                                mode=verify_mode,
+                                fail_fast=verify_fail_fast,
+                                cache_hits=cache_hits,
+                                cache_misses=cache_misses,
+                                command_index=command_index + 1,
+                                total_commands=len(runnable_commands),
+                                fail_fast_skipped=False,
+                            )
                             _append_line(log_path, f"FUTURE_ERROR {command} ERROR={exc!r}")
                         finally:
                             stop_tick.set()
@@ -998,12 +1298,12 @@ def run_verify_with_callback(
                         )
 
             except TimeoutError:
-                for _future, (_command, _cache_key, _started_at, _index, stop_tick, tick_thread) in future_map.items():
+                for _future, (_command, _cache_key_value, _started_at, _index, stop_tick, tick_thread) in future_map.items():
                     stop_tick.set()
                     tick_thread.join(timeout=0.1)
                 elapsed = time.perf_counter() - overall_start
                 _append_line(log_path, f"THREADPOOL_TIMEOUT overall_timeout={max_overall_timeout}s elapsed={elapsed:.3f}s")
-                for command, cache_key in runnable_with_keys:
+                for command, cache_key, command_index in runnable_with_keys:
                     if not any(r["command"] == command for r in results):
                         timeout_result = {
                             "command": command,
@@ -1014,9 +1314,20 @@ def run_verify_with_callback(
                             "timed_out": True,
                         }
                         results.append(timeout_result)
-                        _log_command_result(log_path, jsonl_path, timeout_result)
+                        _log_command_result(
+                            log_path,
+                            jsonl_path,
+                            timeout_result,
+                            mode=verify_mode,
+                            fail_fast=verify_fail_fast,
+                            cache_hits=cache_hits,
+                            cache_misses=cache_misses,
+                            command_index=command_index + 1,
+                            total_commands=len(runnable_commands),
+                            fail_fast_skipped=False,
+                        )
             except Exception as exc:
-                for _future, (_command, _cache_key, _started_at, _index, stop_tick, tick_thread) in future_map.items():
+                for _future, (_command, _cache_key_value, _started_at, _index, stop_tick, tick_thread) in future_map.items():
                     stop_tick.set()
                     tick_thread.join(timeout=0.1)
                 elapsed = time.perf_counter() - overall_start
@@ -1024,7 +1335,7 @@ def run_verify_with_callback(
                 _append_line(log_path, "FALLBACK_SEQUENTIAL_EXECUTION")
                 callback.on_stage_change("verify_" + nonce, VerifyStage.SEQUENTIAL)
 
-                for i, (command, cache_key) in enumerate(runnable_with_keys):
+                for i, (command, cache_key, command_index) in enumerate(runnable_with_keys):
                     if not any(r["command"] == command for r in results):
                         callback.on_command_start("verify_" + nonce, command, i, len(runnable_with_keys))
                         stop_tick, cmd_started, tick_thread = _start_command_tick_thread(
@@ -1062,9 +1373,27 @@ def run_verify_with_callback(
                             total=len(runnable_with_keys),
                         )
                         results.append(live_result)
-                        _log_command_result(log_path, jsonl_path, live_result)
+                        _log_command_result(
+                            log_path,
+                            jsonl_path,
+                            live_result,
+                            mode=verify_mode,
+                            fail_fast=verify_fail_fast,
+                            cache_hits=cache_hits,
+                            cache_misses=cache_misses,
+                            command_index=command_index + 1,
+                            total_commands=len(runnable_commands),
+                            fail_fast_skipped=False,
+                        )
                         if cache_enabled and cache_key:
-                            if _store_success_result(cache_entries, cache_key, command, live_result):
+                            if _store_cache_result(
+                                cache_entries,
+                                cache_key,
+                                command,
+                                live_result,
+                                cache_failed_results=verify_cache_failed_results,
+                                failed_ttl_seconds=verify_cache_failed_ttl_seconds,
+                            ):
                                 cache_dirty = True
                         callback.on_progress("verify_" + nonce, i + 1, len(runnable_with_keys), "")
 
@@ -1073,7 +1402,17 @@ def run_verify_with_callback(
             _append_line(log_path, f"SKIP {command} (fail-fast)")
             _append_jsonl(
                 jsonl_path,
-                {"event": "command_skipped", "command": command, "reason": "fail_fast", "ts": _utc_now()},
+                {
+                    "event": "command_skipped",
+                    "command": command,
+                    "reason": "fail_fast",
+                    "ts": _utc_now(),
+                    "mode": verify_mode,
+                    "fail_fast": bool(verify_fail_fast),
+                    "cache_hits": int(cache_hits),
+                    "cache_misses": int(cache_misses),
+                    "fail_fast_skipped": True,
+                },
             )
             callback.on_skip("verify_" + nonce, command, "fail_fast")
 
@@ -1118,6 +1457,13 @@ def run_verify_with_callback(
             "status": status,
             "exit_code": exit_code,
             "ts": _utc_now(),
+            "mode": verify_mode,
+            "fail_fast": bool(verify_fail_fast),
+            "cache_hits": int(cache_hits),
+            "cache_misses": int(cache_misses),
+            "fail_fast_skipped": int(len(fail_fast_skipped_commands)),
+            "cache_failed_results": bool(verify_cache_failed_results),
+            "cache_failed_ttl_seconds": int(verify_cache_failed_ttl_seconds),
         },
     )
 
@@ -1137,4 +1483,7 @@ def run_verify_with_callback(
         "cache_enabled": cache_enabled,
         "cache_hits": cache_hits,
         "cache_misses": cache_misses,
+        "mode": verify_mode,
+        "cache_failed_results": verify_cache_failed_results,
+        "cache_failed_ttl_seconds": verify_cache_failed_ttl_seconds,
     }

@@ -28,7 +28,7 @@ from .verify.job_manager import JobManager, JobState, VerifyJob
 
 JSONDict = dict[str, Any]
 SERVER_NAME = "agent-accel-mcp"
-SERVER_VERSION = "0.2.4"
+SERVER_VERSION = "0.2.6"
 TOOL_ERROR_EXECUTION_FAILED = "ACCEL_TOOL_EXECUTION_FAILED"
 
 # Debug logging setup
@@ -176,6 +176,68 @@ def _coerce_events_limit(value: Any, default_value: int = 30, max_value: int = 5
     if parsed is None:
         parsed = default_value
     return max(1, min(int(max_value), int(parsed)))
+
+
+def _clamp_float(value: float, min_value: float, max_value: float) -> float:
+    return max(float(min_value), min(float(max_value), float(value)))
+
+
+def _token_reduction_ratio(context_tokens: int, baseline_tokens: int) -> float:
+    baseline = int(baseline_tokens)
+    if baseline <= 0:
+        return 0.0
+    ratio = 1.0 - (float(max(0, int(context_tokens))) / float(baseline))
+    return _clamp_float(ratio, 0.0, 1.0)
+
+
+def _estimate_changed_files_chars(
+    project_dir: Path,
+    changed_files: list[str],
+    *,
+    max_files: int = 200,
+    max_total_chars: int = 2_000_000,
+) -> int:
+    total_chars = 0
+    seen: set[str] = set()
+    for rel_path in changed_files[: max(1, int(max_files))]:
+        normalized = str(rel_path).replace("\\", "/").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        file_path = (project_dir / normalized).resolve()
+        if not file_path.exists() or not file_path.is_file():
+            continue
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        total_chars += len(content)
+        if total_chars >= max_total_chars:
+            return int(max_total_chars)
+    return int(total_chars)
+
+
+def _build_context_output_pack(
+    pack: JSONDict,
+    *,
+    snippets_only: bool,
+    include_metadata: bool,
+) -> JSONDict:
+    if snippets_only:
+        output: JSONDict = {
+            "version": int(pack.get("version", 1) or 1),
+            "task": str(pack.get("task", "")),
+            "generated_at": str(pack.get("generated_at", "")),
+            "snippets": list(pack.get("snippets", [])),
+        }
+        if include_metadata and isinstance(pack.get("meta"), dict):
+            output["meta"] = dict(pack.get("meta", {}))
+        return output
+
+    output = dict(pack)
+    if not include_metadata:
+        output.pop("meta", None)
+    return output
 
 
 def _summarize_verify_events(events: list[dict[str, Any]], status: JSONDict) -> JSONDict:
@@ -519,24 +581,24 @@ def _discover_changed_files_from_index_fallback(
     task: str,
     hints: list[str],
     limit: int = 24,
-) -> tuple[list[str], str]:
+) -> tuple[list[str], str, float]:
     accel_home_value = str(config.get("runtime", {}).get("accel_home", "")).strip()
     if not accel_home_value:
-        return [], "no_accel_home"
+        return [], "no_accel_home", 0.0
     accel_home = Path(accel_home_value).resolve()
     index_dir = project_paths(accel_home, project_dir)["index"]
     manifest_path = index_dir / "manifest.json"
     if not manifest_path.exists():
-        return [], "manifest_missing"
+        return [], "manifest_missing", 0.0
 
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception:
-        return [], "manifest_parse_failed"
+        return [], "manifest_parse_failed", 0.0
 
     indexed_files = [str(item).replace("\\", "/") for item in manifest.get("indexed_files", []) if str(item).strip()]
     if not indexed_files:
-        return [], "manifest_index_empty"
+        return [], "manifest_index_empty", 0.0
 
     indexed_set = set(indexed_files)
     recent_changed = [
@@ -546,7 +608,7 @@ def _discover_changed_files_from_index_fallback(
     ]
     if recent_changed:
         deduped_recent = list(dict.fromkeys(recent_changed))[: max(1, int(limit))]
-        return deduped_recent, "manifest_recent"
+        return deduped_recent, "manifest_recent", 0.92
 
     tokens = normalize_task_tokens(task)
     for hint in hints:
@@ -562,9 +624,12 @@ def _discover_changed_files_from_index_fallback(
         if scored:
             scored.sort(key=lambda item: (-item[0], item[1]))
             selected = [path for _, path in scored[: max(1, int(limit))]]
-            return selected, "planner_fallback"
+            max_score = max(score for score, _ in scored)
+            coverage = float(max_score) / float(max(1, len(tokens)))
+            confidence = _clamp_float(0.35 + (coverage * 0.5), 0.35, 0.88)
+            return selected, "planner_fallback", confidence
 
-    return indexed_files[: max(1, min(int(limit), 8))], "index_head_fallback"
+    return indexed_files[: max(1, min(int(limit), 8))], "index_head_fallback", 0.2
 
 
 def _auto_context_budget_preset(task: str, changed_files: list[str], hints: list[str]) -> tuple[str, str]:
@@ -663,6 +728,9 @@ def _tool_context(
     out: str | None = None,
     include_pack: Any = False,
     budget: Any = None,
+    strict_changed_files: Any = None,
+    snippets_only: Any = False,
+    include_metadata: Any = True,
 ) -> JSONDict:
     _debug_log("_tool_context: begin")
     project_dir = _normalize_project_dir(project)
@@ -673,25 +741,34 @@ def _tool_context(
     changed_files_list = _to_string_list(changed_files)
     hints_list = _to_string_list(hints)
     include_pack_flag = _coerce_bool(include_pack, False)
+    snippets_only_flag = _coerce_bool(snippets_only, False)
+    include_metadata_flag = _coerce_bool(include_metadata, True)
     _debug_log(
         "_tool_context: parsed inputs "
-        f"changed_files={len(changed_files_list)} hints={len(hints_list)} include_pack={include_pack_flag}"
+        f"changed_files={len(changed_files_list)} hints={len(hints_list)} "
+        f"include_pack={include_pack_flag} snippets_only={snippets_only_flag} include_metadata={include_metadata_flag}"
     )
 
     config = resolve_effective_config(project_dir)
     _debug_log("_tool_context: config resolved")
     runtime_cfg = config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {}
     require_changed_files = bool(runtime_cfg.get("context_require_changed_files", False))
+    strict_changed_files_override = _coerce_optional_bool(strict_changed_files)
+    strict_changed_files_effective = bool(strict_changed_files_override) if strict_changed_files_override is not None else False
 
     changed_files_source = "user" if changed_files_list else "none"
     changed_files_fallback_reason = ""
+    fallback_confidence = 1.0 if changed_files_list else 0.0
     if not changed_files_list:
         auto_changed = _discover_changed_files_from_git(project_dir)
         if auto_changed:
             changed_files_list = auto_changed
             changed_files_source = "git_auto"
+            fallback_confidence = 0.98
+        elif strict_changed_files_effective:
+            changed_files_fallback_reason = "strict_changed_files_enabled_no_git_delta"
         else:
-            fallback_changed, fallback_reason = _discover_changed_files_from_index_fallback(
+            fallback_changed, fallback_reason, fallback_conf = _discover_changed_files_from_index_fallback(
                 project_dir,
                 config=config,
                 task=task_text,
@@ -700,12 +777,18 @@ def _tool_context(
             if fallback_changed:
                 changed_files_list = fallback_changed
                 changed_files_source = fallback_reason
+                fallback_confidence = float(fallback_conf)
             else:
                 changed_files_fallback_reason = fallback_reason
     _debug_log(
         "_tool_context: changed_files resolution "
         f"source={changed_files_source} count={len(changed_files_list)}"
     )
+    if strict_changed_files_effective and not changed_files_list:
+        raise ValueError(
+            "strict_changed_files=true requires explicit changed_files or a detectable git delta. "
+            "Provide changed_files explicitly or commit/stage diffs before calling accel_context."
+        )
     if require_changed_files and not changed_files_list:
         raise ValueError(
             "changed_files is required for context narrowing. "
@@ -747,6 +830,11 @@ def _tool_context(
         budget_override=budget_override,
     )
     _debug_log("_tool_context: compile_context_pack done")
+    pack_for_output = _build_context_output_pack(
+        pack,
+        snippets_only=snippets_only_flag,
+        include_metadata=include_metadata_flag,
+    )
 
     accel_home = Path(config["runtime"]["accel_home"]).resolve()
     paths = project_paths(accel_home, project_dir)
@@ -757,9 +845,9 @@ def _tool_context(
         out_path = paths["context"] / f"context_pack_{uuid4().hex[:10]}.json"
 
     _debug_log(f"_tool_context: write_context_pack start out={out_path}")
-    write_context_pack(out_path, pack)
+    write_context_pack(out_path, pack_for_output)
     _debug_log("_tool_context: write_context_pack done")
-    pack_json_text = json.dumps(pack, ensure_ascii=False)
+    pack_json_text = json.dumps(pack_for_output, ensure_ascii=False)
     context_chars = len(pack_json_text)
     meta = pack.get("meta", {}) if isinstance(pack.get("meta", {}), dict) else {}
     source_chars = int(meta.get("source_chars_est", 0) or 0)
@@ -785,12 +873,43 @@ def _tool_context(
 
     compression_ratio = float(context_chars / source_chars) if source_chars > 0 else 1.0
     token_reduction_ratio = max(0.0, 1.0 - compression_ratio)
+    snippets_only_text = json.dumps({"snippets": list(pack.get("snippets", []))}, ensure_ascii=False)
+    snippets_only_token_estimate = estimate_tokens_for_text(
+        snippets_only_text,
+        backend=runtime_cfg.get("token_estimator_backend", "auto"),
+        model=runtime_cfg.get("token_estimator_model", ""),
+        encoding=runtime_cfg.get("token_estimator_encoding", "cl100k_base"),
+        calibration=runtime_cfg.get("token_estimator_calibration", 1.0),
+        fallback_chars_per_token=runtime_cfg.get("token_estimator_fallback_chars_per_token", 4.0),
+    )
+    changed_files_chars = _estimate_changed_files_chars(project_dir, changed_files_list)
+    changed_files_token_estimate = estimate_tokens_from_chars(
+        changed_files_chars,
+        chars_per_token=token_estimate.get(
+            "chars_per_token",
+            runtime_cfg.get("token_estimator_fallback_chars_per_token", 4.0),
+        ),
+        calibration=token_estimate.get("calibration", runtime_cfg.get("token_estimator_calibration", 1.0)),
+    )
+    context_tokens = int(token_estimate.get("estimated_tokens", 1))
+    source_tokens = int(source_token_estimate.get("estimated_tokens", 1))
+    changed_files_tokens = int(changed_files_token_estimate.get("estimated_tokens", 0))
+    snippets_only_tokens = int(snippets_only_token_estimate.get("estimated_tokens", 1))
+    token_reduction_vs_full_index = _token_reduction_ratio(context_tokens, source_tokens)
+    token_reduction_vs_changed_files = (
+        _token_reduction_ratio(context_tokens, changed_files_tokens) if changed_files_tokens > 0 else None
+    )
+    token_reduction_vs_snippets_only = _token_reduction_ratio(context_tokens, snippets_only_tokens)
     warnings: list[str] = []
     if changed_files_source == "none":
         warnings.append("changed_files not provided and no git delta detected; context scope may be wider than necessary")
     elif changed_files_source in {"manifest_recent", "planner_fallback", "index_head_fallback"}:
         warnings.append(
             f"changed_files inferred via {changed_files_source}; provide explicit changed_files for tighter precision"
+        )
+    if changed_files_source in {"planner_fallback", "index_head_fallback"} and fallback_confidence < 0.6:
+        warnings.append(
+            "changed_files inference confidence is low; provide explicit changed_files for stable narrowing"
         )
     if changed_files_fallback_reason:
         warnings.append(f"changed_files fallback detail: {changed_files_fallback_reason}")
@@ -804,17 +923,40 @@ def _tool_context(
     payload: JSONDict = {
         "status": "ok",
         "out": str(out_path),
-        "top_files": len(pack.get("top_files", [])),
-        "snippets": len(pack.get("snippets", [])),
+        "top_files": len(pack_for_output.get("top_files", [])),
+        "snippets": len(pack_for_output.get("snippets", [])),
         "verify_plan": verify_plan,
         "selected_tests_count": selected_tests_count,
         "selected_checks_count": selected_checks_count,
         "context_chars": context_chars,
         "source_chars": source_chars,
-        "estimated_tokens": int(token_estimate.get("estimated_tokens", 1)),
-        "estimated_source_tokens": int(source_token_estimate.get("estimated_tokens", 1)),
+        "estimated_tokens": context_tokens,
+        "estimated_source_tokens": source_tokens,
+        "estimated_changed_files_tokens": changed_files_tokens,
+        "estimated_snippets_only_tokens": snippets_only_tokens,
+        "changed_files_source_chars": changed_files_chars,
         "compression_ratio": round(compression_ratio, 6),
         "token_reduction_ratio": round(token_reduction_ratio, 6),
+        "token_reduction_ratio_vs_full_index": round(token_reduction_vs_full_index, 6),
+        "token_reduction_ratio_vs_snippets_only": round(token_reduction_vs_snippets_only, 6),
+        "token_reduction": {
+            "vs_full_index": {
+                "baseline_tokens": source_tokens,
+                "context_tokens": context_tokens,
+                "ratio": round(token_reduction_vs_full_index, 6),
+            },
+            "vs_changed_files": {
+                "baseline_tokens": changed_files_tokens,
+                "context_tokens": context_tokens,
+                "ratio": round(token_reduction_vs_changed_files, 6) if token_reduction_vs_changed_files is not None else None,
+                "available": bool(changed_files_tokens > 0),
+            },
+            "vs_snippets_only": {
+                "baseline_tokens": snippets_only_tokens,
+                "context_tokens": context_tokens,
+                "ratio": round(token_reduction_vs_snippets_only, 6),
+            },
+        },
         "token_estimator": {
             "backend_requested": token_estimate.get("backend_requested", "auto"),
             "backend_used": token_estimate.get("backend_used", "heuristic"),
@@ -835,7 +977,13 @@ def _tool_context(
         "changed_files_used": changed_files_list,
         "changed_files_source": changed_files_source,
         "changed_files_count": len(changed_files_list),
+        "strict_changed_files": strict_changed_files_effective,
+        "fallback_confidence": round(float(fallback_confidence), 6),
+        "output_mode": "snippets_only" if snippets_only_flag else "full",
+        "include_metadata": include_metadata_flag,
     }
+    if token_reduction_vs_changed_files is not None:
+        payload["token_reduction_ratio_vs_changed_files"] = round(token_reduction_vs_changed_files, 6)
     fallback_reason = str(token_estimate.get("fallback_reason", "")).strip()
     if fallback_reason:
         token_estimator_payload = payload.get("token_estimator")
@@ -844,9 +992,11 @@ def _tool_context(
     if warnings:
         payload["warnings"] = warnings
     if include_pack_flag:
-        payload["pack"] = pack
+        payload["pack"] = pack_for_output
 
-    _debug_log(f"accel_context completed: {len(pack.get('top_files', []))} files, {len(pack.get('snippets', []))} snippets")
+    _debug_log(
+        f"accel_context completed: {len(pack_for_output.get('top_files', []))} files, {len(pack_for_output.get('snippets', []))} snippets"
+    )
     return payload
 
 
@@ -860,8 +1010,10 @@ def _tool_verify(
     per_command_timeout_seconds: int | None = None,
     verify_fail_fast: bool | str | None = None,
     verify_cache_enabled: bool | str | None = None,
+    verify_cache_failed_results: bool | str | None = None,
     verify_cache_ttl_seconds: int | None = None,
     verify_cache_max_entries: int | None = None,
+    verify_cache_failed_ttl_seconds: int | None = None,
 ) -> JSONDict:
     # Normalize changed_files: handle comma-separated string
     if isinstance(changed_files, str):
@@ -871,6 +1023,7 @@ def _tool_verify(
     fast_loop = _coerce_bool(fast_loop, False)
     verify_fail_fast = _coerce_optional_bool(verify_fail_fast)
     verify_cache_enabled = _coerce_optional_bool(verify_cache_enabled)
+    verify_cache_failed_results = _coerce_optional_bool(verify_cache_failed_results)
     
     _debug_log(f"accel_verify called: project={project}, changed_files={len(changed_files or [])}, evidence_run={evidence_run}")
     project_dir = _normalize_project_dir(project)
@@ -884,6 +1037,8 @@ def _tool_verify(
         runtime_overrides["verify_cache_ttl_seconds"] = int(verify_cache_ttl_seconds)
     if verify_cache_max_entries is not None:
         runtime_overrides["verify_cache_max_entries"] = int(verify_cache_max_entries)
+    if verify_cache_failed_ttl_seconds is not None:
+        runtime_overrides["verify_cache_failed_ttl_seconds"] = int(verify_cache_failed_ttl_seconds)
 
     if evidence_run and not fast_loop:
         runtime_overrides["verify_fail_fast"] = False
@@ -896,6 +1051,8 @@ def _tool_verify(
         runtime_overrides["verify_fail_fast"] = bool(verify_fail_fast)
     if verify_cache_enabled is not None:
         runtime_overrides["verify_cache_enabled"] = bool(verify_cache_enabled)
+    if verify_cache_failed_results is not None:
+        runtime_overrides["verify_cache_failed_results"] = bool(verify_cache_failed_results)
 
     cli_overrides = {"runtime": runtime_overrides} if runtime_overrides else None
     config = resolve_effective_config(project_dir, cli_overrides=cli_overrides)
@@ -957,6 +1114,9 @@ def create_server() -> FastMCP:
         out: str | None = None,
         include_pack: Any = False,
         budget: Any = None,
+        strict_changed_files: Any = None,
+        snippets_only: Any = False,
+        include_metadata: Any = True,
     ) -> JSONDict:
         try:
             return _with_timeout(_tool_context, timeout_seconds=300)(
@@ -968,6 +1128,9 @@ def create_server() -> FastMCP:
                 out=out,
                 include_pack=include_pack,
                 budget=budget,
+                strict_changed_files=strict_changed_files,
+                snippets_only=snippets_only,
+                include_metadata=include_metadata,
             )
         except Exception as exc:
             _debug_log(f"accel_context failed: {exc!r}")
@@ -983,8 +1146,10 @@ def create_server() -> FastMCP:
         per_command_timeout_seconds: Any = None,
         verify_fail_fast: bool | str | None = None,
         verify_cache_enabled: bool | str | None = None,
+        verify_cache_failed_results: bool | str | None = None,
         verify_cache_ttl_seconds: Any = None,
         verify_cache_max_entries: Any = None,
+        verify_cache_failed_ttl_seconds: Any = None,
     ) -> VerifyJob:
         changed_files_list = _to_string_list(changed_files)
 
@@ -992,10 +1157,12 @@ def create_server() -> FastMCP:
         fast_loop_normalized = _coerce_bool(fast_loop, False)
         verify_fail_fast_normalized = _coerce_optional_bool(verify_fail_fast)
         verify_cache_enabled_normalized = _coerce_optional_bool(verify_cache_enabled)
+        verify_cache_failed_results_normalized = _coerce_optional_bool(verify_cache_failed_results)
         verify_workers_value = _coerce_optional_int(verify_workers)
         per_command_timeout_value = _coerce_optional_int(per_command_timeout_seconds)
         verify_cache_ttl_value = _coerce_optional_int(verify_cache_ttl_seconds)
         verify_cache_max_entries_value = _coerce_optional_int(verify_cache_max_entries)
+        verify_cache_failed_ttl_value = _coerce_optional_int(verify_cache_failed_ttl_seconds)
 
         _debug_log(f"_start_verify_job called: project={project}, changed_files={len(changed_files_list)}")
         project_dir = _normalize_project_dir(project)
@@ -1009,6 +1176,8 @@ def create_server() -> FastMCP:
             runtime_overrides["verify_cache_ttl_seconds"] = int(verify_cache_ttl_value)
         if verify_cache_max_entries_value is not None:
             runtime_overrides["verify_cache_max_entries"] = int(verify_cache_max_entries_value)
+        if verify_cache_failed_ttl_value is not None:
+            runtime_overrides["verify_cache_failed_ttl_seconds"] = int(verify_cache_failed_ttl_value)
 
         if evidence_run_normalized and not fast_loop_normalized:
             runtime_overrides["verify_fail_fast"] = False
@@ -1021,6 +1190,8 @@ def create_server() -> FastMCP:
             runtime_overrides["verify_fail_fast"] = bool(verify_fail_fast_normalized)
         if verify_cache_enabled_normalized is not None:
             runtime_overrides["verify_cache_enabled"] = bool(verify_cache_enabled_normalized)
+        if verify_cache_failed_results_normalized is not None:
+            runtime_overrides["verify_cache_failed_results"] = bool(verify_cache_failed_results_normalized)
 
         cli_overrides = {"runtime": runtime_overrides} if runtime_overrides else None
         config = resolve_effective_config(project_dir, cli_overrides=cli_overrides)
@@ -1109,8 +1280,10 @@ def create_server() -> FastMCP:
         per_command_timeout_seconds: Any = None,
         verify_fail_fast: bool | str | None = None,
         verify_cache_enabled: bool | str | None = None,
+        verify_cache_failed_results: bool | str | None = None,
         verify_cache_ttl_seconds: Any = None,
         verify_cache_max_entries: Any = None,
+        verify_cache_failed_ttl_seconds: Any = None,
         wait_for_completion: Any = False,
         sync_wait_seconds: Any = None,
     ) -> JSONDict:
@@ -1125,8 +1298,10 @@ def create_server() -> FastMCP:
                 per_command_timeout_seconds=per_command_timeout_seconds,
                 verify_fail_fast=verify_fail_fast,
                 verify_cache_enabled=verify_cache_enabled,
+                verify_cache_failed_results=verify_cache_failed_results,
                 verify_cache_ttl_seconds=verify_cache_ttl_seconds,
                 verify_cache_max_entries=verify_cache_max_entries,
+                verify_cache_failed_ttl_seconds=verify_cache_failed_ttl_seconds,
             )
             job_id = str(job.job_id).strip()
 
@@ -1291,8 +1466,10 @@ def create_server() -> FastMCP:
         per_command_timeout_seconds: Any = None,
         verify_fail_fast: bool | str | None = None,
         verify_cache_enabled: bool | str | None = None,
+        verify_cache_failed_results: bool | str | None = None,
         verify_cache_ttl_seconds: Any = None,
         verify_cache_max_entries: Any = None,
+        verify_cache_failed_ttl_seconds: Any = None,
     ) -> JSONDict:
         try:
             job = _start_verify_job(
@@ -1304,8 +1481,10 @@ def create_server() -> FastMCP:
                 per_command_timeout_seconds=per_command_timeout_seconds,
                 verify_fail_fast=verify_fail_fast,
                 verify_cache_enabled=verify_cache_enabled,
+                verify_cache_failed_results=verify_cache_failed_results,
                 verify_cache_ttl_seconds=verify_cache_ttl_seconds,
                 verify_cache_max_entries=verify_cache_max_entries,
+                verify_cache_failed_ttl_seconds=verify_cache_failed_ttl_seconds,
             )
             _debug_log(f"accel_verify_start created job: {job.job_id}")
             return {"job_id": job.job_id, "status": "started"}
