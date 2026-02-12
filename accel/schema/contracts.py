@@ -168,7 +168,10 @@ def enforce_context_payload_contract(payload: dict[str, Any], mode: str) -> tupl
             )
         out[field] = int(value)
 
-    if not isinstance(out.get("warnings"), list):
+    warnings_value = out.get("warnings")
+    if warnings_value is None:
+        out["warnings"] = []
+    elif not isinstance(warnings_value, list):
         warnings, repair_count = _apply_or_raise(
             mode=normalized_mode,
             warnings=warnings,
@@ -176,6 +179,8 @@ def enforce_context_payload_contract(payload: dict[str, Any], mode: str) -> tupl
             message="context payload warnings must be list",
         )
         out["warnings"] = []
+    else:
+        out["warnings"] = [str(item) for item in warnings_value]
 
     return out, warnings, repair_count
 

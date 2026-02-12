@@ -1,0 +1,16 @@
+﻿VERIFICATION_START phase1_semantic_cache_rule_constraint_20260212_05 2026-02-12T03:11:46.8530287Z
+ENV branch=main commit=ead6fd7b8067bbdfd00c8927ffda4527c995a1b6 python=3.14.2 (tags/v3.14.2:df79316, Dec  5 2025, 17:18:21) [MSC v.1944 64 bit (AMD64)]
+CMD python -m ruff check .
+EXIT_CODE 0
+All checks passed!
+CMD python -m mypy .
+EXIT_CODE 0
+Success: no issues found in 36 source files
+CMD python -m pytest -q tests/unit
+EXIT_CODE 0
+.......................................................................  [100%]
+71 passed in 10.89s
+CMD set PYTHONPATH=x:\MCPs\agent-accel&& python .harborpilot/tmp/strict_context_scenario_20260212_05.py
+EXIT_CODE 0
+{"status": "ok", "constraint_warnings": [], "constraint_repair_count": 0, "warnings": ["strict_changed_files pruned non-changed context items (top_files=9, snippets=9)"], "top_files": 3, "snippets": 3, "strict_scope_filtered_top_files": 9, "strict_scope_injected_top_files": 0, "strict_scope_injected_snippets": 0, "top_file_paths": ["tests/runtime/test_mcp_action.py", "tests/runtime/conftest.py", "tests/unit/mcp/test_mcp_integration.py"], "snippet_paths": ["tests/runtime/test_mcp_action.py", "tests/runtime/conftest.py", "tests/unit/mcp/test_mcp_integration.py"]}
+VERIFICATION_END phase1_semantic_cache_rule_constraint_20260212_05 2026-02-12T03:12:07.9734636Z

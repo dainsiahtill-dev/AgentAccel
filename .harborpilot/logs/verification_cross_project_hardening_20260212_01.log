@@ -1,0 +1,30 @@
+﻿VERIFICATION_START cross_project_hardening_20260212_01 2026-02-12T04:05:19.4552223Z
+ENV branch=main python=3.14.0
+CMD python -m ruff check accel tests/unit/test_config.py tests/unit/test_index_and_context.py tests/unit/test_verify_sharding.py tests/unit/test_verify_orchestrator.py
+EXIT 0
+SUMMARY All checks passed!
+CMD python -m mypy accel
+EXIT 0
+SUMMARY Success: no issues found in 34 source files
+CMD python -m pytest -q tests/unit/test_config.py tests/unit/test_index_and_context.py tests/unit/test_verify_sharding.py tests/unit/test_verify_orchestrator.py
+EXIT 0
+SUMMARY 30 passed
+CMD python -m pytest -q tests/unit
+EXIT 0
+SUMMARY 77 passed
+CMD python -m ruff check .
+EXIT 0
+SUMMARY All checks passed!
+CMD python -m mypy .
+EXIT 0
+SUMMARY Success: no issues found in 36 source files
+CMD python -m pytest -q
+EXIT 1
+SUMMARY collection error in test_tool_api.py (AttributeError: accel_verify_start not attribute); unrelated external script baseline
+CMD python inline smoke (workspace routing + auto index scope)
+EXIT 0
+SUMMARY routed=["cd /d \"frontend\" && npm run lint"], indexed_files include frontend/src/app.ts and backend/api.py
+DEGRADE_REASON: full pytest includes external non-unit scripts with legacy assumptions (test_tool_api.py)
+RISK: full gate cannot be declared green until external script baseline is aligned with current MCP API surface
+BACKFILL_PLAN: owner=user commands="python -m pytest -q tests/unit; then selectively fix/retire external test_tool_api.py" deadline_utc=2026-02-13T12:00:00Z
+VERIFICATION_END cross_project_hardening_20260212_01 2026-02-12T04:05:19.4628337Z

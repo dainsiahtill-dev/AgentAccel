@@ -52,3 +52,15 @@ def test_runtime_index_overrides_take_priority(tmp_path: Path, monkeypatch) -> N
     assert bool(cfg["runtime"]["verify_cache_enabled"]) is True
     assert int(cfg["runtime"]["verify_cache_ttl_seconds"]) == 77
     assert int(cfg["runtime"]["verify_cache_max_entries"]) == 33
+
+
+def test_runtime_workspace_and_preflight_env_overrides(tmp_path: Path, monkeypatch) -> None:
+    init_project(tmp_path)
+    monkeypatch.setenv("ACCEL_VERIFY_WORKSPACE_ROUTING_ENABLED", "0")
+    monkeypatch.setenv("ACCEL_VERIFY_PREFLIGHT_ENABLED", "0")
+    monkeypatch.setenv("ACCEL_VERIFY_PREFLIGHT_TIMEOUT_SECONDS", "9")
+
+    cfg = resolve_effective_config(tmp_path)
+    assert bool(cfg["runtime"]["verify_workspace_routing_enabled"]) is False
+    assert bool(cfg["runtime"]["verify_preflight_enabled"]) is False
+    assert int(cfg["runtime"]["verify_preflight_timeout_seconds"]) == 9

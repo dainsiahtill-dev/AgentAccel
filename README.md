@@ -219,7 +219,7 @@ Generate a budgeted context pack for a task.
 | `hints` | string[] \| string | `null` | Additional context hints (array, JSON-array string, or comma-separated) |
 | `include_pack` | boolean \| string | `false` | Include full pack in response (`true/false` or boolean-like string) |
 | `budget` | object \| string | `null` | Budget override object or preset (`tiny`/`small`/`medium`/`large`/`xlarge`) |
-| `strict_changed_files` | boolean \| string | `null` | Strict mode: require explicit `changed_files` or git delta (skip index/planner fallback) |
+| `strict_changed_files` | boolean \| string | `null` | Strict mode: require explicit `changed_files` or git delta, then prune non-changed context items; if pruning empties context, inject minimal fallback snippets from changed files |
 | `snippets_only` | boolean \| string | `false` | Output lightweight pack containing only snippets |
 | `include_metadata` | boolean \| string | `true` | Include `meta` in generated pack payload |
 | `semantic_cache` | boolean \| string | `true` | Enable semantic context cache lookup/store |
@@ -265,6 +265,8 @@ Generate a budgeted context pack for a task.
 - `compression_saved_chars`: total chars reduced by snippet rule compression
 - `constraint_repair_count`: automatic repair count produced by constraints layer
 - `constraint_warnings`: repair warning messages (empty when fully compliant)
+- `strict_scope_filtered_top_files` / `strict_scope_filtered_snippets`: count of non-changed items removed under strict scope
+- `strict_scope_injected_top_files` / `strict_scope_injected_snippets`: count of changed-file fallback items injected when strict pruning empties context
 - `budget_source` / `budget_preset`: whether budget came from user input or auto policy
 - `changed_files_source`: `user` | `git_auto` | `manifest_recent` | `planner_fallback` | `index_head_fallback` | `none`
 - `token_estimator`: backend/model/encoding/calibration metadata used for estimation
@@ -313,6 +315,8 @@ Start incremental verification with runtime override options.
 - For live progress, poll:
   - `accel_verify_status(job_id)`
   - `accel_verify_events(job_id, since_seq, max_events=30, include_summary=true)` (recommended compact mode)
+- Commands are auto-routed by workspace when possible (for example `frontend/` node scripts in monorepos).
+- Optional preflight checks run before command execution and emit explicit degrade reasons for missing manifests/tools.
 - For compatibility, a bounded synchronous wait mode is still available internally.
 - If `wait_for_completion=true` and timeout occurs:
   - `sync_timeout_action=poll`: return `timed_out=true` and keep job running for async polling.
@@ -351,6 +355,9 @@ Tokenizer estimation runtime knobs (via `accel.local.yaml` runtime or env):
 - `command_plan_cache_enabled`: enable verify command-plan cache (default `true`)
 - `command_plan_cache_ttl_seconds`: verify plan cache TTL (default `900`)
 - `command_plan_cache_max_entries`: max cached verify plans (default `600`)
+- `verify_workspace_routing_enabled`: auto-route verify commands to matching workspaces (default `true`)
+- `verify_preflight_enabled`: run verify preflight checks before command execution (default `true`)
+- `verify_preflight_timeout_seconds`: timeout for preflight module probes (default `5`)
 - `constraint_mode`: output constraint mode `off|warn|strict` (default `warn`)
 - `rule_compression_enabled`: enable snippet rule compression (default `true`)
 - `sync_verify_timeout_action`: `poll` | `cancel` (default `poll`)
@@ -449,8 +456,9 @@ The `context_pack.json` is designed for direct AI consumption:
   "project_id": "my_project",
   "language_profiles": ["python", "typescript"],
   "index": {
+    "scope_mode": "auto",
     "include": ["src/**", "tests/**"],
-    "exclude": ["node_modules/**", ".git/**", "dist/**"],
+    "exclude": [".git/**", "node_modules/**", "dist/**", "build/**", "target/**", ".venv/**", "venv/**"],
     "max_file_mb": 2
   },
   "context": {
@@ -485,6 +493,9 @@ The `context_pack.json` is designed for direct AI consumption:
     "verify_fail_fast": false,
     "verify_cache_enabled": true,
     "verify_cache_ttl_seconds": 900,
+    "verify_workspace_routing_enabled": true,
+    "verify_preflight_enabled": true,
+    "verify_preflight_timeout_seconds": 5,
     "per_command_timeout_seconds": 1200,
     "total_verify_timeout_seconds": 3600
   },

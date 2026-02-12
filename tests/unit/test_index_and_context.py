@@ -235,3 +235,19 @@ def test_index_auto_backend_uses_thread_pool_on_windows(tmp_path: Path, monkeypa
     assert calls["process_map_calls"] == 0
     assert calls["max_workers"] == min(48, processed_files)
     assert str(manifest_build["performance"]["parallel_backend"]) == "thread"
+
+
+def test_index_auto_scope_covers_non_src_workspace(tmp_path: Path, monkeypatch) -> None:
+    _write(tmp_path / "frontend" / "src" / "app.ts", "export const value = 1;\n")
+    _write(tmp_path / "backend" / "api.py", "def handler() -> int:\n    return 1\n")
+    _write(tmp_path / "tests" / "test_api.py", "from backend.api import handler\n")
+
+    init_project(tmp_path)
+    monkeypatch.setenv("ACCEL_HOME", str(tmp_path / ".accel-home"))
+
+    cfg = resolve_effective_config(tmp_path)
+    manifest = build_or_update_indexes(project_dir=tmp_path, config=cfg, mode="build", full=True)
+    indexed_files = set(manifest.get("indexed_files", []))
+
+    assert "frontend/src/app.ts" in indexed_files
+    assert "backend/api.py" in indexed_files

@@ -556,6 +556,152 @@ def test_tool_context_strict_changed_files_blocks_non_git_fallback(tmp_path: Pat
         raise AssertionError("expected strict_changed_files to block non-git fallback")
 
 
+def test_tool_context_strict_mode_accepts_missing_warnings_field(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_strict_contract_project"
+    project_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {"runtime": {"accel_home": str(tmp_path / ".accel-home"), "constraint_mode": "warn"}},
+    )
+    monkeypatch.setattr(mcp_server, "_discover_changed_files_from_git", lambda project_dir, limit=200: [])
+    monkeypatch.setattr(
+        mcp_server,
+        "compile_context_pack",
+        lambda **kwargs: {
+            "version": 1,
+            "task": str(kwargs.get("task", "")),
+            "generated_at": "2026-02-12T00:00:00+00:00",
+            "budget": {"max_chars": 6000, "max_snippets": 16, "top_n_files": 6},
+            "top_files": [{"path": "src/target.py", "score": 1.0, "reasons": ["changed_file"], "signals": []}],
+            "snippets": [{"path": "src/target.py", "content": "print('ok')", "start_line": 1, "end_line": 1}],
+            "verify_plan": {"target_tests": [], "target_checks": ["pytest -q"]},
+            "meta": {"source_chars_est": 6000},
+        },
+    )
+
+    result = mcp_server._tool_context(
+        project=str(project_dir),
+        task="strict context payload contract check",
+        changed_files=["src/target.py"],
+        strict_changed_files=True,
+        constraint_mode="strict",
+    )
+    assert result["status"] == "ok"
+    assert int(result.get("constraint_repair_count", 0)) == 0
+    warnings = result.get("warnings", [])
+    assert isinstance(warnings, list)
+    assert not any("context payload warnings must be list" in str(item) for item in warnings)
+
+
+def test_tool_context_strict_changed_files_prunes_non_changed_items(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_strict_scope_project"
+    project_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {"runtime": {"accel_home": str(tmp_path / ".accel-home")}},
+    )
+    monkeypatch.setattr(mcp_server, "_discover_changed_files_from_git", lambda project_dir, limit=200: [])
+    monkeypatch.setattr(
+        mcp_server,
+        "compile_context_pack",
+        lambda **kwargs: {
+            "version": 1,
+            "task": str(kwargs.get("task", "")),
+            "generated_at": "2026-02-12T00:00:00+00:00",
+            "budget": {"max_chars": 6000, "max_snippets": 16, "top_n_files": 6},
+            "top_files": [
+                {"path": "src/target.py", "score": 1.0, "reasons": ["changed_file"], "signals": []},
+                {"path": "tests/test_target.py", "score": 0.9, "reasons": ["test_relevance"], "signals": []},
+            ],
+            "snippets": [
+                {"path": "src/target.py", "content": "print('ok')", "start_line": 1, "end_line": 1},
+                {"path": "tests/test_target.py", "content": "assert True", "start_line": 1, "end_line": 1},
+            ],
+            "verify_plan": {"target_tests": ["tests/test_target.py"], "target_checks": ["pytest -q"]},
+            "meta": {"source_chars_est": 8000},
+        },
+    )
+
+    result = mcp_server._tool_context(
+        project=str(project_dir),
+        task="strict changed files must stay in scope",
+        changed_files=["src/target.py"],
+        strict_changed_files=True,
+        include_pack=True,
+        constraint_mode="strict",
+    )
+
+    assert result["status"] == "ok"
+    assert int(result["top_files"]) == 1
+    assert int(result["snippets"]) == 1
+    assert int(result.get("strict_scope_filtered_top_files", 0)) >= 1
+    assert int(result.get("strict_scope_filtered_snippets", 0)) >= 1
+    packed = result.get("pack", {})
+    assert isinstance(packed, dict)
+    top_paths = [str(item.get("path", "")) for item in packed.get("top_files", [])]
+    snippet_paths = [str(item.get("path", "")) for item in packed.get("snippets", [])]
+    assert top_paths == ["src/target.py"]
+    assert snippet_paths == ["src/target.py"]
+    warnings = result.get("warnings", [])
+    assert any("strict_changed_files pruned" in str(item) for item in warnings)
+
+
+def test_tool_context_strict_changed_files_injects_changed_file_when_pack_drifted(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "context_strict_inject_project"
+    (project_dir / "src").mkdir(parents=True)
+    (project_dir / "src" / "target.py").write_text("def target() -> int:\n    return 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda project_dir: {"runtime": {"accel_home": str(tmp_path / ".accel-home")}},
+    )
+    monkeypatch.setattr(mcp_server, "_discover_changed_files_from_git", lambda project_dir, limit=200: [])
+    monkeypatch.setattr(
+        mcp_server,
+        "compile_context_pack",
+        lambda **kwargs: {
+            "version": 1,
+            "task": str(kwargs.get("task", "")),
+            "generated_at": "2026-02-12T00:00:00+00:00",
+            "budget": {"max_chars": 6000, "max_snippets": 16, "top_n_files": 6, "per_snippet_max_chars": 1200},
+            "top_files": [{"path": "tests/test_target.py", "score": 0.9, "reasons": ["test_relevance"], "signals": []}],
+            "snippets": [{"path": "tests/test_target.py", "content": "assert True", "start_line": 1, "end_line": 1}],
+            "verify_plan": {"target_tests": ["tests/test_target.py"], "target_checks": ["pytest -q"]},
+            "meta": {"source_chars_est": 8000},
+        },
+    )
+
+    result = mcp_server._tool_context(
+        project=str(project_dir),
+        task="strict changed file fallback injection",
+        changed_files=["src/target.py"],
+        strict_changed_files=True,
+        include_pack=True,
+        constraint_mode="strict",
+    )
+
+    assert result["status"] == "ok"
+    assert int(result["top_files"]) == 1
+    assert int(result["snippets"]) == 1
+    assert int(result.get("strict_scope_filtered_top_files", 0)) >= 1
+    assert int(result.get("strict_scope_filtered_snippets", 0)) >= 1
+    assert int(result.get("strict_scope_injected_top_files", 0)) >= 1
+    assert int(result.get("strict_scope_injected_snippets", 0)) >= 1
+    packed = result.get("pack", {})
+    assert isinstance(packed, dict)
+    top_paths = [str(item.get("path", "")) for item in packed.get("top_files", [])]
+    snippet_paths = [str(item.get("path", "")) for item in packed.get("snippets", [])]
+    assert top_paths == ["src/target.py"]
+    assert snippet_paths == ["src/target.py"]
+    warnings = result.get("warnings", [])
+    assert any("strict_changed_files injected" in str(item) for item in warnings)
+
+
 def test_tool_context_exposes_fallback_confidence_and_token_reduction_baselines(tmp_path: Path, monkeypatch) -> None:
     project_dir = tmp_path / "context_confidence_project"
     (project_dir / "src").mkdir(parents=True)

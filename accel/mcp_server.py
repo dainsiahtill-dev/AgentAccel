@@ -285,6 +285,169 @@ def _build_context_output_pack(
     return output
 
 
+def _normalize_rel_path(value: Any) -> str:
+    return str(value or "").replace("\\", "/").strip().lower()
+
+
+def _apply_strict_changed_files_scope(
+    pack: JSONDict,
+    changed_files: list[str],
+) -> tuple[JSONDict, int, int]:
+    changed_set = {_normalize_rel_path(item) for item in changed_files if _normalize_rel_path(item)}
+    if not changed_set:
+        return dict(pack), 0, 0
+
+    payload = dict(pack)
+    filtered_top_files = 0
+    filtered_snippets = 0
+
+    top_files_raw = payload.get("top_files")
+    if isinstance(top_files_raw, list):
+        kept_top_files: list[JSONDict] = []
+        for item in top_files_raw:
+            if isinstance(item, dict):
+                path_token = _normalize_rel_path(item.get("path", ""))
+                if path_token and path_token in changed_set:
+                    kept_top_files.append(dict(item))
+                else:
+                    filtered_top_files += 1
+            else:
+                filtered_top_files += 1
+        payload["top_files"] = kept_top_files
+
+    snippets_raw = payload.get("snippets")
+    if isinstance(snippets_raw, list):
+        kept_snippets: list[JSONDict] = []
+        for item in snippets_raw:
+            if isinstance(item, dict):
+                path_token = _normalize_rel_path(item.get("path", ""))
+                if path_token and path_token in changed_set:
+                    kept_snippets.append(dict(item))
+                else:
+                    filtered_snippets += 1
+            else:
+                filtered_snippets += 1
+        payload["snippets"] = kept_snippets
+
+    meta_raw = payload.get("meta")
+    if isinstance(meta_raw, dict):
+        meta_payload = dict(meta_raw)
+        meta_payload["strict_changed_files_scope"] = True
+        meta_payload["strict_scope_changed_files_count"] = int(len(changed_set))
+        meta_payload["strict_scope_filtered_top_files"] = int(filtered_top_files)
+        meta_payload["strict_scope_filtered_snippets"] = int(filtered_snippets)
+        payload["meta"] = meta_payload
+
+    return payload, int(filtered_top_files), int(filtered_snippets)
+
+
+def _resolve_changed_file_rel_path(project_dir: Path, value: Any) -> str | None:
+    token = str(value or "").replace("\\", "/").strip()
+    if not token:
+        return None
+    raw_path = Path(token)
+    candidate = raw_path if raw_path.is_absolute() else (project_dir / raw_path)
+    try:
+        resolved = candidate.resolve()
+        project_root = project_dir.resolve()
+        rel = resolved.relative_to(project_root)
+    except (OSError, ValueError):
+        return None
+    if not resolved.exists() or not resolved.is_file():
+        return None
+    return str(rel).replace("\\", "/")
+
+
+def _build_changed_file_snippet(project_dir: Path, rel_path: str, max_chars: int) -> JSONDict | None:
+    rel = str(rel_path or "").replace("\\", "/").strip()
+    if not rel:
+        return None
+    file_path = (project_dir / rel).resolve()
+    try:
+        content = file_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    clipped = content[: max(200, int(max_chars))]
+    if not clipped:
+        clipped = "[empty file]"
+    end_line = max(1, int(clipped.count("\n")) + 1)
+    return {
+        "path": rel,
+        "start_line": 1,
+        "end_line": end_line,
+        "symbol": "",
+        "reason": "strict_changed_file_fallback",
+        "content": clipped,
+    }
+
+
+def _ensure_strict_changed_files_presence(
+    pack: JSONDict,
+    *,
+    project_dir: Path,
+    changed_files: list[str],
+) -> tuple[JSONDict, int, int]:
+    payload = dict(pack)
+    budget = payload.get("budget", {}) if isinstance(payload.get("budget", {}), dict) else {}
+    top_n_files = max(1, int(budget.get("top_n_files", 8) or 8))
+    max_snippets = max(1, int(budget.get("max_snippets", 30) or 30))
+    per_snippet_max_chars = max(200, int(budget.get("per_snippet_max_chars", 2000) or 2000))
+
+    existing_rel_paths: list[str] = []
+    seen: set[str] = set()
+    for item in changed_files:
+        rel = _resolve_changed_file_rel_path(project_dir, item)
+        if not rel:
+            continue
+        key = _normalize_rel_path(rel)
+        if key in seen:
+            continue
+        seen.add(key)
+        existing_rel_paths.append(rel)
+
+    if not existing_rel_paths:
+        return payload, 0, 0
+
+    top_files = payload.get("top_files")
+    snippets = payload.get("snippets")
+    top_files_list = list(top_files) if isinstance(top_files, list) else []
+    snippets_list = list(snippets) if isinstance(snippets, list) else []
+
+    injected_top_files = 0
+    injected_snippets = 0
+
+    if not top_files_list:
+        for rel in existing_rel_paths[:top_n_files]:
+            top_files_list.append(
+                {
+                    "path": rel,
+                    "score": 1.0,
+                    "reasons": ["strict_changed_file_fallback"],
+                    "signals": [{"signal_name": "strict_changed_file_fallback", "score": 1.0}],
+                }
+            )
+            injected_top_files += 1
+        payload["top_files"] = top_files_list
+
+    if not snippets_list:
+        for rel in existing_rel_paths[:max_snippets]:
+            snippet = _build_changed_file_snippet(project_dir, rel, per_snippet_max_chars)
+            if not isinstance(snippet, dict):
+                continue
+            snippets_list.append(snippet)
+            injected_snippets += 1
+        payload["snippets"] = snippets_list
+
+    meta_raw = payload.get("meta")
+    if isinstance(meta_raw, dict):
+        meta_payload = dict(meta_raw)
+        meta_payload["strict_scope_injected_top_files"] = int(injected_top_files)
+        meta_payload["strict_scope_injected_snippets"] = int(injected_snippets)
+        payload["meta"] = meta_payload
+
+    return payload, int(injected_top_files), int(injected_snippets)
+
+
 def _write_context_metadata_sidecar(out_path: Path, payload: JSONDict) -> Path:
     sidecar_path = out_path.with_suffix(".meta.json")
     token_reduction_payload = payload.get("token_reduction", {})
@@ -302,12 +465,16 @@ def _write_context_metadata_sidecar(out_path: Path, payload: JSONDict) -> Path:
             "effective": payload.get("budget_effective", {}),
         },
         "scope": {
-            "changed_files_source": payload.get("changed_files_source", "none"),
-            "changed_files_count": int(payload.get("changed_files_count", 0) or 0),
-            "changed_files_used": list(payload.get("changed_files_used", [])),
-            "fallback_confidence": float(payload.get("fallback_confidence", 0.0) or 0.0),
-            "strict_changed_files": bool(payload.get("strict_changed_files", False)),
-        },
+        "changed_files_source": payload.get("changed_files_source", "none"),
+        "changed_files_count": int(payload.get("changed_files_count", 0) or 0),
+        "changed_files_used": list(payload.get("changed_files_used", [])),
+        "fallback_confidence": float(payload.get("fallback_confidence", 0.0) or 0.0),
+        "strict_changed_files": bool(payload.get("strict_changed_files", False)),
+        "strict_scope_filtered_top_files": int(payload.get("strict_scope_filtered_top_files", 0) or 0),
+        "strict_scope_filtered_snippets": int(payload.get("strict_scope_filtered_snippets", 0) or 0),
+        "strict_scope_injected_top_files": int(payload.get("strict_scope_injected_top_files", 0) or 0),
+        "strict_scope_injected_snippets": int(payload.get("strict_scope_injected_snippets", 0) or 0),
+      },
         "estimates": {
             "context_chars": int(payload.get("context_chars", 0) or 0),
             "source_chars": int(payload.get("source_chars", 0) or 0),
@@ -1170,6 +1337,21 @@ def _tool_context(
         )
         _debug_log("_tool_context: compile_context_pack done")
 
+    strict_scope_filtered_top_files = 0
+    strict_scope_filtered_snippets = 0
+    strict_scope_injected_top_files = 0
+    strict_scope_injected_snippets = 0
+    if strict_changed_files_effective and changed_files_list:
+        pack, strict_scope_filtered_top_files, strict_scope_filtered_snippets = _apply_strict_changed_files_scope(
+            pack,
+            changed_files_list,
+        )
+        pack, strict_scope_injected_top_files, strict_scope_injected_snippets = _ensure_strict_changed_files_presence(
+            pack,
+            project_dir=project_dir,
+            changed_files=changed_files_list,
+        )
+
     pack_contract_warnings: list[str] = []
     pack_repair_count = 0
     pack, pack_contract_warnings, pack_repair_count = enforce_context_pack_contract(
@@ -1259,6 +1441,16 @@ def _tool_context(
         )
     if changed_files_fallback_reason:
         warnings.append(f"changed_files fallback detail: {changed_files_fallback_reason}")
+    if strict_changed_files_effective and (strict_scope_filtered_top_files > 0 or strict_scope_filtered_snippets > 0):
+        warnings.append(
+            "strict_changed_files pruned non-changed context items "
+            f"(top_files={strict_scope_filtered_top_files}, snippets={strict_scope_filtered_snippets})"
+        )
+    if strict_changed_files_effective and (strict_scope_injected_top_files > 0 or strict_scope_injected_snippets > 0):
+        warnings.append(
+            "strict_changed_files injected changed-file fallback context "
+            f"(top_files={strict_scope_injected_top_files}, snippets={strict_scope_injected_snippets})"
+        )
 
     verify_plan = pack.get("verify_plan", {}) if isinstance(pack.get("verify_plan", {}), dict) else {}
     target_tests = verify_plan.get("target_tests", [])
@@ -1329,6 +1521,10 @@ def _tool_context(
         "changed_files_source": changed_files_source,
         "changed_files_count": len(changed_files_list),
         "strict_changed_files": strict_changed_files_effective,
+        "strict_scope_filtered_top_files": int(strict_scope_filtered_top_files),
+        "strict_scope_filtered_snippets": int(strict_scope_filtered_snippets),
+        "strict_scope_injected_top_files": int(strict_scope_injected_top_files),
+        "strict_scope_injected_snippets": int(strict_scope_injected_snippets),
         "fallback_confidence": round(float(fallback_confidence), 6),
         "output_mode": "snippets_only" if snippets_only_flag else "full",
         "include_metadata": include_metadata_flag,

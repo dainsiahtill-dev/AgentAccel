@@ -50,6 +50,21 @@ def test_context_payload_contract_repairs_numbers_and_warnings_list() -> None:
     assert warnings
 
 
+def test_context_payload_contract_strict_allows_missing_warnings_field() -> None:
+    payload = {
+        "estimated_tokens": 10,
+        "estimated_source_tokens": 20,
+        "estimated_changed_files_tokens": 5,
+        "estimated_snippets_only_tokens": 8,
+        "selected_tests_count": 1,
+        "selected_checks_count": 2,
+    }
+    fixed, warnings, repairs = enforce_context_payload_contract(payload, mode="strict")
+    assert repairs == 0
+    assert warnings == []
+    assert fixed.get("warnings") == []
+
+
 def test_verify_summary_contract_prefers_terminal_status() -> None:
     summary = {"latest_state": "running", "latest_stage": "running"}
     status = {"state": "cancelled", "stage": "cancelled"}

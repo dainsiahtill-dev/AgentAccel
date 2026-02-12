@@ -144,3 +144,51 @@ def test_verify_sharding_command_plan_cache_hits(tmp_path: Path, monkeypatch) ->
     assert first == ["pytest -q"]
     assert second == ["pytest -q"]
     assert calls["count"] == 1
+
+
+def test_verify_sharding_routes_node_commands_to_workspace(tmp_path: Path) -> None:
+    project_dir = tmp_path / "workspace_project"
+    frontend_dir = project_dir / "frontend"
+    frontend_dir.mkdir(parents=True, exist_ok=True)
+    (frontend_dir / "package.json").write_text(
+        '{"name":"frontend","scripts":{"lint":"eslint .","typecheck":"tsc --noEmit"}}\n',
+        encoding="utf-8",
+    )
+
+    cfg = {
+        "verify": {"python": [], "node": ["npm run lint"]},
+        "runtime": {
+            "command_plan_cache_enabled": False,
+            "verify_workspace_routing_enabled": True,
+        },
+        "meta": {"project_dir": str(project_dir)},
+    }
+
+    cmds = select_verify_commands(cfg, changed_files=["frontend/src/app.ts"])
+    assert len(cmds) == 1
+    routed = str(cmds[0]).lower()
+    assert "npm run lint" in routed
+    assert "frontend" in routed
+    assert "&&" in routed
+
+
+def test_verify_sharding_workspace_routing_can_be_disabled(tmp_path: Path) -> None:
+    project_dir = tmp_path / "workspace_project_disable"
+    frontend_dir = project_dir / "frontend"
+    frontend_dir.mkdir(parents=True, exist_ok=True)
+    (frontend_dir / "package.json").write_text(
+        '{"name":"frontend","scripts":{"lint":"eslint ."}}\n',
+        encoding="utf-8",
+    )
+
+    cfg = {
+        "verify": {"python": [], "node": ["npm run lint"]},
+        "runtime": {
+            "command_plan_cache_enabled": False,
+            "verify_workspace_routing_enabled": False,
+        },
+        "meta": {"project_dir": str(project_dir)},
+    }
+
+    cmds = select_verify_commands(cfg, changed_files=["frontend/src/app.ts"])
+    assert cmds == ["npm run lint"]

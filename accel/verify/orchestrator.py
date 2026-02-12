@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -25,8 +27,105 @@ def _utc_now() -> str:
 
 
 def _command_binary(command: str) -> str:
-    parts = shlex.split(command, posix=os.name != "nt")
+    effective_command = _effective_shell_command(command)
+    parts = shlex.split(effective_command, posix=os.name != "nt")
     return parts[0] if parts else ""
+
+
+def _effective_shell_command(command: str) -> str:
+    text = str(command or "").strip()
+    if "&&" not in text:
+        return text
+    parts = [part.strip() for part in text.split("&&") if part.strip()]
+    return parts[-1] if parts else text
+
+
+def _command_workdir(project_dir: Path, command: str) -> Path:
+    text = str(command or "").strip()
+    if "&&" not in text:
+        return project_dir
+    first, _, _tail = text.partition("&&")
+    prefix = first.strip()
+    match = re.match(r'^cd\s+(?:/d\s+)?(?:"([^"]+)"|\'([^\']+)\'|([^"\']\S*))$', prefix, flags=re.IGNORECASE)
+    if not match:
+        return project_dir
+    path_token = next((item for item in match.groups() if item), "")
+    if not path_token:
+        return project_dir
+    candidate = Path(path_token)
+    if candidate.is_absolute():
+        return candidate
+    return (project_dir / candidate).resolve()
+
+
+def _extract_python_module(command: str) -> str:
+    effective_command = _effective_shell_command(command)
+    parts = shlex.split(effective_command, posix=os.name != "nt")
+    if len(parts) < 3:
+        return ""
+    if str(parts[1]).strip() != "-m":
+        return ""
+    return str(parts[2]).strip()
+
+
+def _preflight_warnings_for_command(
+    *,
+    project_dir: Path,
+    command: str,
+    timeout_seconds: int,
+    import_probe_cache: dict[tuple[str, str], bool],
+) -> list[str]:
+    warnings: list[str] = []
+    binary = _command_binary(command).strip().lower()
+    if not binary:
+        return warnings
+    workdir = _command_workdir(project_dir, command)
+    if binary in {"npm", "pnpm", "yarn"}:
+        if not (workdir / "package.json").exists():
+            warnings.append(f"node workspace missing package.json: {workdir}")
+    module = _extract_python_module(command).strip().lower()
+    if module in {"pytest", "ruff", "mypy"}:
+        python_bin = shutil.which("python")
+        if python_bin:
+            cache_key = (str(workdir), module)
+            cached_ok = import_probe_cache.get(cache_key)
+            if cached_ok is None:
+                try:
+                    proc = subprocess.run(
+                        [python_bin, "-c", f"import {module}"],
+                        cwd=str(workdir),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=max(1, int(timeout_seconds)),
+                        check=False,
+                    )
+                    import_probe_cache[cache_key] = int(proc.returncode) == 0
+                except (OSError, subprocess.SubprocessError):
+                    import_probe_cache[cache_key] = False
+            if not import_probe_cache.get(cache_key, False):
+                warnings.append(f"python module unavailable for verify preflight: {module}")
+    return warnings
+
+
+def _detect_missing_python_deps(results: list[dict[str, Any]]) -> list[str]:
+    missing: set[str] = set()
+    pattern = re.compile(r"ModuleNotFoundError:\s+No module named ['\"]([^'\"]+)['\"]")
+    for row in results:
+        stderr = str(row.get("stderr", ""))
+        if not stderr:
+            continue
+        for match in pattern.findall(stderr):
+            token = str(match).strip()
+            if token:
+                missing.add(token)
+    return sorted(missing)
+
+
+def _default_backfill_deadline(hours: int = 24) -> str:
+    return (datetime.now(timezone.utc) + timedelta(hours=max(1, int(hours)))).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _append_line(path: Path, line: str) -> None:
@@ -437,6 +536,12 @@ def run_verify(
         runtime_cfg.get("verify_cache_failed_ttl_seconds", 120),
         120,
     )
+    verify_preflight_enabled = _normalize_bool(runtime_cfg.get("verify_preflight_enabled", True), True)
+    verify_preflight_timeout_seconds = _normalize_positive_int(
+        runtime_cfg.get("verify_preflight_timeout_seconds", 5),
+        5,
+    )
+    workspace_routing_enabled = _normalize_bool(runtime_cfg.get("verify_workspace_routing_enabled", True), True)
     verify_mode = "fail_fast" if verify_fail_fast else ("parallel" if verify_workers > 1 else "sequential")
 
     nonce = uuid4().hex[:12]
@@ -456,6 +561,8 @@ def run_verify(
             "fail_fast": bool(verify_fail_fast),
             "cache_failed_results": bool(verify_cache_failed_results),
             "cache_failed_ttl_seconds": int(verify_cache_failed_ttl_seconds),
+            "preflight_enabled": bool(verify_preflight_enabled),
+            "workspace_routing_enabled": bool(workspace_routing_enabled),
         },
     )
 
@@ -479,8 +586,30 @@ def run_verify(
 
     degraded = False
     degrade_reasons: list[str] = []
+    import_probe_cache: dict[tuple[str, str], bool] = {}
     runnable_commands: list[str] = []
     for command in commands:
+        if verify_preflight_enabled:
+            warnings = _preflight_warnings_for_command(
+                project_dir=project_dir,
+                command=command,
+                timeout_seconds=verify_preflight_timeout_seconds,
+                import_probe_cache=import_probe_cache,
+            )
+            for warning in warnings:
+                if warning not in degrade_reasons:
+                    degrade_reasons.append(warning)
+                degraded = True
+                _append_line(log_path, f"PREFLIGHT_WARN {command} ({warning})")
+                _append_jsonl(
+                    jsonl_path,
+                    {
+                        "event": "command_preflight_warning",
+                        "command": command,
+                        "reason": warning,
+                        "ts": _utc_now(),
+                    },
+                )
         binary = _command_binary(command)
         if binary and shutil.which(binary) is None:
             degraded = True
@@ -789,6 +918,12 @@ def run_verify(
         _append_line(log_path, f"CACHE_WRITE entries={len(cache_entries)}")
 
     results.sort(key=lambda row: row["command"])
+    missing_python_deps = _detect_missing_python_deps(results)
+    if missing_python_deps:
+        degraded = True
+        reason_text = "missing python dependencies: " + ", ".join(missing_python_deps)
+        if reason_text not in degrade_reasons:
+            degrade_reasons.append(reason_text)
     has_failure = any(_is_failure(item) for item in results)
     if has_failure:
         exit_code = 3
@@ -804,9 +939,10 @@ def run_verify(
         reason_text = "; ".join(degrade_reasons) if degrade_reasons else "degraded execution"
         _append_line(log_path, f"DEGRADE_REASON: {reason_text}")
         _append_line(log_path, "RISK: some checks were skipped because required tools are unavailable")
+        deadline_utc = _default_backfill_deadline(24)
         _append_line(
             log_path,
-            "BACKFILL_PLAN: owner=user commands=\"install missing tools and rerun accel verify\" deadline_utc=2026-02-11T00:00:00Z",
+            f"BACKFILL_PLAN: owner=user commands=\"install missing tools/dependencies and rerun accel verify\" deadline_utc={deadline_utc}",
         )
 
     _append_line(log_path, f"VERIFICATION_END {nonce} {_utc_now()}")
@@ -873,6 +1009,12 @@ def run_verify_with_callback(
         runtime_cfg.get("verify_cache_failed_ttl_seconds", 120),
         120,
     )
+    verify_preflight_enabled = _normalize_bool(runtime_cfg.get("verify_preflight_enabled", True), True)
+    verify_preflight_timeout_seconds = _normalize_positive_int(
+        runtime_cfg.get("verify_preflight_timeout_seconds", 5),
+        5,
+    )
+    workspace_routing_enabled = _normalize_bool(runtime_cfg.get("verify_workspace_routing_enabled", True), True)
     verify_mode = "fail_fast" if verify_fail_fast else ("parallel" if verify_workers > 1 else "sequential")
 
     nonce = uuid4().hex[:12]
@@ -894,6 +1036,8 @@ def run_verify_with_callback(
             "fail_fast": bool(verify_fail_fast),
             "cache_failed_results": bool(verify_cache_failed_results),
             "cache_failed_ttl_seconds": int(verify_cache_failed_ttl_seconds),
+            "preflight_enabled": bool(verify_preflight_enabled),
+            "workspace_routing_enabled": bool(workspace_routing_enabled),
         },
     )
 
@@ -922,8 +1066,30 @@ def run_verify_with_callback(
 
     degraded = False
     degrade_reasons: list[str] = []
+    import_probe_cache: dict[tuple[str, str], bool] = {}
     runnable_commands: list[str] = []
     for command in commands:
+        if verify_preflight_enabled:
+            warnings = _preflight_warnings_for_command(
+                project_dir=project_dir,
+                command=command,
+                timeout_seconds=verify_preflight_timeout_seconds,
+                import_probe_cache=import_probe_cache,
+            )
+            for warning in warnings:
+                if warning not in degrade_reasons:
+                    degrade_reasons.append(warning)
+                degraded = True
+                _append_line(log_path, f"PREFLIGHT_WARN {command} ({warning})")
+                _append_jsonl(
+                    jsonl_path,
+                    {
+                        "event": "command_preflight_warning",
+                        "command": command,
+                        "reason": warning,
+                        "ts": _utc_now(),
+                    },
+                )
         binary = _command_binary(command)
         if binary and shutil.which(binary) is None:
             degraded = True
@@ -1428,6 +1594,12 @@ def run_verify_with_callback(
         _append_line(log_path, f"CACHE_WRITE entries={len(cache_entries)}")
 
     results.sort(key=lambda row: row["command"])
+    missing_python_deps = _detect_missing_python_deps(results)
+    if missing_python_deps:
+        degraded = True
+        reason_text = "missing python dependencies: " + ", ".join(missing_python_deps)
+        if reason_text not in degrade_reasons:
+            degrade_reasons.append(reason_text)
     has_failure = any(_is_failure(item) for item in results)
     if has_failure:
         exit_code = 3
@@ -1443,9 +1615,10 @@ def run_verify_with_callback(
         reason_text = "; ".join(degrade_reasons) if degrade_reasons else "degraded execution"
         _append_line(log_path, f"DEGRADE_REASON: {reason_text}")
         _append_line(log_path, "RISK: some checks were skipped because required tools are unavailable")
+        deadline_utc = _default_backfill_deadline(24)
         _append_line(
             log_path,
-            "BACKFILL_PLAN: owner=user commands=\"install missing tools and rerun accel verify\" deadline_utc=2026-02-11T00:00:00Z",
+            f"BACKFILL_PLAN: owner=user commands=\"install missing tools/dependencies and rerun accel verify\" deadline_utc={deadline_utc}",
         )
 
     _append_line(log_path, f"VERIFICATION_END {nonce} {_utc_now()}")

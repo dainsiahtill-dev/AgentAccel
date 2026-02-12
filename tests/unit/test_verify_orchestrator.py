@@ -40,6 +40,9 @@ def _base_config(
             "verify_cache_ttl_seconds": 600,
             "verify_cache_failed_ttl_seconds": 120,
             "verify_cache_max_entries": 100,
+            "verify_workspace_routing_enabled": False,
+            "verify_preflight_enabled": False,
+            "verify_preflight_timeout_seconds": 1,
         },
         "verify": {
             "python": [],
@@ -323,3 +326,40 @@ def test_run_verify_jsonl_command_result_includes_structured_fields(tmp_path: Pa
     assert int(row.get("command_index", 0)) == 1
     assert int(row.get("total_commands", 0)) == 1
     assert str(row.get("cache_kind", "")) in {"success", "failure"}
+
+
+def test_command_binary_handles_workspace_wrapped_commands() -> None:
+    command = 'cd /d "frontend" && npm run lint'
+    assert orchestrator._command_binary(command) == "npm"
+
+
+def test_run_verify_collects_missing_python_dependency_degrade_reason(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "repo_missing_dep"
+    (project_dir / "src").mkdir(parents=True, exist_ok=True)
+    (project_dir / "src" / "foo.py").write_text("x = 1\n", encoding="utf-8")
+
+    command = 'python -c "print(\'run\')"'
+
+    def fake_select_verify_commands(config, changed_files=None):
+        return [command]
+
+    def fake_run_command(current_command: str, cwd: Path, timeout_seconds: int):
+        return {
+            "command": current_command,
+            "exit_code": 1,
+            "duration_seconds": 0.02,
+            "stdout": "",
+            "stderr": "ModuleNotFoundError: No module named 'termcolor'",
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr(orchestrator, "select_verify_commands", fake_select_verify_commands)
+    monkeypatch.setattr(orchestrator, "run_command", fake_run_command)
+
+    cfg = _base_config(tmp_path, fail_fast=False, cache_enabled=False, cache_failed_results=False)
+    result = run_verify(project_dir=project_dir, config=cfg, changed_files=["src/foo.py"])
+
+    assert result["status"] == "failed"
+    assert bool(result["degraded"]) is True
+    log_text = Path(result["log_path"]).read_text(encoding="utf-8")
+    assert "missing python dependencies: termcolor" in log_text

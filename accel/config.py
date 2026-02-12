@@ -11,8 +11,22 @@ DEFAULT_PROJECT_CONFIG: dict[str, Any] = {
     "project_id": "demo_project",
     "language_profiles": ["python", "typescript"],
     "index": {
+        "scope_mode": "auto",
         "include": ["src/**", "accel/**", "tests/**"],
-        "exclude": ["node_modules/**", ".git/**", "dist/**"],
+        "exclude": [
+            ".git/**",
+            "node_modules/**",
+            "dist/**",
+            "build/**",
+            "target/**",
+            ".venv/**",
+            "venv/**",
+            ".mypy_cache/**",
+            ".pytest_cache/**",
+            ".ruff_cache/**",
+            ".next/**",
+            ".turbo/**",
+        ],
         "max_file_mb": 2,
     },
     "context": {
@@ -42,6 +56,9 @@ DEFAULT_LOCAL_CONFIG: dict[str, Any] = {
         "verify_cache_ttl_seconds": 900,
         "verify_cache_failed_ttl_seconds": 120,
         "verify_cache_max_entries": 400,
+        "verify_workspace_routing_enabled": True,
+        "verify_preflight_enabled": True,
+        "verify_preflight_timeout_seconds": 5,
         "sync_verify_timeout_action": "poll",
         "sync_verify_cancel_grace_seconds": 5.0,
         "token_estimator_backend": "auto",
@@ -264,6 +281,21 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         runtime["verify_cache_max_entries"] = _normalize_positive_int(
             os.environ["ACCEL_VERIFY_CACHE_MAX_ENTRIES"], int(runtime.get("verify_cache_max_entries", 400))
         )
+    if os.environ.get("ACCEL_VERIFY_WORKSPACE_ROUTING_ENABLED") is not None:
+        runtime["verify_workspace_routing_enabled"] = _normalize_bool(
+            os.environ["ACCEL_VERIFY_WORKSPACE_ROUTING_ENABLED"],
+            bool(runtime.get("verify_workspace_routing_enabled", True)),
+        )
+    if os.environ.get("ACCEL_VERIFY_PREFLIGHT_ENABLED") is not None:
+        runtime["verify_preflight_enabled"] = _normalize_bool(
+            os.environ["ACCEL_VERIFY_PREFLIGHT_ENABLED"],
+            bool(runtime.get("verify_preflight_enabled", True)),
+        )
+    if os.environ.get("ACCEL_VERIFY_PREFLIGHT_TIMEOUT_SECONDS"):
+        runtime["verify_preflight_timeout_seconds"] = _normalize_positive_int(
+            os.environ["ACCEL_VERIFY_PREFLIGHT_TIMEOUT_SECONDS"],
+            int(runtime.get("verify_preflight_timeout_seconds", 5)),
+        )
     if os.environ.get("ACCEL_TOKEN_ESTIMATOR_BACKEND"):
         runtime["token_estimator_backend"] = str(os.environ["ACCEL_TOKEN_ESTIMATOR_BACKEND"]).strip().lower()
     if os.environ.get("ACCEL_TOKEN_ESTIMATOR_ENCODING"):
@@ -357,6 +389,30 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
     if int(config.get("version", 0)) <= 0:
         raise ValueError("version must be a positive integer")
 
+    index = config.get("index", {})
+    if not isinstance(index, dict):
+        raise ValueError("index must be an object")
+    index_scope_mode = str(index.get("scope_mode", "auto")).strip().lower()
+    if index_scope_mode not in {"auto", "configured", "git", "git_tracked", "all"}:
+        index_scope_mode = "auto"
+    index["scope_mode"] = "git" if index_scope_mode == "git_tracked" else index_scope_mode
+    include_raw = index.get("include", ["**/*"])
+    if isinstance(include_raw, list):
+        include_items = [str(item).strip() for item in include_raw if str(item).strip()]
+    else:
+        include_items = [str(include_raw).strip()] if str(include_raw).strip() else ["**/*"]
+    index["include"] = include_items or ["**/*"]
+    exclude_raw = index.get("exclude", [])
+    if isinstance(exclude_raw, list):
+        exclude_items = [str(item).strip() for item in exclude_raw if str(item).strip()]
+    else:
+        exclude_items = [str(exclude_raw).strip()] if str(exclude_raw).strip() else []
+    index["exclude"] = exclude_items
+    index["max_file_mb"] = _normalize_positive_int(index.get("max_file_mb", 2), default_value=2)
+    index["max_files_to_scan"] = _normalize_positive_int(index.get("max_files_to_scan", 10000), default_value=10000)
+    index["scan_timeout_seconds"] = _normalize_positive_int(index.get("scan_timeout_seconds", 60), default_value=60)
+    config["index"] = index
+
     context = config.get("context", {})
     if not isinstance(context, dict):
         raise ValueError("context must be an object")
@@ -406,6 +462,18 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
     )
     runtime["verify_cache_max_entries"] = _normalize_positive_int(
         runtime.get("verify_cache_max_entries", 400), default_value=400
+    )
+    runtime["verify_workspace_routing_enabled"] = _normalize_bool(
+        runtime.get("verify_workspace_routing_enabled", True),
+        default_value=True,
+    )
+    runtime["verify_preflight_enabled"] = _normalize_bool(
+        runtime.get("verify_preflight_enabled", True),
+        default_value=True,
+    )
+    runtime["verify_preflight_timeout_seconds"] = _normalize_positive_int(
+        runtime.get("verify_preflight_timeout_seconds", 5),
+        default_value=5,
     )
     runtime["token_estimator_backend"] = str(runtime.get("token_estimator_backend", "auto")).strip().lower() or "auto"
     if runtime["token_estimator_backend"] not in {"auto", "tiktoken", "heuristic"}:

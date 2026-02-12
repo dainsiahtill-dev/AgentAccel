@@ -5,6 +5,8 @@ import hashlib
 import json
 import logging
 import os
+import shutil
+import subprocess
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, TimeoutError
 from datetime import datetime, timezone
@@ -43,6 +45,21 @@ INDEX_KEY_FIELDS = {
     "dependencies": "edge_from",
 }
 INDEX_PARALLEL_BACKENDS = {"auto", "process", "thread"}
+LEGACY_DEFAULT_INDEX_INCLUDE = ["src/**", "accel/**", "tests/**"]
+DEFAULT_INDEX_EXCLUDES = [
+    ".git/**",
+    "node_modules/**",
+    "dist/**",
+    "build/**",
+    "target/**",
+    ".venv/**",
+    "venv/**",
+    ".mypy_cache/**",
+    ".pytest_cache/**",
+    ".ruff_cache/**",
+    ".next/**",
+    ".turbo/**",
+]
 
 # Setup logging for deadlock detection
 _deadlock_logger = logging.getLogger("accel_deadlock_detection")
@@ -122,19 +139,150 @@ def _resolve_compact_threshold(config: dict[str, Any]) -> int:
     return max(1, parsed)
 
 
+def _normalize_scope_mode(value: Any) -> str:
+    token = str(value or "auto").strip().lower()
+    if token in {"auto", "configured", "git", "git_tracked", "all"}:
+        return "git" if token == "git_tracked" else token
+    return "auto"
+
+
+def _normalize_patterns(value: Any, fallback: list[str]) -> list[str]:
+    if isinstance(value, list):
+        normalized = [str(item).strip() for item in value if str(item).strip()]
+        return normalized if normalized else list(fallback)
+    text = str(value or "").strip()
+    if not text:
+        return list(fallback)
+    return [text]
+
+
+def _is_legacy_default_include(includes: list[str]) -> bool:
+    lowered = [item.strip().lower() for item in includes if str(item).strip()]
+    return sorted(lowered) == sorted(LEGACY_DEFAULT_INDEX_INCLUDE)
+
+
+def _merge_exclude_patterns(excludes: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for item in list(excludes) + list(DEFAULT_INDEX_EXCLUDES):
+        key = str(item).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(key)
+    return merged
+
+
+def _collect_git_candidate_files(
+    project_dir: Path,
+    *,
+    max_candidates: int,
+    timeout_seconds: int,
+) -> list[Path]:
+    if max_candidates <= 0:
+        return []
+    git_bin = shutil.which("git")
+    if git_bin is None:
+        return []
+    try:
+        proc = subprocess.run(
+            [git_bin, "-C", str(project_dir), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            capture_output=True,
+            timeout=max(1, int(timeout_seconds)),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if int(proc.returncode) != 0:
+        return []
+    payload = bytes(proc.stdout or b"")
+    if not payload:
+        return []
+    candidates: list[Path] = []
+    for raw_item in payload.split(b"\x00"):
+        if not raw_item:
+            continue
+        rel_text = raw_item.decode("utf-8", errors="replace").strip()
+        if not rel_text:
+            continue
+        candidate = (project_dir / rel_text).resolve()
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        candidates.append(candidate)
+        if len(candidates) >= max_candidates:
+            break
+    return candidates
+
+
+def _filter_source_candidates(
+    *,
+    project_dir: Path,
+    candidates: list[Path],
+    includes: list[str],
+    excludes: list[str],
+    max_size: int,
+) -> list[Path]:
+    files: list[Path] = []
+    for candidate in candidates:
+        if detect_language(candidate) == "":
+            continue
+        try:
+            rel_path = _normalize_rel_path(candidate.relative_to(project_dir))
+        except ValueError:
+            continue
+        if includes and not _match_any(rel_path, includes):
+            continue
+        if excludes and _match_any(rel_path, excludes):
+            continue
+        try:
+            if candidate.stat().st_size > max_size:
+                continue
+        except OSError:
+            continue
+        files.append(candidate)
+    return files
+
+
 def collect_source_files(project_dir: Path, config: dict[str, Any]) -> list[Path]:
     index_cfg = config.get("index", {})
-    includes = list(index_cfg.get("include", ["**/*"]))
-    excludes = list(index_cfg.get("exclude", []))
+    includes = _normalize_patterns(index_cfg.get("include", ["**/*"]), ["**/*"])
+    scope_mode = _normalize_scope_mode(index_cfg.get("scope_mode", "auto"))
+    if scope_mode == "auto" and _is_legacy_default_include(includes):
+        includes = ["**/*"]
+    excludes = _merge_exclude_patterns(_normalize_patterns(index_cfg.get("exclude", []), []))
     max_file_mb = int(index_cfg.get("max_file_mb", 2))
     max_size = max_file_mb * 1024 * 1024
-    max_files_to_scan = int(index_cfg.get("max_files_to_scan", 10000))  # Protection against huge projects
+    max_files_to_scan = int(index_cfg.get("max_files_to_scan", 10000))
 
     files: list[Path] = []
     files_scanned = 0
     start_time = time.perf_counter()
     scan_timeout_seconds = int(index_cfg.get("scan_timeout_seconds", 60))
-    
+
+    if scope_mode in {"auto", "git"}:
+        git_candidates = _collect_git_candidate_files(
+            project_dir,
+            max_candidates=max_files_to_scan,
+            timeout_seconds=scan_timeout_seconds,
+        )
+        if git_candidates:
+            filtered = _filter_source_candidates(
+                project_dir=project_dir,
+                candidates=git_candidates,
+                includes=includes,
+                excludes=excludes,
+                max_size=max_size,
+            )
+            elapsed = time.perf_counter() - start_time
+            _log_deadlock_info(
+                f"collect_source_files used git scope ({scope_mode}); "
+                f"candidates={len(git_candidates)} selected={len(filtered)} elapsed={elapsed:.1f}s"
+            )
+            return sorted(filtered, key=lambda item: _normalize_rel_path(item.relative_to(project_dir)))
+        if scope_mode == "git":
+            _log_deadlock_info("collect_source_files scope_mode=git returned empty result (no git candidates)")
+            return []
+
     try:
         for path in project_dir.rglob("*"):
             # Timeout protection

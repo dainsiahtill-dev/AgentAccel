@@ -25,6 +25,8 @@ accel index build --project .
 accel context --project . --task "fix headers input issue" --out context_pack.json
 ```
 
+For monorepos/multi-workspace repos, keep `index.scope_mode: auto` (default) so index build uses git-tracked files first and avoids narrow `src/**`-only coverage.
+
 ## Verify
 ```powershell
 accel verify --project . --changed-files src\foo.py src\bar.ts
@@ -45,6 +47,10 @@ runtime:
   command_plan_cache_ttl_seconds: 900
   command_plan_cache_max_entries: 600
 
+  verify_workspace_routing_enabled: true
+  verify_preflight_enabled: true
+  verify_preflight_timeout_seconds: 5
+
   constraint_mode: warn         # off|warn|strict
   rule_compression_enabled: true
 ```
@@ -54,4 +60,10 @@ Tool usage examples:
 ```powershell
 accel context --project . --task "fix verify timeout" --changed-files accel/mcp_server.py --out context_pack.json
 accel verify --project . --changed-files accel/mcp_server.py
+```
+
+Strict narrowing example:
+
+```powershell
+accel context --project . --task "fix verify timeout" --changed-files accel/mcp_server.py --strict-changed-files true --constraint-mode strict --out context_pack.json
 ```
