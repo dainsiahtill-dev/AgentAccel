@@ -100,7 +100,6 @@ DEFAULT_LOCAL_CONFIG: dict[str, Any] = {
         "lexical_ranker_weight": 0.2,
         "semantic_ranker_enabled": False,
         "semantic_ranker_provider": "off",
-        "semantic_ranker_use_onnx": False,
         "semantic_ranker_max_candidates": 120,
         "semantic_ranker_batch_size": 16,
         "semantic_ranker_embed_weight": 0.3,
@@ -115,13 +114,6 @@ DEFAULT_LOCAL_CONFIG: dict[str, Any] = {
         "accel_home": "",
         "per_command_timeout_seconds": 1200,
         "total_verify_timeout_seconds": 3600,
-    },
-    "gpu": {
-        "enabled": False,
-        "policy": "off",
-        "device": "auto",
-        "embedding_model_path": "",
-        "reranker_model_path": "",
     },
 }
 

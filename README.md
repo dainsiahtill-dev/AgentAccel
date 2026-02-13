@@ -113,11 +113,6 @@ source .venv/bin/activate  # Linux/macOS
 # Install dependencies
 pip install -e .
 
-# Optional: semantic ranker (FlagEmbedding + ONNX runtime)
-pip install -e ".[semantic]"      # CPU
-# or
-pip install -e ".[semantic-gpu]"  # CUDA/DirectML capable ONNX runtime
-
 # Optional: syntax parser + lexical search
 pip install -e ".[syntax]"        # Tree-sitter parser path
 pip install -e ".[search]"        # Tantivy lexical ranker path
@@ -542,7 +537,6 @@ The `.harborpilot/logs/context_pack.json` output is designed for direct AI consu
     "index_workers": "auto",
     "semantic_ranker_enabled": false,
     "semantic_ranker_provider": "off",
-    "semantic_ranker_use_onnx": false,
     "semantic_ranker_max_candidates": 120,
     "semantic_ranker_embed_weight": 0.3,
     "semantic_reranker_enabled": false,
@@ -556,26 +550,14 @@ The `.harborpilot/logs/context_pack.json` output is designed for direct AI consu
     "verify_preflight_timeout_seconds": 5,
     "per_command_timeout_seconds": 1200,
     "total_verify_timeout_seconds": 3600
-  },
-  "gpu": {
-    "enabled": false,
-    "policy": "off",
-    "device": "auto",
-    "embedding_model_path": "",
-    "reranker_model_path": ""
   }
 }
 ```
 
-`gpu.policy` semantics:
-- `off`: always CPU
-- `auto`: prefer CUDA when available, otherwise fallback to CPU
-- `force`: require CUDA-capable runtime/device; report explicit force error when unavailable
-
 Semantic ranker runtime knobs:
+- Current build note: semantic model execution is removed; these switches are compatibility placeholders and do not load external semantic/GPU runtimes.
 - `semantic_ranker_enabled`: master switch (default `false`)
 - `semantic_ranker_provider`: `off | auto | flagembedding` (`auto` resolves to `flagembedding`)
-- `semantic_ranker_use_onnx`: request ONNX execution path when backend supports it
 - `semantic_ranker_max_candidates`: top lexical candidates to re-score semantically
 - `semantic_ranker_embed_weight`: blend weight for embedding similarity (`0.0~1.0`)
 - `semantic_reranker_enabled`: enable second-stage reranker if reranker model is configured
@@ -587,7 +569,7 @@ Semantic ranker runtime knobs:
 - `disabled_by_config`
 - `flagembedding_unavailable`
 - `embedding_model_missing`
-- `onnxruntime_unavailable`
+- `removed_from_build`
 
 ### Environment Variables
 
@@ -595,21 +577,14 @@ Semantic ranker runtime knobs:
 |----------|-------------|---------|
 | `ACCEL_MCP_DEBUG` | Enable MCP debug logging | `0` |
 | `ACCEL_MCP_MAX_RUNTIME` | Max server runtime (seconds) | `3600` |
-| `ACCEL_GPU_ENABLED` | Toggle GPU mode gate (`true/false`) | `false` |
-| `ACCEL_GPU_POLICY` | GPU policy (`off/auto/force`) | `off` |
-| `ACCEL_GPU_DEVICE` | Requested device (`auto/cpu/cuda[:idx]`) | `auto` |
-| `ACCEL_GPU_EMBEDDING_MODEL_PATH` | Local embedding model path | `""` |
-| `ACCEL_GPU_RERANKER_MODEL_PATH` | Local reranker model path | `""` |
 | `ACCEL_SEMANTIC_RANKER_ENABLED` | Enable semantic ranker pipeline (`true/false`) | `false` |
 | `ACCEL_SEMANTIC_RANKER_PROVIDER` | Semantic provider (`off/auto/flagembedding`) | `off` |
-| `ACCEL_SEMANTIC_RANKER_USE_ONNX` | Request ONNX execution path (`true/false`) | `false` |
 | `ACCEL_SEMANTIC_RANKER_MAX_CANDIDATES` | Candidate files for semantic re-score | `120` |
 | `ACCEL_SEMANTIC_RANKER_BATCH_SIZE` | Embedding batch size | `16` |
 | `ACCEL_SEMANTIC_RANKER_EMBED_WEIGHT` | Embedding blend weight (`0~1`) | `0.3` |
 | `ACCEL_SEMANTIC_RERANKER_ENABLED` | Enable reranker stage (`true/false`) | `false` |
 | `ACCEL_SEMANTIC_RERANKER_TOP_K` | Top-K files for reranker stage | `30` |
 | `ACCEL_SEMANTIC_RERANKER_WEIGHT` | Reranker blend weight (`0~1`) | `0.15` |
-| `LOCALAPPDATA` | Windows cache directory | - |
 
 ---
 
@@ -621,7 +596,7 @@ agent-accel/
 │   ├── mcp_server.py          # FastMCP server implementation
 │   ├── cli.py                  # Command-line interface
 │   ├── config.py               # Configuration management
-│   ├── semantic_ranker.py      # Optional semantic embedding/rerank pipeline
+│   ├── semantic_ranker.py      # Compatibility semantic ranker stub (runtime removed)
 │   ├── indexers/               # Code indexing modules
 │   │   ├── symbols.py          # Symbol extraction
 │   │   ├── references.py       # Reference tracking

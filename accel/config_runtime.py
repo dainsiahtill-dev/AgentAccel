@@ -4,12 +4,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .gpu_runtime import (
-    normalize_gpu_config,
-    normalize_gpu_device,
-    normalize_gpu_model_path,
-    normalize_gpu_policy,
-)
 from .semantic_ranker import clamp_ratio, normalize_semantic_provider
 from .harborpilot_paths import default_accel_runtime_home
 from .language_profiles import (
@@ -136,7 +130,6 @@ def normalize_lexical_provider(value: Any, default_value: str = "off") -> str:
 
 def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
     runtime = dict(config.get("runtime", {}))
-    gpu = dict(config.get("gpu", {}))
 
     if os.environ.get("ACCEL_HOME"):
         runtime["accel_home"] = os.environ["ACCEL_HOME"]
@@ -363,11 +356,6 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
             os.environ["ACCEL_SEMANTIC_RANKER_PROVIDER"],
             str(runtime.get("semantic_ranker_provider", "off")),
         )
-    if os.environ.get("ACCEL_SEMANTIC_RANKER_USE_ONNX") is not None:
-        runtime["semantic_ranker_use_onnx"] = _normalize_bool(
-            os.environ["ACCEL_SEMANTIC_RANKER_USE_ONNX"],
-            bool(runtime.get("semantic_ranker_use_onnx", False)),
-        )
     if os.environ.get("ACCEL_SEMANTIC_RANKER_MAX_CANDIDATES"):
         runtime["semantic_ranker_max_candidates"] = _normalize_positive_int(
             os.environ["ACCEL_SEMANTIC_RANKER_MAX_CANDIDATES"],
@@ -438,32 +426,11 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
             os.environ["ACCEL_SYNC_CONTEXT_TIMEOUT_ACTION"],
             str(runtime.get("sync_context_timeout_action", "fallback_async")),
         )
-    if os.environ.get("ACCEL_GPU_ENABLED") is not None:
-        gpu["enabled"] = _normalize_bool(os.environ["ACCEL_GPU_ENABLED"], False)
-    if os.environ.get("ACCEL_GPU_POLICY"):
-        gpu["policy"] = normalize_gpu_policy(
-            os.environ["ACCEL_GPU_POLICY"],
-            str(gpu.get("policy", "off")),
-        )
-    if os.environ.get("ACCEL_GPU_DEVICE"):
-        gpu["device"] = normalize_gpu_device(
-            os.environ["ACCEL_GPU_DEVICE"],
-            str(gpu.get("device", "auto")),
-        )
-    if os.environ.get("ACCEL_GPU_EMBEDDING_MODEL_PATH"):
-        gpu["embedding_model_path"] = normalize_gpu_model_path(
-            os.environ["ACCEL_GPU_EMBEDDING_MODEL_PATH"]
-        )
-    if os.environ.get("ACCEL_GPU_RERANKER_MODEL_PATH"):
-        gpu["reranker_model_path"] = normalize_gpu_model_path(
-            os.environ["ACCEL_GPU_RERANKER_MODEL_PATH"]
-        )
     if os.environ.get("ACCEL_LOCAL_CONFIG"):
         config["meta"] = dict(config.get("meta", {}))
         config["meta"]["local_config_path"] = os.environ["ACCEL_LOCAL_CONFIG"]
 
     config["runtime"] = runtime
-    config["gpu"] = gpu
     return config
 
 
@@ -682,10 +649,6 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
         runtime.get("semantic_ranker_provider", "off"),
         default_value="off",
     )
-    runtime["semantic_ranker_use_onnx"] = _normalize_bool(
-        runtime.get("semantic_ranker_use_onnx", False),
-        default_value=False,
-    )
     runtime["semantic_ranker_max_candidates"] = _normalize_positive_int(
         runtime.get("semantic_ranker_max_candidates", 120),
         default_value=120,
@@ -749,8 +712,3 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
         project_dir = Path(project_dir_value) if project_dir_value else None
         runtime["accel_home"] = str(default_accel_home(project_dir))
     config["runtime"] = runtime
-
-    gpu = config.get("gpu", {})
-    if not isinstance(gpu, dict):
-        raise ValueError("gpu must be an object")
-    config["gpu"] = normalize_gpu_config(gpu)
