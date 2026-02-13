@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ from .indexers import build_or_update_indexes
 from .query.context_compiler import compile_context_pack, write_context_pack
 from .query.planner import normalize_task_tokens
 from .storage.cache import ensure_project_dirs, project_paths
+from .storage.session_receipts import SessionReceiptError, SessionReceiptStore
 from .storage.semantic_cache import (
     SemanticCacheStore,
     context_changed_fingerprint,
@@ -160,7 +162,13 @@ def _setup_debug_log() -> logging.Logger:
         logger.setLevel(logging.DEBUG)
 
         # Create log directory and file
-        log_dir = Path.home() / ".accel" / "logs"
+        log_dir = (
+            Path(os.path.abspath("."))
+            / ".harborpilot"
+            / "runtime"
+            / "agent-accel"
+            / "logs"
+        )
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"mcp_debug_{int(time.time())}.log"
 
@@ -922,15 +930,40 @@ def _sync_index_timeout_payload(job_id: str, wait_seconds: float) -> JSONDict:
     }
 
 
-def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
+def _start_index_job(
+    *,
+    project: str,
+    mode: str,
+    full: bool,
+    session_id: str = "",
+    run_id: str = "",
+) -> VerifyJob:
     project_dir = _normalize_project_dir(project)
     mode_value = str(mode).strip().lower()
     if mode_value not in {"build", "update"}:
         raise ValueError("index mode must be build|update")
     full_value = bool(full)
+    session_id_value = str(session_id).strip()
+    run_id_value = str(run_id).strip()
+    args_hash = _sha256_json(
+        {
+            "project": str(project_dir),
+            "mode": mode_value,
+            "full": bool(full_value),
+        }
+    )
 
     jm = JobManager()
     job = jm.create_job(prefix="index")
+    _safe_upsert_receipt(
+        project_dir=project_dir,
+        job_id=job.job_id,
+        session_id=session_id_value,
+        run_id=run_id_value,
+        tool=f"accel_index_{mode_value}",
+        args_hash=args_hash,
+        status="queued",
+    )
     job.add_event(
         "index_queued",
         {
@@ -946,6 +979,15 @@ def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
             return
         try:
             current.mark_running("indexing")
+            _safe_upsert_receipt(
+                project_dir=project_dir,
+                job_id=job_id,
+                session_id=session_id_value,
+                run_id=run_id_value,
+                tool=f"accel_index_{mode_value}",
+                args_hash=args_hash,
+                status="running",
+            )
             current.add_event(
                 "index_started",
                 {
@@ -1023,6 +1065,13 @@ def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
             if current.state in (JobState.CANCELLING, JobState.CANCELLED):
                 if current.state != JobState.CANCELLED:
                     current.mark_cancelled()
+                _safe_update_receipt_status(
+                    project_dir=project_dir,
+                    job_id=job_id,
+                    status="canceled",
+                    error_code="E_INVALID_STATE",
+                    error_message="index job canceled while worker observed cancellation",
+                )
                 current.add_event(
                     "job_cancelled_finalized",
                     {"reason": "index_worker_observed_cancel"},
@@ -1041,11 +1090,23 @@ def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
             if not current.try_mark_completed("ok", 0, payload):
                 if current.state != JobState.CANCELLED:
                     current.mark_cancelled()
+                _safe_update_receipt_status(
+                    project_dir=project_dir,
+                    job_id=job_id,
+                    status="canceled",
+                    error_code="E_INVALID_STATE",
+                    error_message="index job canceled before completion commit",
+                )
                 current.add_event(
                     "job_cancelled_finalized",
                     {"reason": "index_worker_late_cancel_before_complete"},
                 )
                 return
+            _safe_update_receipt_status(
+                project_dir=project_dir,
+                job_id=job_id,
+                status="succeeded",
+            )
             manifest_payload = payload.get("manifest", {})
             files = 0
             if isinstance(manifest_payload, dict):
@@ -1055,12 +1116,26 @@ def _start_index_job(*, project: str, mode: str, full: bool) -> VerifyJob:
             if current.state in (JobState.CANCELLING, JobState.CANCELLED):
                 if current.state != JobState.CANCELLED:
                     current.mark_cancelled()
+                _safe_update_receipt_status(
+                    project_dir=project_dir,
+                    job_id=job_id,
+                    status="canceled",
+                    error_code="E_INVALID_STATE",
+                    error_message="index job canceled after exception",
+                )
                 current.add_event(
                     "job_cancelled_finalized",
                     {"reason": "index_worker_exception_after_cancel"},
                 )
                 return
             current.mark_failed(str(exc))
+            _safe_update_receipt_status(
+                project_dir=project_dir,
+                job_id=job_id,
+                status="failed",
+                error_code=TOOL_ERROR_EXECUTION_FAILED,
+                error_message=str(exc),
+            )
             current.add_event("index_failed", {"error": str(exc)})
 
     thread = threading.Thread(target=_run_index_thread, args=(job.job_id,), daemon=True)
@@ -1157,6 +1232,155 @@ def _resolve_path(project_dir: Path, path_value: Any) -> Path | None:
     if not path.is_absolute():
         path = project_dir / path
     return Path(os.path.abspath(str(path)))
+
+
+def _resolve_project_storage_paths(project_dir: Path) -> dict[str, Path]:
+    config = resolve_effective_config(project_dir)
+    runtime_cfg = (
+        config.get("runtime", {})
+        if isinstance(config.get("runtime", {}), dict)
+        else {}
+    )
+    accel_home_value = str(runtime_cfg.get("accel_home", "") or "").strip()
+    if accel_home_value:
+        accel_home = Path(accel_home_value).resolve()
+    else:
+        accel_home = (
+            project_dir / ".harborpilot" / "runtime" / "agent-accel"
+        ).resolve()
+    paths = project_paths(accel_home, project_dir)
+    ensure_project_dirs(paths)
+    return paths
+
+
+def _session_receipt_store(project_dir: Path) -> SessionReceiptStore:
+    paths = _resolve_project_storage_paths(project_dir)
+    return SessionReceiptStore(paths["state"] / "session_receipts.db")
+
+
+def _sha256_json(value: dict[str, Any]) -> str:
+    payload = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _normalize_receipt_status(value: Any) -> str:
+    token = str(value or "").strip().lower()
+    if token in {"success", "ok", "completed"}:
+        return "succeeded"
+    if token in {"cancelled", "cancelling"}:
+        return "canceled"
+    if token in {"failed", "running", "queued", "degraded", "partial", "succeeded", "canceled"}:
+        return token
+    return "failed"
+
+
+def _to_changed_files_csv(changed_files: Any) -> str:
+    return ",".join(_to_string_list(changed_files))
+
+
+_receipt_tracked_jobs: set[str] = set()
+_receipt_tracked_jobs_lock = threading.Lock()
+
+
+def _mark_receipt_tracked(job_id: str) -> None:
+    job_id_value = str(job_id).strip()
+    if not job_id_value:
+        return
+    with _receipt_tracked_jobs_lock:
+        _receipt_tracked_jobs.add(job_id_value)
+
+
+def _is_receipt_tracked(job_id: str) -> bool:
+    job_id_value = str(job_id).strip()
+    if not job_id_value:
+        return False
+    with _receipt_tracked_jobs_lock:
+        return job_id_value in _receipt_tracked_jobs
+
+
+def _safe_upsert_receipt(
+    *,
+    project_dir: Path,
+    job_id: str,
+    session_id: str,
+    run_id: str,
+    tool: str,
+    args_hash: str,
+    status: str,
+    evidence_run: bool = False,
+    changed_files: str = "",
+    result_ref: str = "",
+    error_code: str = "",
+    error_message: str = "",
+) -> None:
+    if not str(session_id).strip() and not str(run_id).strip():
+        return
+    try:
+        store = _session_receipt_store(project_dir)
+        store.upsert_receipt(
+            job_id=str(job_id).strip(),
+            session_id=str(session_id).strip(),
+            run_id=str(run_id).strip(),
+            tool=str(tool).strip(),
+            args_hash=str(args_hash).strip(),
+            status=_normalize_receipt_status(status),
+            evidence_run=bool(evidence_run),
+            changed_files=str(changed_files or "").strip(),
+            result_ref=str(result_ref or "").strip(),
+            error_code=str(error_code or "").strip(),
+            error_message=str(error_message or "").strip(),
+        )
+        _mark_receipt_tracked(str(job_id).strip())
+    except Exception as exc:
+        _debug_log(
+            "receipt upsert skipped due error: "
+            f"job_id={job_id}, tool={tool}, error={exc!r}"
+        )
+
+
+def _safe_update_receipt_status(
+    *,
+    project_dir: Path,
+    job_id: str,
+    status: str,
+    result_ref: str = "",
+    error_code: str = "",
+    error_message: str = "",
+) -> None:
+    if not _is_receipt_tracked(job_id):
+        return
+    try:
+        store = _session_receipt_store(project_dir)
+        store.update_receipt_status(
+            job_id=str(job_id).strip(),
+            status=_normalize_receipt_status(status),
+            result_ref=str(result_ref or "").strip(),
+            error_code=str(error_code or "").strip(),
+            error_message=str(error_message or "").strip(),
+        )
+    except Exception as exc:
+        _debug_log(
+            "receipt status update skipped due error: "
+            f"job_id={job_id}, status={status}, error={exc!r}"
+        )
+
+
+def _recover_expired_receipts_for_project(project_dir: Path) -> int:
+    terminal_value = str(
+        os.environ.get("ACCEL_SESSION_EXPIRED_TERMINAL_STATUS", "failed")
+    ).strip().lower()
+    if terminal_value in {"cancelled", "cancelling"}:
+        terminal_value = "canceled"
+    if terminal_value not in {"failed", "canceled"}:
+        terminal_value = "failed"
+    try:
+        store = _session_receipt_store(project_dir)
+        return int(
+            store.recover_expired_running_receipts(terminal_status=terminal_value)
+        )
+    except Exception as exc:
+        _debug_log(f"recover_expired_receipts skipped: {exc!r}")
+        return 0
 
 
 _BUDGET_PRESETS: dict[str, dict[str, int]] = {
@@ -2599,6 +2823,14 @@ def create_server() -> FastMCP:
         ),
         strict_input_validation=True,
     )
+    recovered_receipts = _recover_expired_receipts_for_project(
+        _normalize_project_dir(".")
+    )
+    if recovered_receipts > 0:
+        _debug_log(
+            "Recovered expired running receipts at server startup: "
+            f"{recovered_receipts}"
+        )
 
     @server.tool(
         name="accel_index_build",
@@ -2609,11 +2841,19 @@ def create_server() -> FastMCP:
         full: Any = True,
         wait_for_completion: Any = True,
         sync_wait_seconds: Any = None,
+        session_id: str = "",
+        run_id: str = "",
     ) -> JSONDict:
         try:
             full_flag = _coerce_bool(full, True)
             wait_flag = _coerce_bool(wait_for_completion, True)
-            job = _start_index_job(project=project, mode="build", full=full_flag)
+            job = _start_index_job(
+                project=project,
+                mode="build",
+                full=full_flag,
+                session_id=str(session_id).strip(),
+                run_id=str(run_id).strip(),
+            )
             job_id = str(job.job_id).strip()
 
             if not wait_flag:
@@ -2659,10 +2899,18 @@ def create_server() -> FastMCP:
         project: str = ".",
         wait_for_completion: Any = True,
         sync_wait_seconds: Any = None,
+        session_id: str = "",
+        run_id: str = "",
     ) -> JSONDict:
         try:
             wait_flag = _coerce_bool(wait_for_completion, True)
-            job = _start_index_job(project=project, mode="update", full=False)
+            job = _start_index_job(
+                project=project,
+                mode="update",
+                full=False,
+                session_id=str(session_id).strip(),
+                run_id=str(run_id).strip(),
+            )
             job_id = str(job.job_id).strip()
 
             if not wait_flag:
@@ -2818,7 +3066,12 @@ def create_server() -> FastMCP:
         name="accel_index_cancel",
         description="Cancel a running async index job.",
     )
-    def accel_index_cancel(job_id: str) -> JSONDict:
+    def accel_index_cancel(
+        job_id: str,
+        project: str = ".",
+        session_id: str = "",
+        run_id: str = "",
+    ) -> JSONDict:
         try:
             jm = JobManager()
             job = jm.get_job(job_id)
@@ -2832,6 +3085,11 @@ def create_server() -> FastMCP:
                     "message": "Job already in terminal state",
                 }
             _finalize_job_cancel(job, reason="user_request")
+            _safe_update_receipt_status(
+                project_dir=_normalize_project_dir(project),
+                job_id=job_id,
+                status="canceled",
+            )
             return {
                 "job_id": job_id,
                 "status": JobState.CANCELLED,
@@ -2841,6 +3099,146 @@ def create_server() -> FastMCP:
         except Exception as exc:
             _debug_log(f"accel_index_cancel failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    def _coerce_meta_dict(meta: Any) -> dict[str, Any]:
+        if isinstance(meta, dict):
+            return dict(meta)
+        text = str(meta or "").strip()
+        if not text:
+            return {}
+        if text.startswith("{") and text.endswith("}"):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    return dict(parsed)
+            except Exception:
+                return {}
+        return {}
+
+    @server.tool(
+        name="accel_session_open",
+        description="Open or refresh a logical shared session for cross-process coordination.",
+    )
+    def accel_session_open(
+        run_id: str,
+        session_id: str = "",
+        owner: str = "codex",
+        ttl_seconds: int = 1800,
+        meta: Any = None,
+        project: str = ".",
+    ) -> JSONDict:
+        project_dir = _normalize_project_dir(project)
+        store = _session_receipt_store(project_dir)
+        try:
+            session = store.open_session(
+                run_id=str(run_id).strip(),
+                session_id=str(session_id).strip(),
+                owner=str(owner).strip() or "codex",
+                ttl_seconds=int(_coerce_optional_int(ttl_seconds) or 1800),
+                meta=_coerce_meta_dict(meta),
+            )
+            return {"status": "ok", **session}
+        except SessionReceiptError as exc:
+            return {"error": exc.code, "message": str(exc)}
+
+    @server.tool(
+        name="accel_session_attach",
+        description="Attach to an existing logical session with optional readonly mode.",
+    )
+    def accel_session_attach(
+        session_id: str,
+        run_id: str,
+        actor: str = "policy",
+        readonly: Any = True,
+        project: str = ".",
+    ) -> JSONDict:
+        project_dir = _normalize_project_dir(project)
+        store = _session_receipt_store(project_dir)
+        try:
+            session = store.attach_session(
+                session_id=str(session_id).strip(),
+                run_id=str(run_id).strip(),
+                actor=str(actor).strip() or "policy",
+                readonly=_coerce_bool(readonly, True),
+            )
+            return {"status": "ok", **session}
+        except SessionReceiptError as exc:
+            return {"error": exc.code, "message": str(exc)}
+
+    @server.tool(
+        name="accel_session_heartbeat",
+        description="Renew session lease for the active writable session holder.",
+    )
+    def accel_session_heartbeat(
+        session_id: str,
+        lease_id: str,
+        project: str = ".",
+    ) -> JSONDict:
+        project_dir = _normalize_project_dir(project)
+        store = _session_receipt_store(project_dir)
+        try:
+            session = store.heartbeat_session(
+                session_id=str(session_id).strip(),
+                lease_id=str(lease_id).strip(),
+            )
+            return {"status": "ok", **session}
+        except SessionReceiptError as exc:
+            return {"error": exc.code, "message": str(exc)}
+
+    @server.tool(
+        name="accel_session_close",
+        description="Close session and release lease.",
+    )
+    def accel_session_close(
+        session_id: str,
+        final_status: str = "closed",
+        project: str = ".",
+    ) -> JSONDict:
+        project_dir = _normalize_project_dir(project)
+        store = _session_receipt_store(project_dir)
+        try:
+            session = store.close_session(
+                session_id=str(session_id).strip(),
+                final_status=str(final_status).strip().lower(),
+            )
+            return {"status": "ok", **session}
+        except SessionReceiptError as exc:
+            return {"error": exc.code, "message": str(exc)}
+
+    @server.tool(
+        name="accel_receipt_get",
+        description="Get receipt by job_id.",
+    )
+    def accel_receipt_get(job_id: str, project: str = ".") -> JSONDict:
+        project_dir = _normalize_project_dir(project)
+        store = _session_receipt_store(project_dir)
+        receipt = store.get_receipt(job_id=str(job_id).strip())
+        if receipt is None:
+            return {"error": "E_JOB_NOT_FOUND", "job_id": job_id}
+        return receipt
+
+    @server.tool(
+        name="accel_receipt_list",
+        description="List receipts with optional session/run/tool/status filters.",
+    )
+    def accel_receipt_list(
+        session_id: str = "",
+        run_id: str = "",
+        tool: str = "",
+        status: str = "",
+        limit: int = 50,
+        project: str = ".",
+    ) -> JSONDict:
+        project_dir = _normalize_project_dir(project)
+        store = _session_receipt_store(project_dir)
+        rows = store.list_receipts(
+            session_id=str(session_id).strip(),
+            run_id=str(run_id).strip(),
+            tool=str(tool).strip(),
+            status=str(status).strip().lower(),
+            limit=int(_coerce_optional_int(limit) or 50),
+        )
+        return {"receipts": rows, "count": len(rows)}
 
     def _resolve_context_rpc_timeout_seconds(
         *,
@@ -2942,11 +3340,17 @@ def create_server() -> FastMCP:
         semantic_cache_mode: Any = None,
         constraint_mode: Any = None,
         rpc_timeout_seconds: Any = None,
+        session_id: str = "",
+        run_id: str = "",
     ) -> VerifyJob:
         task_text = str(task).strip()
         if not task_text:
             raise ValueError("task is required")
         project_dir = _normalize_project_dir(project)
+        session_id_value = str(session_id).strip()
+        run_id_value = str(run_id).strip()
+        changed_files_list = _to_string_list(changed_files)
+        hints_list = _to_string_list(hints)
         config_preview = resolve_effective_config(project_dir)
         runtime_preview = (
             config_preview.get("runtime", {})
@@ -2966,11 +3370,38 @@ def create_server() -> FastMCP:
             rpc_timeout_seconds=rpc_timeout_seconds,
             config=config_preview,
         )
+        args_hash = _sha256_json(
+            {
+                "task": task_text,
+                "project": str(project_dir),
+                "changed_files": list(changed_files_list),
+                "hints": list(hints_list),
+                "feedback_path": str(feedback_path or ""),
+                "out": str(out or ""),
+                "include_pack": _coerce_bool(include_pack, False),
+                "budget": str(budget if budget is not None else ""),
+                "strict_changed_files": str(strict_changed_files if strict_changed_files is not None else ""),
+                "snippets_only": _coerce_bool(snippets_only, False),
+                "include_metadata": _coerce_bool(include_metadata, True),
+                "semantic_cache": str(semantic_cache if semantic_cache is not None else ""),
+                "semantic_cache_mode": str(semantic_cache_mode if semantic_cache_mode is not None else ""),
+                "constraint_mode": str(constraint_mode if constraint_mode is not None else ""),
+                "rpc_timeout_seconds": float(timeout_seconds),
+            }
+        )
 
         jm = JobManager()
         job = jm.create_job(prefix="context")
-        changed_files_list = _to_string_list(changed_files)
-        hints_list = _to_string_list(hints)
+        _safe_upsert_receipt(
+            project_dir=project_dir,
+            job_id=job.job_id,
+            session_id=session_id_value,
+            run_id=run_id_value,
+            tool="accel_context",
+            args_hash=args_hash,
+            status="queued",
+            changed_files=",".join(changed_files_list),
+        )
         job.add_event(
             "context_queued",
             {
@@ -2987,6 +3418,16 @@ def create_server() -> FastMCP:
                 return
             try:
                 j.mark_running("running")
+                _safe_upsert_receipt(
+                    project_dir=project_dir,
+                    job_id=job_id,
+                    session_id=session_id_value,
+                    run_id=run_id_value,
+                    tool="accel_context",
+                    args_hash=args_hash,
+                    status="running",
+                    changed_files=",".join(changed_files_list),
+                )
                 j.update_progress(0, 1, "compile_context_pack")
                 j.add_live_event(
                     "context_started",
@@ -3017,6 +3458,13 @@ def create_server() -> FastMCP:
                 if j.state in (JobState.CANCELLING, JobState.CANCELLED):
                     if j.state != JobState.CANCELLED:
                         j.mark_cancelled()
+                    _safe_update_receipt_status(
+                        project_dir=project_dir,
+                        job_id=job_id,
+                        status="canceled",
+                        error_code="E_INVALID_STATE",
+                        error_message="context job canceled before completion",
+                    )
                     j.add_event(
                         "job_cancelled_finalized",
                         {"reason": "context_worker_observed_cancel"},
@@ -3039,21 +3487,48 @@ def create_server() -> FastMCP:
                 ):
                     if j.state != JobState.CANCELLED:
                         j.mark_cancelled()
+                    _safe_update_receipt_status(
+                        project_dir=project_dir,
+                        job_id=job_id,
+                        status="canceled",
+                        error_code="E_INVALID_STATE",
+                        error_message="context job canceled before completion commit",
+                    )
                     j.add_event(
                         "job_cancelled_finalized",
                         {"reason": "context_worker_late_cancel_before_complete"},
                     )
                     return
+                _safe_update_receipt_status(
+                    project_dir=project_dir,
+                    job_id=job_id,
+                    status=_normalize_receipt_status(result.get("status", "ok")),
+                    result_ref=str(result.get("out", "") or ""),
+                )
             except Exception as exc:
                 if j.state in (JobState.CANCELLING, JobState.CANCELLED):
                     if j.state != JobState.CANCELLED:
                         j.mark_cancelled()
+                    _safe_update_receipt_status(
+                        project_dir=project_dir,
+                        job_id=job_id,
+                        status="canceled",
+                        error_code="E_INVALID_STATE",
+                        error_message="context job canceled after exception",
+                    )
                     j.add_event(
                         "job_cancelled_finalized",
                         {"reason": "context_worker_exception_after_cancel"},
                     )
                     return
                 j.mark_failed(str(exc))
+                _safe_update_receipt_status(
+                    project_dir=project_dir,
+                    job_id=job_id,
+                    status="failed",
+                    error_code=TOOL_ERROR_EXECUTION_FAILED,
+                    error_message=str(exc),
+                )
                 j.add_event("context_failed", {"error": str(exc)})
 
         thread = threading.Thread(
@@ -3115,6 +3590,8 @@ def create_server() -> FastMCP:
         wait_for_completion: Any = True,
         sync_wait_seconds: Any = None,
         sync_timeout_action: Any = None,
+        session_id: str = "",
+        run_id: str = "",
     ) -> JSONDict:
         try:
             wait_flag = _coerce_bool(wait_for_completion, True)
@@ -3139,6 +3616,8 @@ def create_server() -> FastMCP:
                 semantic_cache_mode=semantic_cache_mode,
                 constraint_mode=constraint_mode,
                 rpc_timeout_seconds=rpc_timeout_seconds,
+                session_id=str(session_id).strip(),
+                run_id=str(run_id).strip(),
             )
             job_id = str(job.job_id).strip()
 
@@ -3172,19 +3651,27 @@ def create_server() -> FastMCP:
             if result is not None:
                 return result
 
-            if timeout_action_value == "cancel":
-                jm = JobManager()
-                cancel_requested = False
-                job_for_cancel = jm.get_job(job_id)
-                if job_for_cancel is not None:
-                    cancel_requested = _finalize_job_cancel(
-                        job_for_cancel, reason="sync_timeout_auto_cancel"
+                if timeout_action_value == "cancel":
+                    jm = JobManager()
+                    cancel_requested = False
+                    job_for_cancel = jm.get_job(job_id)
+                    if job_for_cancel is not None:
+                        cancel_requested = _finalize_job_cancel(
+                            job_for_cancel, reason="sync_timeout_auto_cancel"
+                        )
+                    if cancel_requested:
+                        _safe_update_receipt_status(
+                            project_dir=project_dir,
+                            job_id=job_id,
+                            status="canceled",
+                            error_code="E_INVALID_STATE",
+                            error_message="context sync wait timeout auto-cancel",
+                        )
+                    return _timeout_cancel_payload_context(
+                        job_id=job_id,
+                        wait_seconds=wait_seconds,
+                        cancel_requested=cancel_requested,
                     )
-                return _timeout_cancel_payload_context(
-                    job_id=job_id,
-                    wait_seconds=wait_seconds,
-                    cancel_requested=cancel_requested,
-                )
             return _sync_context_timeout_payload(
                 job_id,
                 wait_seconds,
@@ -3214,6 +3701,8 @@ def create_server() -> FastMCP:
         semantic_cache_mode: Any = None,
         constraint_mode: Any = None,
         rpc_timeout_seconds: Any = None,
+        session_id: str = "",
+        run_id: str = "",
     ) -> JSONDict:
         try:
             job = _start_context_job(
@@ -3232,6 +3721,8 @@ def create_server() -> FastMCP:
                 semantic_cache_mode=semantic_cache_mode,
                 constraint_mode=constraint_mode,
                 rpc_timeout_seconds=rpc_timeout_seconds,
+                session_id=str(session_id).strip(),
+                run_id=str(run_id).strip(),
             )
             return {"job_id": job.job_id, "status": "started"}
         except Exception as exc:
@@ -3319,7 +3810,12 @@ def create_server() -> FastMCP:
         name="accel_context_cancel",
         description="Cancel a running async context generation job.",
     )
-    def accel_context_cancel(job_id: str) -> JSONDict:
+    def accel_context_cancel(
+        job_id: str,
+        project: str = ".",
+        session_id: str = "",
+        run_id: str = "",
+    ) -> JSONDict:
         try:
             jm = JobManager()
             job = jm.get_job(job_id)
@@ -3333,6 +3829,11 @@ def create_server() -> FastMCP:
                     "message": "Job already in terminal state",
                 }
             _finalize_job_cancel(job, reason="user_request")
+            _safe_update_receipt_status(
+                project_dir=_normalize_project_dir(project),
+                job_id=job_id,
+                status="canceled",
+            )
             return {
                 "job_id": job_id,
                 "status": JobState.CANCELLED,
@@ -3363,8 +3864,12 @@ def create_server() -> FastMCP:
         verify_cache_failed_ttl_seconds: Any = None,
         command_plan_cache_enabled: bool | str | None = None,
         constraint_mode: str | None = None,
+        session_id: str = "",
+        run_id: str = "",
     ) -> VerifyJob:
         changed_files_list = _to_string_list(changed_files)
+        session_id_value = str(session_id).strip()
+        run_id_value = str(run_id).strip()
 
         evidence_run_normalized = _coerce_bool(evidence_run, False)
         fast_loop_normalized = _coerce_bool(fast_loop, False)
@@ -3398,6 +3903,28 @@ def create_server() -> FastMCP:
             f"_start_verify_job called: project={project}, changed_files={len(changed_files_list)}"
         )
         project_dir = _normalize_project_dir(project)
+        args_hash = _sha256_json(
+            {
+                "project": str(project_dir),
+                "changed_files": list(changed_files_list),
+                "evidence_run": bool(evidence_run_normalized),
+                "fast_loop": bool(fast_loop_normalized),
+                "verify_workers": verify_workers_value,
+                "per_command_timeout_seconds": per_command_timeout_value,
+                "verify_stall_timeout_seconds": verify_stall_timeout_value,
+                "verify_max_wall_time_seconds": verify_max_wall_time_value,
+                "verify_auto_cancel_on_stall": verify_auto_cancel_on_stall_normalized,
+                "verify_preset": verify_preset_value,
+                "verify_fail_fast": verify_fail_fast_normalized,
+                "verify_cache_enabled": verify_cache_enabled_normalized,
+                "verify_cache_failed_results": verify_cache_failed_results_normalized,
+                "verify_cache_ttl_seconds": verify_cache_ttl_value,
+                "verify_cache_max_entries": verify_cache_max_entries_value,
+                "verify_cache_failed_ttl_seconds": verify_cache_failed_ttl_value,
+                "command_plan_cache_enabled": command_plan_cache_enabled_normalized,
+                "constraint_mode": str(constraint_mode or ""),
+            }
+        )
 
         runtime_overrides: JSONDict = {}
         if verify_workers_value is not None:
@@ -3470,6 +3997,17 @@ def create_server() -> FastMCP:
 
         jm = JobManager()
         job = jm.create_job()
+        _safe_upsert_receipt(
+            project_dir=project_dir,
+            job_id=job.job_id,
+            session_id=session_id_value,
+            run_id=run_id_value,
+            tool="accel_verify",
+            args_hash=args_hash,
+            status="queued",
+            evidence_run=bool(evidence_run_normalized),
+            changed_files=",".join(changed_files_list),
+        )
 
         def _run_verify_thread(
             job_id: str,
@@ -3482,6 +4020,17 @@ def create_server() -> FastMCP:
                 return
             try:
                 j.mark_running("running")
+                _safe_upsert_receipt(
+                    project_dir=project_dir,
+                    job_id=job_id,
+                    session_id=session_id_value,
+                    run_id=run_id_value,
+                    tool="accel_verify",
+                    args_hash=args_hash,
+                    status="running",
+                    evidence_run=bool(evidence_run_normalized),
+                    changed_files=",".join(changed_files_list),
+                )
                 callback = _JobCallback(j)
                 result = run_verify_with_callback(
                     project_dir=project_dir,
@@ -3493,6 +4042,13 @@ def create_server() -> FastMCP:
                 if j.state in (JobState.CANCELLING, JobState.CANCELLED):
                     if j.state != JobState.CANCELLED:
                         j.mark_cancelled()
+                    _safe_update_receipt_status(
+                        project_dir=project_dir,
+                        job_id=job_id,
+                        status="canceled",
+                        error_code="E_INVALID_STATE",
+                        error_message="verify job canceled while worker observed cancellation",
+                    )
                     j.add_event(
                         "job_cancelled_finalized", {"reason": "worker_observed_cancel"}
                     )
@@ -3504,21 +4060,48 @@ def create_server() -> FastMCP:
                 ):
                     if j.state != JobState.CANCELLED:
                         j.mark_cancelled()
+                    _safe_update_receipt_status(
+                        project_dir=project_dir,
+                        job_id=job_id,
+                        status="canceled",
+                        error_code="E_INVALID_STATE",
+                        error_message="verify job canceled before completion commit",
+                    )
                     j.add_event(
                         "job_cancelled_finalized",
                         {"reason": "worker_late_cancel_before_complete"},
                     )
                     return
+                _safe_update_receipt_status(
+                    project_dir=project_dir,
+                    job_id=job_id,
+                    status=_normalize_receipt_status(result.get("status", "failed")),
+                    result_ref=str(result.get("log_path", "") or ""),
+                )
             except Exception as exc:
                 if j.state in (JobState.CANCELLING, JobState.CANCELLED):
                     if j.state != JobState.CANCELLED:
                         j.mark_cancelled()
+                    _safe_update_receipt_status(
+                        project_dir=project_dir,
+                        job_id=job_id,
+                        status="canceled",
+                        error_code="E_INVALID_STATE",
+                        error_message="verify job canceled after exception",
+                    )
                     j.add_event(
                         "job_cancelled_finalized",
                         {"reason": "worker_exception_after_cancel"},
                     )
                     return
                 j.mark_failed(str(exc))
+                _safe_update_receipt_status(
+                    project_dir=project_dir,
+                    job_id=job_id,
+                    status="failed",
+                    error_code=TOOL_ERROR_EXECUTION_FAILED,
+                    error_message=str(exc),
+                )
                 j.add_event("job_failed", {"error": str(exc)})
 
         import threading
@@ -3589,6 +4172,8 @@ def create_server() -> FastMCP:
         sync_wait_seconds: Any = None,
         sync_timeout_action: Any = None,
         sync_cancel_grace_seconds: Any = None,
+        session_id: str = "",
+        run_id: str = "",
     ) -> JSONDict:
         try:
             wait_flag = _coerce_bool(wait_for_completion, False)
@@ -3614,6 +4199,8 @@ def create_server() -> FastMCP:
                 constraint_mode=str(constraint_mode)
                 if constraint_mode is not None
                 else None,
+                session_id=str(session_id).strip(),
+                run_id=str(run_id).strip(),
             )
             job_id = str(job.job_id).strip()
 
@@ -3665,6 +4252,14 @@ def create_server() -> FastMCP:
                     if job_for_cancel is not None:
                         cancel_requested = _finalize_job_cancel(
                             job_for_cancel, reason="sync_timeout_auto_cancel"
+                        )
+                    if cancel_requested:
+                        _safe_update_receipt_status(
+                            project_dir=project_dir,
+                            job_id=job_id,
+                            status="canceled",
+                            error_code="E_INVALID_STATE",
+                            error_message="verify sync wait timeout auto-cancel",
                         )
                     if cancel_requested:
                         _wait_for_verify_job_result(
@@ -3885,6 +4480,8 @@ def create_server() -> FastMCP:
         verify_cache_failed_ttl_seconds: Any = None,
         command_plan_cache_enabled: Any = None,
         constraint_mode: Any = None,
+        session_id: str = "",
+        run_id: str = "",
     ) -> JSONDict:
         try:
             job = _start_verify_job(
@@ -3908,6 +4505,8 @@ def create_server() -> FastMCP:
                 constraint_mode=str(constraint_mode)
                 if constraint_mode is not None
                 else None,
+                session_id=str(session_id).strip(),
+                run_id=str(run_id).strip(),
             )
             _debug_log(f"accel_verify_start created job: {job.job_id}")
             return {"job_id": job.job_id, "status": "started"}
@@ -4062,7 +4661,12 @@ def create_server() -> FastMCP:
         name="accel_verify_cancel",
         description="Cancel a running verification job.",
     )
-    def accel_verify_cancel(job_id: str) -> JSONDict:
+    def accel_verify_cancel(
+        job_id: str,
+        project: str = ".",
+        session_id: str = "",
+        run_id: str = "",
+    ) -> JSONDict:
         try:
             _debug_log(f"accel_verify_cancel called: job_id={job_id}")
             jm = JobManager()
@@ -4077,6 +4681,11 @@ def create_server() -> FastMCP:
                     "message": "Job already in terminal state",
                 }
             _finalize_job_cancel(job, reason="user_request")
+            _safe_update_receipt_status(
+                project_dir=_normalize_project_dir(project),
+                job_id=job_id,
+                status="canceled",
+            )
             return {
                 "job_id": job_id,
                 "status": JobState.CANCELLED,
@@ -4163,7 +4772,7 @@ def main() -> None:
     if _debug_enabled:
         _debug_log(f"Starting agent-accel MCP server with args: {vars(args)}")
         print(
-            "agent-accel MCP debug mode enabled. Logs will be written to ~/.accel/logs/",
+            "agent-accel MCP debug mode enabled. Logs will be written to .harborpilot/runtime/agent-accel/logs/",
             file=sys.stderr,
         )
         print(f"Server max runtime: {_server_max_runtime}s", file=sys.stderr)

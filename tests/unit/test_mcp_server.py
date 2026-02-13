@@ -31,8 +31,79 @@ def test_create_server_registers_core_tools_and_resources() -> None:
     assert "accel_context_events" in tool_names
     assert "accel_context_cancel" in tool_names
     assert "accel_verify" in tool_names
+    assert "accel_session_open" in tool_names
+    assert "accel_session_attach" in tool_names
+    assert "accel_session_heartbeat" in tool_names
+    assert "accel_session_close" in tool_names
+    assert "accel_receipt_get" in tool_names
+    assert "accel_receipt_list" in tool_names
     assert "agent-accel://status" in resource_uris
     assert "agent-accel://template/{kind}" in template_uris
+
+
+def test_session_tools_write_receipt_for_context_job(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "session_ctx_project"
+    project_dir.mkdir(parents=True)
+    (project_dir / "ctx.json").write_text("{}", encoding="utf-8")
+
+    jm = mcp_server.JobManager()
+    jm._jobs.clear()  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_effective_config",
+        lambda *args, **kwargs: {
+            "runtime": {
+                "accel_home": str(tmp_path / ".harborpilot" / "runtime" / "agent-accel"),
+                "semantic_cache_mode": "hybrid",
+                "constraint_mode": "warn",
+                "context_rpc_timeout_seconds": 30,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "_tool_context",
+        lambda **kwargs: {
+            "status": "ok",
+            "exit_code": 0,
+            "out": str(project_dir / "ctx.json"),
+            "top_files": 0,
+            "snippets": 0,
+        },
+    )
+
+    server = mcp_server.create_server()
+    tools = asyncio.run(server.get_tools())
+    session_open_fn = tools["accel_session_open"].fn
+    context_start_fn = tools["accel_context_start"].fn
+    receipt_get_fn = tools["accel_receipt_get"].fn
+
+    opened = session_open_fn(run_id="hp_run_1", owner="codex", project=str(project_dir))
+    session_id = str(opened.get("session_id", ""))
+    assert session_id
+
+    started = context_start_fn(
+        task="session receipt test",
+        project=str(project_dir),
+        session_id=session_id,
+        run_id="hp_run_1",
+    )
+    job_id = str(started.get("job_id", ""))
+    assert job_id.startswith("context_")
+
+    receipt = {}
+    for _ in range(40):
+        receipt = receipt_get_fn(job_id=job_id, project=str(project_dir))
+        if str(receipt.get("status", "")) in {"succeeded", "failed", "canceled"}:
+            break
+        time.sleep(0.05)
+
+    assert receipt.get("job_id") == job_id
+    assert receipt.get("session_id") == session_id
+    assert receipt.get("run_id") == "hp_run_1"
+    assert receipt.get("tool") == "accel_context"
+    assert receipt.get("status") in {"queued", "running", "succeeded", "failed", "canceled"}
 
 
 def test_tool_context_requires_task() -> None:

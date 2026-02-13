@@ -74,7 +74,13 @@ IndexProgressCallback = Callable[[dict[str, Any]], None]
 def _setup_deadlock_logging() -> None:
     """Setup deadlock detection logging if not already configured."""
     if not _deadlock_logger.handlers:
-        log_dir = Path.home() / ".accel" / "logs"
+        log_dir = (
+            Path(os.path.abspath("."))
+            / ".harborpilot"
+            / "runtime"
+            / "agent-accel"
+            / "logs"
+        )
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"deadlock_detection_{int(time.time())}.log"
 

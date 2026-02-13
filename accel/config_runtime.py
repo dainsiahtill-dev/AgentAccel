@@ -32,11 +32,10 @@ def _default_index_workers() -> int:
     return max(1, min(96, _cpu_count()))
 
 
-def default_accel_home() -> Path:
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data:
-        return Path(local_app_data) / "agent-accel"
-    return Path.home() / ".cache" / "agent-accel"
+def default_accel_home(project_dir: Path | None = None) -> Path:
+    if project_dir is not None:
+        return Path(project_dir) / ".harborpilot" / "runtime" / "agent-accel"
+    return Path(os.path.abspath(".")) / ".harborpilot" / "runtime" / "agent-accel"
 
 
 def _normalize_max_workers(value: Any, default_value: int) -> int:
@@ -747,7 +746,9 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
 
     accel_home = runtime.get("accel_home")
     if not accel_home:
-        runtime["accel_home"] = str(default_accel_home())
+        project_dir_value = str(config.get("meta", {}).get("project_dir", "")).strip()
+        project_dir = Path(project_dir_value) if project_dir_value else None
+        runtime["accel_home"] = str(default_accel_home(project_dir))
     config["runtime"] = runtime
 
     gpu = config.get("gpu", {})

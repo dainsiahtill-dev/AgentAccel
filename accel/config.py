@@ -252,7 +252,9 @@ def init_project(project_dir: Path, force: bool = False) -> dict[str, Any]:
 
     if force or not local_example_path.exists():
         local = json.loads(json.dumps(DEFAULT_LOCAL_CONFIG))
-        local["runtime"]["accel_home"] = str(default_accel_home()).replace("\\", "/")
+        local["runtime"]["accel_home"] = str(default_accel_home(project_dir)).replace(
+            "\\", "/"
+        )
         _dump_json_as_yaml(local_example_path, local)
         created.append(str(local_example_path))
     else:

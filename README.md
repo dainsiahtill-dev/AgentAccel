@@ -150,7 +150,7 @@ cd /path/to/your/project
 accel init
 ```
 
-This creates `.accel/config.json` with sensible defaults.
+This creates `accel.yaml` and `accel.local.yaml.example` with sensible defaults. Runtime artifacts are stored under `.harborpilot/runtime/agent-accel`.
 
 ### 2. Build Indexes
 
@@ -494,7 +494,7 @@ The `context_pack.json` is designed for direct AI consumption:
 
 ## ⚙️ Configuration
 
-### Project Configuration (`.accel/config.json`)
+### Project Configuration (`accel.yaml`)
 
 ```json
 {
@@ -532,7 +532,7 @@ The `context_pack.json` is designed for direct AI consumption:
 }
 ```
 
-### Local Configuration (`~/.accel/config.json`)
+### Local Configuration (`accel.local.yaml`)
 
 ```json
 {

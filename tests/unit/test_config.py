@@ -193,3 +193,12 @@ def test_syntax_and_lexical_defaults_enabled(tmp_path: Path) -> None:
     assert str(runtime.get("syntax_parser_provider", "")) == "auto"
     assert bool(runtime.get("lexical_ranker_enabled", False)) is True
     assert str(runtime.get("lexical_ranker_provider", "")) == "auto"
+
+
+def test_default_accel_home_is_under_harborpilot_runtime(tmp_path: Path) -> None:
+    init_project(tmp_path)
+    cfg = resolve_effective_config(tmp_path)
+    runtime = dict(cfg.get("runtime", {}))
+    expected = (tmp_path / ".harborpilot" / "runtime" / "agent-accel").resolve()
+    actual = Path(str(runtime.get("accel_home", ""))).resolve()
+    assert actual == expected

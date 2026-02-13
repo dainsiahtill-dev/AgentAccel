@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -32,7 +33,13 @@ _deadlock_logger.setLevel(logging.DEBUG)
 
 def _setup_deadlock_logging() -> None:
     if not _deadlock_logger.handlers:
-        log_dir = Path.home() / ".accel" / "logs"
+        log_dir = (
+            Path(os.path.abspath("."))
+            / ".harborpilot"
+            / "runtime"
+            / "agent-accel"
+            / "logs"
+        )
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"deadlock_detection_{int(time.time())}.log"
         handler = logging.FileHandler(log_file, encoding="utf-8")
