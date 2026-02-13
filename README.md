@@ -72,7 +72,7 @@ AI coding agents often waste tokens on:
 | Feature | Description |
 |---------|-------------|
 | **📁 Incremental Indexing** | Symbols, references, dependencies, and test ownership tracking |
-| **📦 Context Pack Generation** | Budget-constrained `context_pack.json` for AI consumption |
+| **📦 Context Pack Generation** | Budget-constrained `.harborpilot/logs/context_pack.json` for AI consumption |
 | **🔎 Explainability (`accel explain`)** | Score breakdown for selected files and near-miss alternatives |
 | **✅ Verification Orchestration** | Incremental test/lint/typecheck with smart sharding |
 | **🧠 Verify Selection Evidence** | Machine-readable rationale for baseline vs accelerated checks |
@@ -84,7 +84,7 @@ AI coding agents often waste tokens on:
 
 | Scenario | Without agent-accel | With agent-accel | Savings |
 |----------|---------------------|------------------|---------|
-| Code Reading | Full scan (~500KB+) | `context_pack.json` (~24KB) | **~95%** |
+| Code Reading | Full scan (~500KB+) | `.harborpilot/logs/context_pack.json` (~24KB) | **~95%** |
 | Symbol Understanding | AST parsing (~50KB) | `top_files` list (~2KB) | **~96%** |
 | Verification Planning | Manual dependency analysis | `verify_plan` ready-to-use | **~100%** |
 
@@ -168,7 +168,7 @@ accel index update
 # Generate context for a specific task
 accel context "Fix authentication bug in login module" \
   --changed-files "src/auth.py,src/login.py" \
-  --out context_pack.json
+  --out .harborpilot/logs/context_pack.json
 ```
 
 ### 4. Run Verification
@@ -430,7 +430,7 @@ This launcher avoids `Transport closed` failures when client runtime does not pr
 
 ## 📋 Context Pack Structure
 
-The `context_pack.json` is designed for direct AI consumption:
+The `.harborpilot/logs/context_pack.json` output is designed for direct AI consumption:
 
 ```json
 {

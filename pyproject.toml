@@ -41,13 +41,16 @@ where = ["."]
 include = ["accel*"]
 
 [tool.ruff]
+cache-dir = ".harborpilot/runtime/.ruff_cache"
 extend-exclude = [
-    "test_async_verify.py",
-    "test_tool_api.py",
-    "test_verify_blocking.py",
+    "scripts/diagnostics/*.py",
 ]
 
 [tool.mypy]
 python_version = "3.11"
 files = ["accel"]
-exclude = '^(test_async_verify\.py|test_tool_api\.py|test_verify_blocking\.py|tests/)'
+cache_dir = ".harborpilot/runtime/.mypy_cache"
+exclude = '^(scripts/diagnostics/|tests/)'
+
+[tool.pytest.ini_options]
+cache_dir = ".harborpilot/runtime/.pytest_cache"

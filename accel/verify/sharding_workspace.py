@@ -70,6 +70,8 @@ def _discover_workspaces(
         ".turbo",
         ".venv",
         "venv",
+        ".harborpilot",
+        ".harborpitlot",
         "__pycache__",
         ".mypy_cache",
         ".pytest_cache",

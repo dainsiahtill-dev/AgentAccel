@@ -11,6 +11,7 @@ from .gpu_runtime import (
     normalize_gpu_policy,
 )
 from .semantic_ranker import clamp_ratio, normalize_semantic_provider
+from .harborpilot_paths import default_accel_runtime_home
 from .language_profiles import (
     resolve_language_profile_registry,
     resolve_selected_language_profiles,
@@ -33,9 +34,7 @@ def _default_index_workers() -> int:
 
 
 def default_accel_home(project_dir: Path | None = None) -> Path:
-    if project_dir is not None:
-        return Path(project_dir) / ".harborpilot" / "runtime" / "agent-accel"
-    return Path(os.path.abspath(".")) / ".harborpilot" / "runtime" / "agent-accel"
+    return default_accel_runtime_home(project_dir)
 
 
 def _normalize_max_workers(value: Any, default_value: int) -> int:

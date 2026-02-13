@@ -41,6 +41,7 @@ EXCLUDED_DIRS = {
     "node_modules",
     "dist",
     "__pycache__",
+    ".harborpilot",
     "playwright-report",
     "test-results",
     ".mypy_cache",

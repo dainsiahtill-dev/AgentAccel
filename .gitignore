@@ -27,6 +27,9 @@ ENV/
 # ------------------------------
 # Test / type / lint caches
 # ------------------------------
+.harborpilot/runtime/.pytest_cache/
+.harborpilot/runtime/.mypy_cache/
+.harborpilot/runtime/.ruff_cache/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -51,8 +54,10 @@ Thumbs.db
 # ------------------------------
 # Project local artifacts
 # ------------------------------
-.harborpilot/
+.harborpilot/runtime/
+.harborpilot/logs/
+.harborpilot/snapshots/
 
 # Optional local context outputs
-context_pack*.json
+.harborpilot/logs/context_pack*.json
 

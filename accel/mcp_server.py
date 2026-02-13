@@ -18,6 +18,7 @@ from uuid import uuid4
 from fastmcp import FastMCP
 
 from .config import resolve_effective_config
+from .harborpilot_paths import default_accel_runtime_home, resolve_artifact_path
 from .indexers import build_or_update_indexes
 from .query.context_compiler import compile_context_pack, write_context_pack
 from .query.planner import normalize_task_tokens
@@ -162,13 +163,7 @@ def _setup_debug_log() -> logging.Logger:
         logger.setLevel(logging.DEBUG)
 
         # Create log directory and file
-        log_dir = (
-            Path(os.path.abspath("."))
-            / ".harborpilot"
-            / "runtime"
-            / "agent-accel"
-            / "logs"
-        )
+        log_dir = default_accel_runtime_home(Path(os.path.abspath("."))) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"mcp_debug_{int(time.time())}.log"
 
@@ -1245,9 +1240,7 @@ def _resolve_project_storage_paths(project_dir: Path) -> dict[str, Path]:
     if accel_home_value:
         accel_home = Path(accel_home_value).resolve()
     else:
-        accel_home = (
-            project_dir / ".harborpilot" / "runtime" / "agent-accel"
-        ).resolve()
+        accel_home = default_accel_runtime_home(project_dir).resolve()
     paths = project_paths(accel_home, project_dir)
     ensure_project_dirs(paths)
     return paths
@@ -2405,9 +2398,15 @@ def _tool_context(
     paths = project_paths(accel_home, project_dir)
     ensure_project_dirs(paths)
 
-    out_path = _resolve_path(project_dir, out)
-    if out_path is None:
+    if _resolve_path(project_dir, out) is None:
         out_path = paths["context"] / f"context_pack_{uuid4().hex[:10]}.json"
+    else:
+        out_path = resolve_artifact_path(
+            project_dir,
+            out,
+            default_subdir="logs",
+            default_name=f"context_pack_{uuid4().hex[:10]}.json",
+        )
 
     _debug_log(f"_tool_context: write_context_pack start out={out_path}")
     write_context_pack(out_path, pack_for_output)

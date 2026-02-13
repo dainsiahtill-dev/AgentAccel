@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from .config import init_project, resolve_effective_config
 from .gpu_runtime import resolve_gpu_runtime
+from .harborpilot_paths import resolve_artifact_path
 from .semantic_ranker import probe_semantic_runtime
 from .indexers import build_or_update_indexes
 from .query.context_compiler import (
@@ -144,8 +145,21 @@ def cmd_context(args: argparse.Namespace) -> int:
     accel_home = Path(cfg["runtime"]["accel_home"]).resolve()
     paths = project_paths(accel_home, project_dir)
     ensure_project_dirs(paths)
+    relocated_to_harborpilot = False
     if args.out:
-        out_path = _normalize_path(Path(args.out))
+        requested_raw = Path(str(args.out))
+        requested = (
+            _normalize_path(requested_raw)
+            if requested_raw.is_absolute()
+            else (project_dir / requested_raw).resolve()
+        )
+        out_path = resolve_artifact_path(
+            project_dir,
+            args.out,
+            default_subdir="logs",
+            default_name=f"context_pack_{uuid4().hex[:10]}.json",
+        )
+        relocated_to_harborpilot = requested.resolve() != out_path.resolve()
     else:
         out_path = paths["context"] / f"context_pack_{uuid4().hex[:10]}.json"
     write_context_pack(out_path, pack)
@@ -153,6 +167,7 @@ def cmd_context(args: argparse.Namespace) -> int:
         {
             "status": "ok",
             "out": str(out_path),
+            "out_relocated_to_harborpilot": relocated_to_harborpilot,
             "top_files": len(pack.get("top_files", [])),
             "snippets": len(pack.get("snippets", [])),
         },
@@ -217,7 +232,9 @@ def build_parser() -> argparse.ArgumentParser:
     update_parser_cmd.add_argument("--output", choices=["text", "json"], default="text")
     update_parser_cmd.set_defaults(func=cmd_index_update)
 
-    context_parser = sub.add_parser("context", help="Generate context_pack.json")
+    context_parser = sub.add_parser(
+        "context", help="Generate context pack output under .harborpilot"
+    )
     context_parser.add_argument("--project", default=".", help="Project directory")
     context_parser.add_argument("--task", required=True, help="Task description")
     context_parser.add_argument("--out", help="Output path for context pack")

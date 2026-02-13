@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from ..harborpilot_paths import default_accel_runtime_home
 from ..language_profiles import resolve_extension_language_map
 from .deps import extract_dependencies
 from .references import extract_references
@@ -57,6 +58,9 @@ DEFAULT_INDEX_EXCLUDES = [
     "target/**",
     ".venv/**",
     "venv/**",
+    ".harborpilot/runtime/**",
+    ".harborpilot/logs/**",
+    ".harborpilot/snapshots/**",
     ".mypy_cache/**",
     ".pytest_cache/**",
     ".ruff_cache/**",
@@ -74,13 +78,7 @@ IndexProgressCallback = Callable[[dict[str, Any]], None]
 def _setup_deadlock_logging() -> None:
     """Setup deadlock detection logging if not already configured."""
     if not _deadlock_logger.handlers:
-        log_dir = (
-            Path(os.path.abspath("."))
-            / ".harborpilot"
-            / "runtime"
-            / "agent-accel"
-            / "logs"
-        )
+        log_dir = default_accel_runtime_home(Path(os.path.abspath("."))) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"deadlock_detection_{int(time.time())}.log"
 

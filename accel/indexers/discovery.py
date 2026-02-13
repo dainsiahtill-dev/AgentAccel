@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..harborpilot_paths import default_accel_runtime_home
 from ..language_profiles import resolve_extension_language_map
 
 LEGACY_DEFAULT_INDEX_INCLUDE = ["src/**", "accel/**", "tests/**"]
@@ -20,6 +21,9 @@ DEFAULT_INDEX_EXCLUDES = [
     "target/**",
     ".venv/**",
     "venv/**",
+    ".harborpilot/runtime/**",
+    ".harborpilot/logs/**",
+    ".harborpilot/snapshots/**",
     ".mypy_cache/**",
     ".pytest_cache/**",
     ".ruff_cache/**",
@@ -33,13 +37,7 @@ _deadlock_logger.setLevel(logging.DEBUG)
 
 def _setup_deadlock_logging() -> None:
     if not _deadlock_logger.handlers:
-        log_dir = (
-            Path(os.path.abspath("."))
-            / ".harborpilot"
-            / "runtime"
-            / "agent-accel"
-            / "logs"
-        )
+        log_dir = default_accel_runtime_home(Path(os.path.abspath("."))) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"deadlock_detection_{int(time.time())}.log"
         handler = logging.FileHandler(log_file, encoding="utf-8")

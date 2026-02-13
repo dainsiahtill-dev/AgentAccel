@@ -22,7 +22,7 @@ accel doctor --output json
 ## Build Index and Context
 ```powershell
 accel index build --project .
-accel context --project . --task "fix headers input issue" --out context_pack.json
+accel context --project . --task "fix headers input issue" --out .harborpilot/logs/context_pack.json
 ```
 
 For monorepos/multi-workspace repos, keep `index.scope_mode: auto` (default) so index build uses git-tracked files first and avoids narrow `src/**`-only coverage.
@@ -58,12 +58,12 @@ runtime:
 Tool usage examples:
 
 ```powershell
-accel context --project . --task "fix verify timeout" --changed-files accel/mcp_server.py --out context_pack.json
+accel context --project . --task "fix verify timeout" --changed-files accel/mcp_server.py --out .harborpilot/logs/context_pack.json
 accel verify --project . --changed-files accel/mcp_server.py
 ```
 
 Strict narrowing example:
 
 ```powershell
-accel context --project . --task "fix verify timeout" --changed-files accel/mcp_server.py --strict-changed-files true --constraint-mode strict --out context_pack.json
+accel context --project . --task "fix verify timeout" --changed-files accel/mcp_server.py --strict-changed-files true --constraint-mode strict --out .harborpilot/logs/context_pack.json
 ```
