@@ -51,10 +51,7 @@ Thumbs.db
 # ------------------------------
 # Project local artifacts
 # ------------------------------
-.harborpilot/logs/
-.harborpilot/snapshots/
-.harborpilot/temp/
-.harborpilot/runtime/
+.harborpilot/
 
 # Optional local context outputs
 context_pack*.json
