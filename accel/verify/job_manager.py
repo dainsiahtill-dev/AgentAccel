@@ -171,23 +171,30 @@ class VerifyJob:
 class JobManager:
     MAX_JOBS = 100
     _instance: "JobManager | None" = None
-    _lock = threading.Lock()
+    _instance_lock = threading.Lock()
     _initialized: bool
+    _jobs: dict[str, VerifyJob]
+    _lock: threading.Lock
+
+    @classmethod
+    def _initialize_instance(cls, instance: "JobManager") -> "JobManager":
+        instance._jobs = {}
+        instance._lock = threading.Lock()
+        instance._initialized = True
+        return instance
 
     def __new__(cls) -> "JobManager":
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    setattr(cls._instance, "_initialized", False)
-        return cls._instance
+        with cls._instance_lock:
+            if cls._instance is None:
+                instance = super().__new__(cls)
+                cls._instance = cls._initialize_instance(instance)
+            elif not getattr(cls._instance, "_initialized", False):
+                cls._initialize_instance(cls._instance)
+            return cls._instance
 
     def __init__(self) -> None:
-        if getattr(self, "_initialized", False):
-            return
-        self._jobs: dict[str, VerifyJob] = {}
-        self._lock = threading.Lock()
-        self._initialized = True
+        # Singleton initialization is completed in __new__ under class lock.
+        return
 
     def create_job(self, prefix: str = "verify") -> VerifyJob:
         safe_prefix = str(prefix or "verify").strip().lower() or "verify"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from json import JSONDecodeError
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,9 @@ from ..storage.cache import project_paths
 from ..storage.index_cache import load_index_rows
 
 
-def _group_by_file(rows: list[dict[str, Any]], key: str) -> dict[str, list[dict[str, Any]]]:
+def _group_by_file(
+    rows: list[dict[str, Any]], key: str
+) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         file_value = str(row.get(key, ""))
@@ -30,7 +33,9 @@ def _group_by_file(rows: list[dict[str, Any]], key: str) -> dict[str, list[dict[
     return grouped
 
 
-def _estimate_source_bytes(project_dir: Path, indexed_files: list[str], sample_limit: int = 200) -> int:
+def _estimate_source_bytes(
+    project_dir: Path, indexed_files: list[str], sample_limit: int = 200
+) -> int:
     if not indexed_files:
         return 0
     sample = indexed_files[: max(1, int(sample_limit))]
@@ -121,7 +126,9 @@ def _apply_changed_scope_prioritization(
 
     adjusted.sort(key=lambda item: (-float(item["score"]), str(item["path"])))
     pinned = [
-        item for item in adjusted if _normalize_path_key(str(item.get("path", ""))) in changed_set
+        item
+        for item in adjusted
+        if _normalize_path_key(str(item.get("path", ""))) in changed_set
     ]
     pinned.sort(
         key=lambda item: (
@@ -131,7 +138,9 @@ def _apply_changed_scope_prioritization(
         )
     )
     remaining = [
-        item for item in adjusted if _normalize_path_key(str(item.get("path", ""))) not in changed_set
+        item
+        for item in adjusted
+        if _normalize_path_key(str(item.get("path", ""))) not in changed_set
     ]
     return pinned + remaining
 
@@ -298,13 +307,28 @@ def explain_context_selection(
     index_dir = paths["index"]
     manifest_path = index_dir / "manifest.json"
     if not manifest_path.exists():
-        raise FileNotFoundError("Index manifest is missing. Run `accel index build` first.")
+        raise FileNotFoundError(
+            "Index manifest is missing. Run `accel index build` first."
+        )
 
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    symbols_rows = load_index_rows(index_dir=index_dir, kind="symbols", key_field="file")
-    references_rows = load_index_rows(index_dir=index_dir, kind="references", key_field="file")
-    deps_rows = load_index_rows(index_dir=index_dir, kind="dependencies", key_field="edge_from")
-    ownership_rows = load_index_rows(index_dir=index_dir, kind="test_ownership", key_field="owns_file")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except JSONDecodeError as e:
+        raise ValueError(
+            f"Index manifest is corrupted ({e}). Run `accel index build` to rebuild."
+        ) from e
+    symbols_rows = load_index_rows(
+        index_dir=index_dir, kind="symbols", key_field="file"
+    )
+    references_rows = load_index_rows(
+        index_dir=index_dir, kind="references", key_field="file"
+    )
+    deps_rows = load_index_rows(
+        index_dir=index_dir, kind="dependencies", key_field="edge_from"
+    )
+    ownership_rows = load_index_rows(
+        index_dir=index_dir, kind="test_ownership", key_field="owns_file"
+    )
 
     symbols_by_file = _group_by_file(symbols_rows, "file")
     references_by_file = _group_by_file(references_rows, "file")
@@ -324,7 +348,9 @@ def explain_context_selection(
     )
 
     context_cfg = dict(config.get("context", {}))
-    top_n = int(top_n_files if top_n_files is not None else context_cfg.get("top_n_files", 12))
+    top_n = int(
+        top_n_files if top_n_files is not None else context_cfg.get("top_n_files", 12)
+    )
     top_n = max(1, top_n)
     alternatives_count = max(0, int(alternatives))
 
@@ -376,13 +402,28 @@ def compile_context_pack(
     index_dir = paths["index"]
     manifest_path = index_dir / "manifest.json"
     if not manifest_path.exists():
-        raise FileNotFoundError("Index manifest is missing. Run `accel index build` first.")
+        raise FileNotFoundError(
+            "Index manifest is missing. Run `accel index build` first."
+        )
 
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    symbols_rows = load_index_rows(index_dir=index_dir, kind="symbols", key_field="file")
-    references_rows = load_index_rows(index_dir=index_dir, kind="references", key_field="file")
-    deps_rows = load_index_rows(index_dir=index_dir, kind="dependencies", key_field="edge_from")
-    ownership_rows = load_index_rows(index_dir=index_dir, kind="test_ownership", key_field="owns_file")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except JSONDecodeError as e:
+        raise ValueError(
+            f"Index manifest is corrupted ({e}). Run `accel index build` to rebuild."
+        ) from e
+    symbols_rows = load_index_rows(
+        index_dir=index_dir, kind="symbols", key_field="file"
+    )
+    references_rows = load_index_rows(
+        index_dir=index_dir, kind="references", key_field="file"
+    )
+    deps_rows = load_index_rows(
+        index_dir=index_dir, kind="dependencies", key_field="edge_from"
+    )
+    ownership_rows = load_index_rows(
+        index_dir=index_dir, kind="test_ownership", key_field="owns_file"
+    )
 
     symbols_by_file = _group_by_file(symbols_rows, "file")
     references_by_file = _group_by_file(references_rows, "file")
@@ -446,10 +487,14 @@ def compile_context_pack(
             max_chars=per_snippet_max_chars,
             task_tokens=task_tokens,
             symbol=str(snippet.get("symbol", "")),
-            enable_rules=bool(config.get("runtime", {}).get("rule_compression_enabled", True)),
+            enable_rules=bool(
+                config.get("runtime", {}).get("rule_compression_enabled", True)
+            ),
         )
         for rule_name, count in dict(compression.get("rules", {})).items():
-            compression_rule_counts[rule_name] = int(compression_rule_counts.get(rule_name, 0)) + int(count)
+            compression_rule_counts[rule_name] = int(
+                compression_rule_counts.get(rule_name, 0)
+            ) + int(count)
         if bool(compression.get("dropped", False)):
             low_signal_dropped_count += 1
             continue
@@ -478,7 +523,9 @@ def compile_context_pack(
     source_bytes = int(counts.get("source_bytes", 0))
     source_chars_est = int(counts.get("source_chars_est", 0))
     if source_bytes <= 0:
-        source_bytes = _estimate_source_bytes(project_dir, list(manifest.get("indexed_files", [])))
+        source_bytes = _estimate_source_bytes(
+            project_dir, list(manifest.get("indexed_files", []))
+        )
     if source_chars_est <= 0:
         source_chars_est = source_bytes
 
@@ -510,7 +557,9 @@ def compile_context_pack(
             "snippet_deduped_count": deduped_snippet_count,
             "snippet_low_signal_dropped_count": low_signal_dropped_count,
             "compression_rules_applied": compression_rule_counts,
-            "compression_saved_chars": max(0, raw_snippet_chars - compacted_snippet_chars),
+            "compression_saved_chars": max(
+                0, raw_snippet_chars - compacted_snippet_chars
+            ),
             "drift_reason": "",
             "lexical_ranking": lexical_meta,
             "semantic_ranking": semantic_meta,
@@ -523,4 +572,6 @@ def compile_context_pack(
 
 def write_context_pack(output_path: Path, pack: dict[str, Any]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(pack, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    output_path.write_text(
+        json.dumps(pack, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )

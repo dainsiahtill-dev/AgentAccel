@@ -30,6 +30,7 @@ DEFAULT_INDEX_EXCLUDES = [
     ".next/**",
     ".turbo/**",
 ]
+AUTO_INCLUDE_FALLBACK_MAX_DEPTH = 2
 
 _deadlock_logger = logging.getLogger("accel_deadlock_detection")
 _deadlock_logger.setLevel(logging.DEBUG)
@@ -181,7 +182,12 @@ def _filter_source_candidates(
     return files
 
 
-def collect_source_files(project_dir: Path, config: dict[str, Any]) -> list[Path]:
+def collect_source_files(
+    project_dir: Path,
+    config: dict[str, Any],
+    *,
+    _auto_include_retry_depth: int = 0,
+) -> list[Path]:
     index_cfg = config.get("index", {})
     includes = _normalize_patterns(index_cfg.get("include", ["**/*"]), ["**/*"])
     scope_mode = _normalize_scope_mode(index_cfg.get("scope_mode", "auto"))
@@ -292,6 +298,11 @@ def collect_source_files(project_dir: Path, config: dict[str, Any]) -> list[Path
         f"File scan completed: {files_scanned} files scanned, {len(files)} files selected in {elapsed:.1f}s"
     )
     if not files and scope_mode == "auto" and includes != ["**/*"]:
+        if _auto_include_retry_depth >= AUTO_INCLUDE_FALLBACK_MAX_DEPTH:
+            _log_deadlock_info(
+                "Auto include fallback retry depth exceeded; returning empty result"
+            )
+            return []
         _log_deadlock_info(
             "File scan selected zero files under configured include; retrying with include='**/*' for auto mode"
         )
@@ -304,6 +315,7 @@ def collect_source_files(project_dir: Path, config: dict[str, Any]) -> list[Path
                     "include": ["**/*"],
                 },
             },
+            _auto_include_retry_depth=_auto_include_retry_depth + 1,
         )
 
     return sorted(

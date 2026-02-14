@@ -135,9 +135,6 @@ def _signal_handler(signum: int, frame) -> None:
     global _shutdown_requested
     _shutdown_requested = True
     _debug_log(f"Received signal {signum}, initiating graceful shutdown")
-    # Give the server a moment to clean up
-    time.sleep(0.1)
-    sys.exit(0)
 
 
 def _check_server_runtime() -> None:
@@ -236,9 +233,7 @@ def _normalize_job_status_payload(status_payload: JSONDict) -> JSONDict:
     ):
         progress = min(progress, 99.9)
         consistency = "finalizing"
-    elif (
-        state == JobState.CANCELLED
-    ):
+    elif state == JobState.CANCELLED:
         progress = min(progress, 99.9)
         consistency = "cancelled"
     elif (
@@ -329,7 +324,7 @@ def _coerce_optional_int(value: Any) -> int | None:
     if value is None:
         return None
     if isinstance(value, bool):
-        return int(value)
+        return None
     if isinstance(value, int):
         return int(value)
     if isinstance(value, float):
@@ -1232,9 +1227,7 @@ def _resolve_path(project_dir: Path, path_value: Any) -> Path | None:
 def _resolve_project_storage_paths(project_dir: Path) -> dict[str, Path]:
     config = resolve_effective_config(project_dir)
     runtime_cfg = (
-        config.get("runtime", {})
-        if isinstance(config.get("runtime", {}), dict)
-        else {}
+        config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {}
     )
     accel_home_value = str(runtime_cfg.get("accel_home", "") or "").strip()
     if accel_home_value:
@@ -1252,7 +1245,9 @@ def _session_receipt_store(project_dir: Path) -> SessionReceiptStore:
 
 
 def _sha256_json(value: dict[str, Any]) -> str:
-    payload = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    payload = json.dumps(
+        value, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -1262,7 +1257,15 @@ def _normalize_receipt_status(value: Any) -> str:
         return "succeeded"
     if token in {"cancelled", "cancelling"}:
         return "canceled"
-    if token in {"failed", "running", "queued", "degraded", "partial", "succeeded", "canceled"}:
+    if token in {
+        "failed",
+        "running",
+        "queued",
+        "degraded",
+        "partial",
+        "succeeded",
+        "canceled",
+    }:
         return token
     return "failed"
 
@@ -1359,9 +1362,11 @@ def _safe_update_receipt_status(
 
 
 def _recover_expired_receipts_for_project(project_dir: Path) -> int:
-    terminal_value = str(
-        os.environ.get("ACCEL_SESSION_EXPIRED_TERMINAL_STATUS", "failed")
-    ).strip().lower()
+    terminal_value = (
+        str(os.environ.get("ACCEL_SESSION_EXPIRED_TERMINAL_STATUS", "failed"))
+        .strip()
+        .lower()
+    )
     if terminal_value in {"cancelled", "cancelling"}:
         terminal_value = "canceled"
     if terminal_value not in {"failed", "canceled"}:
@@ -1514,7 +1519,14 @@ def _run_git_cmd_lines(cmd: list[str], timeout_seconds: float) -> tuple[list[str
             timeout=timeout_seconds,
             check=False,
         )
-    except Exception:
+    except subprocess.TimeoutExpired:
+        _debug_log(f"Git command timed out: {' '.join(cmd)}")
+        return [], -2
+    except FileNotFoundError:
+        _debug_log(f"Git executable not found: {' '.join(cmd)}")
+        return [], -3
+    except Exception as exc:
+        _debug_log(f"Git command failed: {' '.join(cmd)}: {exc}")
         return [], -1
     if int(proc.returncode) != 0:
         return [], int(proc.returncode)
@@ -3600,12 +3612,20 @@ def create_server() -> FastMCP:
                 "out": str(out or ""),
                 "include_pack": _coerce_bool(include_pack, False),
                 "budget": str(budget if budget is not None else ""),
-                "strict_changed_files": str(strict_changed_files if strict_changed_files is not None else ""),
+                "strict_changed_files": str(
+                    strict_changed_files if strict_changed_files is not None else ""
+                ),
                 "snippets_only": _coerce_bool(snippets_only, False),
                 "include_metadata": _coerce_bool(include_metadata, True),
-                "semantic_cache": str(semantic_cache if semantic_cache is not None else ""),
-                "semantic_cache_mode": str(semantic_cache_mode if semantic_cache_mode is not None else ""),
-                "constraint_mode": str(constraint_mode if constraint_mode is not None else ""),
+                "semantic_cache": str(
+                    semantic_cache if semantic_cache is not None else ""
+                ),
+                "semantic_cache_mode": str(
+                    semantic_cache_mode if semantic_cache_mode is not None else ""
+                ),
+                "constraint_mode": str(
+                    constraint_mode if constraint_mode is not None else ""
+                ),
                 "rpc_timeout_seconds": float(timeout_seconds),
             }
         )
@@ -3944,9 +3964,10 @@ def create_server() -> FastMCP:
                 status_value = str(context_result.get("status", "")).strip().lower()
                 if status_value and status_value not in {"ok"}:
                     passthrough = dict(context_result)
-                    passthrough["context_job_id"] = context_job_id_value or str(
-                        passthrough.get("job_id", "")
-                    ).strip()
+                    passthrough["context_job_id"] = (
+                        context_job_id_value
+                        or str(passthrough.get("job_id", "")).strip()
+                    )
                     return passthrough
                 plan_payload = _tool_plan_and_gate(
                     project=project,
@@ -3968,9 +3989,10 @@ def create_server() -> FastMCP:
                     include_pack=include_pack,
                     context_payload=context_result,
                 )
-                plan_payload["context_job_id"] = context_job_id_value or str(
-                    context_result.get("job_id", "")
-                ).strip()
+                plan_payload["context_job_id"] = (
+                    context_job_id_value
+                    or str(context_result.get("job_id", "")).strip()
+                )
                 return plan_payload
 
             wait_seconds = _resolve_sync_wait_seconds(
@@ -3984,7 +4006,9 @@ def create_server() -> FastMCP:
             if context_job_id_value:
                 jm = JobManager()
                 job = jm.get_job(context_job_id_value)
-                if job is None or not context_job_id_value.lower().startswith("context_"):
+                if job is None or not context_job_id_value.lower().startswith(
+                    "context_"
+                ):
                     return {"error": "job_not_found", "job_id": context_job_id_value}
                 if job.state == JobState.COMPLETED and isinstance(job.result, dict):
                     return _build_plan_payload(dict(job.result))
