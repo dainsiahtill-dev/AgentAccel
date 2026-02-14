@@ -219,10 +219,11 @@ class JobManager:
         job = self.get_job(job_id)
         if job is None:
             return False
-        if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
-            return False
-        job.state = JobState.CANCELLING
-        return True
+        with job._lock:
+            if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+                return False
+            job.state = JobState.CANCELLING
+            return True
 
     def cleanup_completed(self, max_age_seconds: float = 3600) -> int:
         now = datetime.now(timezone.utc)

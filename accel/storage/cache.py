@@ -40,7 +40,11 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
 def read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:

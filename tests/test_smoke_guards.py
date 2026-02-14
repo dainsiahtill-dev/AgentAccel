@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from typing import Any, cast
 
 from accel.indexers import discovery
-from accel.verify.job_manager import JobManager
+from accel.storage.cache import read_json
+from accel.verify.job_manager import JobManager, JobState
 
 
 def test_job_manager_singleton_initialized_in_new_thread_safe() -> None:
@@ -79,3 +81,38 @@ def test_collect_source_files_auto_retry_depth_guard(
 
     assert files == []
     assert any("retry depth exceeded" in message.lower() for message in logs)
+
+
+def test_job_manager_cancel_job_uses_job_lock() -> None:
+    class _ProbeLock:
+        def __init__(self) -> None:
+            self.enter_count = 0
+            self._inner = threading.Lock()
+
+        def __enter__(self) -> "_ProbeLock":
+            self.enter_count += 1
+            self._inner.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            self._inner.release()
+            return False
+
+    manager = JobManager()
+    job = manager.create_job(prefix="cancel-lock")
+    probe = _ProbeLock()
+    cast(Any, job)._lock = probe
+
+    assert manager.cancel_job(job.job_id) is True
+    assert probe.enter_count == 1
+    assert job.state == JobState.CANCELLING
+
+
+def test_read_json_invalid_payload_returns_empty_dict(tmp_path: Path) -> None:
+    bad_json = tmp_path / "bad.json"
+    bad_json.write_text("{", encoding="utf-8")
+    assert read_json(bad_json) == {}
+
+    non_dict_json = tmp_path / "list.json"
+    non_dict_json.write_text("[1,2,3]", encoding="utf-8")
+    assert read_json(non_dict_json) == {}
