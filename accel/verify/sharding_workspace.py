@@ -318,6 +318,41 @@ def _rewrite_pytest_targets_for_workspace(
     return _join_command_tokens(rewritten)
 
 
+def _pytest_targets_require_project_root(
+    command: str,
+    *,
+    workspace_rel: str,
+    project_dir: Path,
+) -> bool:
+    rel = str(workspace_rel).strip()
+    if not rel or rel == ".":
+        return False
+    tokens = _parse_command_tokens(command)
+    args_start = _pytest_args_start_index(tokens)
+    if args_start < 0:
+        return False
+
+    workspace_path = (project_dir / rel).resolve()
+    for idx in range(args_start, len(tokens)):
+        token = str(tokens[idx]).strip()
+        if not token or token.startswith("-"):
+            continue
+        path_part, _node_part = _split_pytest_node_target(token)
+        if not _is_likely_pytest_path_token(path_part):
+            continue
+        normalized = _normalize_path(path_part)
+        if not normalized or normalized.startswith("../"):
+            continue
+        candidate_root = (project_dir / normalized).resolve()
+        if not candidate_root.exists():
+            continue
+        try:
+            candidate_root.relative_to(workspace_path)
+        except ValueError:
+            return True
+    return False
+
+
 def _apply_workspace_routing(
     *,
     commands: list[str],
@@ -360,6 +395,12 @@ def _apply_workspace_routing(
                 workspaces=python_workspaces,
                 kind="python",
             )
+            if _pytest_targets_require_project_root(
+                command,
+                workspace_rel=workspace_rel,
+                project_dir=project_dir,
+            ):
+                workspace_rel = "."
         rewritten_command = _rewrite_pytest_targets_for_workspace(
             command,
             workspace_rel=workspace_rel,

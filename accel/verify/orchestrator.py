@@ -93,6 +93,83 @@ def _extract_python_module(command: str) -> str:
     return str(parts[2]).strip()
 
 
+def _parse_command_tokens(command: str) -> list[str]:
+    try:
+        return shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        return [part for part in str(command or "").strip().split(" ") if part]
+
+
+def _extract_node_script(command: str) -> str:
+    tokens = _parse_command_tokens(_effective_shell_command(command))
+    if not tokens:
+        return ""
+    binary = str(tokens[0]).strip().lower()
+    if binary not in {"npm", "pnpm", "yarn"}:
+        return ""
+    if len(tokens) <= 1:
+        return ""
+    if binary == "yarn":
+        script = str(tokens[1]).strip().lower()
+        return script if script and not script.startswith("-") else ""
+    action = str(tokens[1]).strip().lower()
+    if action in {"test", "lint", "typecheck", "build"}:
+        return action
+    if action in {"run", "run-script"} and len(tokens) >= 3:
+        script = str(tokens[2]).strip().lower()
+        return script if script else ""
+    return ""
+
+
+def _split_pytest_target(token: str) -> str:
+    value = str(token or "").strip().strip('"').strip("'")
+    if "::" not in value:
+        return value
+    return str(value.split("::", 1)[0]).strip()
+
+
+def _missing_or_root_only_pytest_targets(
+    *,
+    project_dir: Path,
+    command: str,
+) -> tuple[list[str], list[str]]:
+    missing: list[str] = []
+    root_only: list[str] = []
+    workdir = _command_workdir(project_dir, command)
+    for raw_target in _extract_pytest_targets(command):
+        target = _split_pytest_target(raw_target)
+        if not target:
+            continue
+        token_path = Path(target)
+        if token_path.is_absolute():
+            if not token_path.exists():
+                missing.append(target)
+            continue
+        workdir_candidate = (workdir / token_path).resolve()
+        if workdir_candidate.exists():
+            continue
+        project_candidate = (project_dir / token_path).resolve()
+        if project_candidate.exists():
+            root_only.append(target)
+        else:
+            missing.append(target)
+    return missing, root_only
+
+
+def _should_skip_for_preflight(warning: str) -> bool:
+    token = str(warning or "").strip().lower()
+    if not token:
+        return False
+    skip_prefixes = (
+        "node workspace missing package.json:",
+        "node workspace missing script:",
+        "python module unavailable for verify preflight:",
+        "pytest target missing:",
+        "pytest target only exists at project root:",
+    )
+    return any(token.startswith(prefix) for prefix in skip_prefixes)
+
+
 def _preflight_warnings_for_command(
     *,
     project_dir: Path,
@@ -106,8 +183,30 @@ def _preflight_warnings_for_command(
         return warnings
     workdir = _command_workdir(project_dir, command)
     if binary in {"npm", "pnpm", "yarn"}:
-        if not (workdir / "package.json").exists():
+        package_json_path = workdir / "package.json"
+        if not package_json_path.exists():
             warnings.append(f"node workspace missing package.json: {workdir}")
+        else:
+            script = _extract_node_script(command)
+            if script:
+                try:
+                    payload = json.loads(package_json_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    payload = {}
+                scripts_payload = payload.get("scripts", {})
+                scripts = (
+                    {
+                        str(key).strip().lower()
+                        for key in scripts_payload.keys()
+                        if str(key).strip()
+                    }
+                    if isinstance(scripts_payload, dict)
+                    else set()
+                )
+                if script not in scripts:
+                    warnings.append(
+                        f"node workspace missing script: {script} ({workdir})"
+                    )
     module = _extract_python_module(command).strip().lower()
     if module in {"pytest", "ruff", "mypy"}:
         python_bin = shutil.which("python")
@@ -134,6 +233,17 @@ def _preflight_warnings_for_command(
                 warnings.append(
                     f"python module unavailable for verify preflight: {module}"
                 )
+    if module == "pytest":
+        missing_targets, root_only_targets = _missing_or_root_only_pytest_targets(
+            project_dir=project_dir,
+            command=command,
+        )
+        if missing_targets:
+            warnings.append(f"pytest target missing: {missing_targets[0]}")
+        if root_only_targets:
+            warnings.append(
+                f"pytest target only exists at project root: {root_only_targets[0]}"
+            )
     return warnings
 
 
@@ -672,10 +782,13 @@ def run_verify(
                 timeout_seconds=verify_preflight_timeout_seconds,
                 import_probe_cache=import_probe_cache,
             )
+            preflight_skip_reason = ""
             for warning in warnings:
                 if warning not in degrade_reasons:
                     degrade_reasons.append(warning)
                 degraded = True
+                if (not preflight_skip_reason) and _should_skip_for_preflight(warning):
+                    preflight_skip_reason = warning
                 _append_line(
                     log_path, f"PREFLIGHT_WARN {effective_command} ({warning})"
                 )
@@ -688,6 +801,26 @@ def run_verify(
                         "ts": _utc_now(),
                     },
                 )
+            if preflight_skip_reason:
+                _append_line(
+                    log_path,
+                    f"SKIP {effective_command} ({preflight_skip_reason})",
+                )
+                _append_jsonl(
+                    jsonl_path,
+                    {
+                        "event": "command_skipped",
+                        "command": effective_command,
+                        "reason": preflight_skip_reason,
+                        "ts": _utc_now(),
+                        "mode": verify_mode,
+                        "fail_fast": bool(verify_fail_fast),
+                        "cache_hits": int(cache_hits),
+                        "cache_misses": int(cache_misses),
+                        "fail_fast_skipped": False,
+                    },
+                )
+                continue
         binary = _command_binary(effective_command)
         if binary and shutil.which(binary) is None:
             degraded = True
@@ -1462,10 +1595,13 @@ def run_verify_with_callback(
                 timeout_seconds=verify_preflight_timeout_seconds,
                 import_probe_cache=import_probe_cache,
             )
+            preflight_skip_reason = ""
             for warning in warnings:
                 if warning not in degrade_reasons:
                     degrade_reasons.append(warning)
                 degraded = True
+                if (not preflight_skip_reason) and _should_skip_for_preflight(warning):
+                    preflight_skip_reason = warning
                 _append_line(
                     log_path, f"PREFLIGHT_WARN {effective_command} ({warning})"
                 )
@@ -1478,6 +1614,27 @@ def run_verify_with_callback(
                         "ts": _utc_now(),
                     },
                 )
+            if preflight_skip_reason:
+                _append_line(
+                    log_path,
+                    f"SKIP {effective_command} ({preflight_skip_reason})",
+                )
+                _append_jsonl(
+                    jsonl_path,
+                    {
+                        "event": "command_skipped",
+                        "command": effective_command,
+                        "reason": preflight_skip_reason,
+                        "ts": _utc_now(),
+                        "mode": verify_mode,
+                        "fail_fast": bool(verify_fail_fast),
+                        "cache_hits": int(cache_hits),
+                        "cache_misses": int(cache_misses),
+                        "fail_fast_skipped": False,
+                    },
+                )
+                callback.on_skip(verify_job_id, effective_command, preflight_skip_reason)
+                continue
         binary = _command_binary(effective_command)
         if binary and shutil.which(binary) is None:
             degraded = True
