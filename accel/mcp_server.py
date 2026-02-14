@@ -5161,6 +5161,448 @@ def create_server() -> FastMCP:
             _debug_log(f"accel_verify_cancel failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
 
+    # =========================================================================
+    # Symbol Query APIs (High Priority)
+    # =========================================================================
+    from .query.symbol_query import (
+        search_symbols,
+        get_symbol_details,
+        build_call_graph,
+    )
+
+    @server.tool(
+        name="accel_symbols_search",
+        description="Search for symbols (functions, classes, methods, variables) in the project index. Returns matching symbols with relevance scores.",
+    )
+    def accel_symbols_search(
+        query: str,
+        project: str = ".",
+        symbol_kinds: Any = None,
+        languages: Any = None,
+        max_results: Any = 50,
+        include_signature: Any = True,
+    ) -> JSONDict:
+        """Search for symbols in the project.
+
+        Args:
+            query: Search query string (supports fuzzy matching).
+            project: Project directory path.
+            symbol_kinds: Filter by symbol kinds (function, class, method, variable).
+            languages: Filter by languages (python, typescript, javascript).
+            max_results: Maximum number of results (default 50, max 500).
+            include_signature: Whether to include function signatures.
+
+        Returns:
+            Dict with 'results' list containing matching symbols.
+        """
+        try:
+            project_dir = _normalize_project_dir(project)
+            paths = _resolve_project_storage_paths(project_dir)
+            index_dir = paths["index"]
+
+            if not (index_dir / "symbols.jsonl").exists():
+                return {
+                    "status": "error",
+                    "error": "index_not_found",
+                    "message": "Symbol index not found. Run accel_index_build first.",
+                    "results": [],
+                }
+
+            kind_filter = _to_string_list(symbol_kinds) if symbol_kinds else None
+            lang_filter = _to_string_list(languages) if languages else None
+            max_results_value = int(_coerce_optional_int(max_results) or 50)
+            include_sig = _coerce_bool(include_signature, True)
+
+            results = search_symbols(
+                index_dir=index_dir,
+                query=str(query or "").strip(),
+                symbol_kinds=kind_filter,
+                languages=lang_filter,
+                max_results=max_results_value,
+                include_signature=include_sig,
+            )
+
+            return {
+                "status": "ok",
+                "query": str(query or "").strip(),
+                "result_count": len(results),
+                "results": results,
+            }
+        except Exception as exc:
+            _debug_log(f"accel_symbols_search failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_symbols_get_details",
+        description="Get detailed information about a specific symbol, including its definition, signature, and relationships (calls, called_by, extends).",
+    )
+    def accel_symbols_get_details(
+        symbol_name: str,
+        project: str = ".",
+        file_path: str = "",
+        include_relations: Any = True,
+    ) -> JSONDict:
+        """Get detailed information about a symbol.
+
+        Args:
+            symbol_name: Name of the symbol to find.
+            project: Project directory path.
+            file_path: Optional file path to narrow search.
+            include_relations: Whether to include relationship information.
+
+        Returns:
+            Dict with symbol details or error if not found.
+        """
+        try:
+            project_dir = _normalize_project_dir(project)
+            paths = _resolve_project_storage_paths(project_dir)
+            index_dir = paths["index"]
+
+            if not (index_dir / "symbols.jsonl").exists():
+                return {
+                    "status": "error",
+                    "error": "index_not_found",
+                    "message": "Symbol index not found. Run accel_index_build first.",
+                }
+
+            include_rel = _coerce_bool(include_relations, True)
+
+            result = get_symbol_details(
+                index_dir=index_dir,
+                symbol_name=str(symbol_name or "").strip(),
+                file_path=str(file_path or "").strip(),
+                include_relations=include_rel,
+            )
+
+            if result is None:
+                return {
+                    "status": "not_found",
+                    "symbol_name": str(symbol_name or "").strip(),
+                    "message": f"Symbol '{symbol_name}' not found in index.",
+                }
+
+            return {
+                "status": "ok",
+                **result,
+            }
+        except Exception as exc:
+            _debug_log(f"accel_symbols_get_details failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_relations_get_call_graph",
+        description="Build a call graph showing relationships between files/symbols. Useful for understanding code flow and dependencies.",
+    )
+    def accel_relations_get_call_graph(
+        project: str = ".",
+        symbol_name: str = "",
+        file_path: str = "",
+        depth: Any = 2,
+        direction: str = "both",
+    ) -> JSONDict:
+        """Build a call graph from a starting point.
+
+        Args:
+            project: Project directory path.
+            symbol_name: Starting symbol name (optional).
+            file_path: Starting file path (optional).
+            depth: Maximum traversal depth (1-5, default 2).
+            direction: Traversal direction (up/down/both).
+
+        Returns:
+            Dict with nodes, edges, and graph statistics.
+        """
+        try:
+            project_dir = _normalize_project_dir(project)
+            paths = _resolve_project_storage_paths(project_dir)
+            index_dir = paths["index"]
+
+            if not (index_dir / "symbols.jsonl").exists():
+                return {
+                    "status": "error",
+                    "error": "index_not_found",
+                    "message": "Symbol index not found. Run accel_index_build first.",
+                    "nodes": [],
+                    "edges": [],
+                }
+
+            depth_value = int(_coerce_optional_int(depth) or 2)
+            direction_value = str(direction or "both").strip().lower()
+
+            result = build_call_graph(
+                index_dir=index_dir,
+                start_symbol=str(symbol_name or "").strip(),
+                start_file=str(file_path or "").strip(),
+                depth=depth_value,
+                direction=direction_value,
+            )
+
+            return {
+                "status": "ok",
+                **result,
+            }
+        except Exception as exc:
+            _debug_log(f"accel_relations_get_call_graph failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    # Import additional query modules
+    from .query.symbol_query import get_symbol_context
+    from .query.relation_query import get_inheritance_tree, get_file_dependencies
+    from .query.project_stats import get_project_stats, get_health_status
+    from .query.pattern_detector import detect_patterns
+
+    @server.tool(
+        name="accel_context_get_symbol_context",
+        description="Get precise context for a symbol including definition, usages, and related test files.",
+    )
+    def accel_context_get_symbol_context(
+        symbol_name: str,
+        project: str = ".",
+        context_type: str = "definition",
+        max_files: Any = 10,
+    ) -> JSONDict:
+        """Get context for a specific symbol.
+
+        Args:
+            symbol_name: Name of the symbol to find context for.
+            project: Project directory path.
+            context_type: Type of context (definition/usage/related).
+            max_files: Maximum number of files to include.
+
+        Returns:
+            Dict with symbol context and code snippets.
+        """
+        try:
+            project_dir = _normalize_project_dir(project)
+            paths = _resolve_project_storage_paths(project_dir)
+            index_dir = paths["index"]
+
+            if not (index_dir / "symbols.jsonl").exists():
+                return {
+                    "status": "error",
+                    "error": "index_not_found",
+                    "message": "Symbol index not found. Run accel_index_build first.",
+                }
+
+            max_files_value = int(_coerce_optional_int(max_files) or 10)
+            context_type_value = str(context_type or "definition").strip().lower()
+
+            result = get_symbol_context(
+                index_dir=index_dir,
+                project_dir=project_dir,
+                symbol_name=str(symbol_name or "").strip(),
+                context_type=context_type_value,
+                max_files=max_files_value,
+            )
+
+            return result
+        except Exception as exc:
+            _debug_log(f"accel_context_get_symbol_context failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_relations_get_inheritance_tree",
+        description="Get class inheritance relationships. Returns parent/child class hierarchies.",
+    )
+    def accel_relations_get_inheritance_tree(
+        project: str = ".",
+        class_name: str = "",
+        include_interfaces: Any = True,
+    ) -> JSONDict:
+        """Get class inheritance tree.
+
+        Args:
+            project: Project directory path.
+            class_name: Optional class name to filter (empty = all classes).
+            include_interfaces: Whether to include interface/protocol classes.
+
+        Returns:
+            Dict with inheritance tree structure.
+        """
+        try:
+            project_dir = _normalize_project_dir(project)
+            paths = _resolve_project_storage_paths(project_dir)
+            index_dir = paths["index"]
+
+            if not (index_dir / "symbols.jsonl").exists():
+                return {
+                    "status": "error",
+                    "error": "index_not_found",
+                    "message": "Symbol index not found. Run accel_index_build first.",
+                    "tree": [],
+                }
+
+            include_ifaces = _coerce_bool(include_interfaces, True)
+
+            result = get_inheritance_tree(
+                index_dir=index_dir,
+                class_name=str(class_name or "").strip(),
+                include_interfaces=include_ifaces,
+            )
+
+            return {
+                "status": "ok",
+                **result,
+            }
+        except Exception as exc:
+            _debug_log(f"accel_relations_get_inheritance_tree failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_relations_get_dependencies",
+        description="Get file dependency relationships. Shows what files import/export to each other.",
+    )
+    def accel_relations_get_dependencies(
+        project: str = ".",
+        file_path: str = "",
+        direction: str = "both",
+    ) -> JSONDict:
+        """Get file dependency relationships.
+
+        Args:
+            project: Project directory path.
+            file_path: Optional file path to filter.
+            direction: Direction (imports/exported/both).
+
+        Returns:
+            Dict with dependency information.
+        """
+        try:
+            project_dir = _normalize_project_dir(project)
+            paths = _resolve_project_storage_paths(project_dir)
+            index_dir = paths["index"]
+
+            if not (index_dir / "deps.jsonl").exists():
+                return {
+                    "status": "error",
+                    "error": "index_not_found",
+                    "message": "Dependency index not found. Run accel_index_build first.",
+                }
+
+            direction_value = str(direction or "both").strip().lower()
+
+            result = get_file_dependencies(
+                index_dir=index_dir,
+                file_path=str(file_path or "").strip(),
+                direction=direction_value,
+            )
+
+            return {
+                "status": "ok",
+                **result,
+            }
+        except Exception as exc:
+            _debug_log(f"accel_relations_get_dependencies failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_monitor_get_project_stats",
+        description="Get project statistics including file counts, symbol distribution, and language breakdown.",
+    )
+    def accel_monitor_get_project_stats(
+        project: str = ".",
+    ) -> JSONDict:
+        """Get project statistics.
+
+        Args:
+            project: Project directory path.
+
+        Returns:
+            Dict with project statistics.
+        """
+        try:
+            project_dir = _normalize_project_dir(project)
+            paths = _resolve_project_storage_paths(project_dir)
+            index_dir = paths["index"]
+
+            result = get_project_stats(
+                index_dir=index_dir,
+                project_dir=project_dir,
+            )
+
+            return result
+        except Exception as exc:
+            _debug_log(f"accel_monitor_get_project_stats failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_analysis_detect_patterns",
+        description="Detect design patterns (singleton, factory, observer, decorator, builder) in the codebase.",
+    )
+    def accel_analysis_detect_patterns(
+        project: str = ".",
+        pattern_types: Any = None,
+    ) -> JSONDict:
+        """Detect design patterns in the codebase.
+
+        Args:
+            project: Project directory path.
+            pattern_types: Optional list of pattern types to detect.
+                           Supported: singleton, factory, observer, decorator, builder.
+
+        Returns:
+            Dict with detected patterns and confidence scores.
+        """
+        try:
+            project_dir = _normalize_project_dir(project)
+            paths = _resolve_project_storage_paths(project_dir)
+            index_dir = paths["index"]
+
+            if not (index_dir / "symbols.jsonl").exists():
+                return {
+                    "status": "error",
+                    "error": "index_not_found",
+                    "message": "Symbol index not found. Run accel_index_build first.",
+                    "patterns": [],
+                }
+
+            type_filter = _to_string_list(pattern_types) if pattern_types else None
+
+            patterns = detect_patterns(
+                index_dir=index_dir,
+                pattern_types=type_filter,
+            )
+
+            return {
+                "status": "ok",
+                "pattern_count": len(patterns),
+                "patterns": patterns,
+            }
+        except Exception as exc:
+            _debug_log(f"accel_analysis_detect_patterns failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_monitor_get_health",
+        description="Get system health status including index state, cache status, and active jobs.",
+    )
+    def accel_monitor_get_health(
+        project: str = ".",
+    ) -> JSONDict:
+        """Get system health status.
+
+        Args:
+            project: Project directory path.
+
+        Returns:
+            Dict with health status information.
+        """
+        try:
+            project_dir = _normalize_project_dir(project)
+            paths = _resolve_project_storage_paths(project_dir)
+            index_dir = paths["index"]
+
+            result = get_health_status(
+                index_dir=index_dir,
+                project_dir=project_dir,
+                paths=paths,
+            )
+
+            return result
+        except Exception as exc:
+            _debug_log(f"accel_monitor_get_health failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
     @server.resource(
         "agent-accel://status",
         name="agent-accel-status",
