@@ -288,6 +288,31 @@ Generate a budgeted context pack for a task.
 - `out_meta`: sidecar metadata file path (`*.meta.json`) containing estimator/baseline/source/audit fields
 - `schema_version`: context response contract version marker
 
+#### `accel_plan_and_gate`
+
+Generate one-shot implementation planning output from the indexed context pipeline.
+
+```json
+{
+  "project": ".",
+  "task": "Implement 5 requested refactors in one pass",
+  "changed_files": ["accel/mcp_server.py", "tests/test_smoke_mcp.py"],
+  "hints": ["plan-and-gate", "impacted tests"],
+  "budget": "small",
+  "max_affected_files": 12,
+  "max_snippets": 24,
+  "include_governance": true,
+  "require_accel": true
+}
+```
+
+**Key response fields:**
+- `affected_files`: ranked file shortlist (`path`, `rank`, `score`, `reasons`)
+- `minimal_snippets`: bounded snippet windows only (no full-file payload)
+- `impacted_tests`: `target_tests`, `target_checks`, and selection evidence
+- `receipts.accel_context`: context artifact references reused by the planning call
+- `governance` (optional): HarborPilot chain hint (`hp_start_run -> hp_create_blueprint -> hp_create_snapshot -> hp_allow_implementation`)
+
 #### `accel_verify`
 
 Start incremental verification with runtime override options.

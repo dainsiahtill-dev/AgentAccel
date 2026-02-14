@@ -2694,6 +2694,221 @@ def _tool_context(
     return payload
 
 
+def _tool_plan_and_gate(
+    *,
+    project: str = ".",
+    task: str,
+    changed_files: Any = None,
+    hints: Any = None,
+    feedback_path: str | None = None,
+    out: str | None = None,
+    budget: Any = None,
+    strict_changed_files: Any = None,
+    semantic_cache: Any = None,
+    semantic_cache_mode: Any = None,
+    constraint_mode: Any = None,
+    max_affected_files: Any = 12,
+    max_snippets: Any = 24,
+    include_governance: Any = True,
+    require_accel: Any = True,
+    mode_hint: str = "S2 Standard",
+    include_pack: Any = False,
+) -> JSONDict:
+    project_dir = _normalize_project_dir(project)
+    task_text = str(task or "").strip()
+    if not task_text:
+        raise ValueError("task is required")
+
+    affected_limit = _coerce_events_limit(
+        max_affected_files, default_value=12, max_value=200
+    )
+    snippet_limit = _coerce_events_limit(max_snippets, default_value=24, max_value=240)
+    include_governance_flag = _coerce_bool(include_governance, True)
+    require_accel_flag = _coerce_bool(require_accel, True)
+    include_pack_flag = _coerce_bool(include_pack, False)
+    mode_hint_text = str(mode_hint or "S2 Standard").strip() or "S2 Standard"
+
+    context_payload = _tool_context(
+        project=str(project_dir),
+        task=task_text,
+        changed_files=changed_files,
+        hints=hints,
+        feedback_path=feedback_path,
+        out=out,
+        include_pack=True,
+        budget=budget,
+        strict_changed_files=strict_changed_files,
+        snippets_only=False,
+        include_metadata=True,
+        semantic_cache=semantic_cache,
+        semantic_cache_mode=semantic_cache_mode,
+        constraint_mode=constraint_mode,
+    )
+    pack = (
+        dict(context_payload.get("pack", {}))
+        if isinstance(context_payload.get("pack", {}), dict)
+        else {}
+    )
+    top_files = (
+        list(pack.get("top_files", []))
+        if isinstance(pack.get("top_files", []), list)
+        else []
+    )
+    snippets = (
+        list(pack.get("snippets", []))
+        if isinstance(pack.get("snippets", []), list)
+        else []
+    )
+    verify_plan = (
+        dict(context_payload.get("verify_plan", {}))
+        if isinstance(context_payload.get("verify_plan", {}), dict)
+        else {}
+    )
+    if not verify_plan and isinstance(pack.get("verify_plan", {}), dict):
+        verify_plan = dict(pack.get("verify_plan", {}))
+
+    score_by_path: dict[str, float] = {}
+    for row in top_files:
+        if not isinstance(row, dict):
+            continue
+        path_value = str(row.get("path", "")).strip()
+        if not path_value:
+            continue
+        try:
+            score_by_path[path_value] = float(row.get("score", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            score_by_path[path_value] = 0.0
+
+    affected_files: list[JSONDict] = []
+    for index, row in enumerate(top_files[:affected_limit], start=1):
+        if not isinstance(row, dict):
+            continue
+        path_value = str(row.get("path", "")).strip()
+        if not path_value:
+            continue
+        reasons_raw = row.get("reasons", [])
+        reasons = (
+            [str(item) for item in reasons_raw if str(item).strip()]
+            if isinstance(reasons_raw, list)
+            else []
+        )
+        affected_files.append(
+            {
+                "rank": int(index),
+                "path": path_value,
+                "score": round(float(score_by_path.get(path_value, 0.0)), 6),
+                "reasons": reasons[:8],
+            }
+        )
+
+    minimal_snippets: list[JSONDict] = []
+    for row in snippets[:snippet_limit]:
+        if not isinstance(row, dict):
+            continue
+        path_value = str(row.get("path", "")).strip()
+        content_value = str(row.get("content", ""))
+        if not path_value or not content_value.strip():
+            continue
+        line_start = int(_coerce_optional_int(row.get("line_start")) or 1)
+        line_end = int(_coerce_optional_int(row.get("line_end")) or line_start)
+        line_start = max(1, line_start)
+        line_end = max(line_start, line_end)
+        minimal_snippets.append(
+            {
+                "path": path_value,
+                "line_start": int(line_start),
+                "line_end": int(line_end),
+                "symbol": str(row.get("symbol", "")).strip(),
+                "content": content_value,
+                "relevance_score": round(float(score_by_path.get(path_value, 0.0)), 6),
+            }
+        )
+
+    target_tests_raw = verify_plan.get("target_tests", [])
+    target_checks_raw = verify_plan.get("target_checks", [])
+    target_tests = (
+        [str(item) for item in target_tests_raw if str(item).strip()]
+        if isinstance(target_tests_raw, list)
+        else []
+    )
+    target_checks = (
+        [str(item) for item in target_checks_raw if str(item).strip()]
+        if isinstance(target_checks_raw, list)
+        else []
+    )
+    selection_evidence = (
+        dict(verify_plan.get("selection_evidence", {}))
+        if isinstance(verify_plan.get("selection_evidence", {}), dict)
+        else {}
+    )
+    warnings_raw = context_payload.get("warnings", [])
+    warnings = (
+        [str(item) for item in warnings_raw if str(item).strip()]
+        if isinstance(warnings_raw, list)
+        else []
+    )
+
+    receipt_context: JSONDict = {
+        "tool": "accel_context",
+        "status": str(context_payload.get("status", "ok")),
+        "out": str(context_payload.get("out", "")),
+        "out_meta": str(context_payload.get("out_meta", "")),
+        "constraint_mode": str(context_payload.get("constraint_mode", "warn")),
+    }
+    budget_effective = context_payload.get("budget_effective", {})
+    if isinstance(budget_effective, dict):
+        receipt_context["budget_effective"] = dict(budget_effective)
+
+    payload: JSONDict = {
+        "schema_version": 1,
+        "status": "ok",
+        "mode": "plan_and_gate",
+        "project": str(project_dir),
+        "task": task_text,
+        "affected_files": affected_files,
+        "minimal_snippets": minimal_snippets,
+        "impacted_tests": {
+            "target_tests": target_tests,
+            "target_checks": target_checks,
+            "selected_tests_count": int(
+                _coerce_optional_int(context_payload.get("selected_tests_count"))
+                or len(target_tests)
+            ),
+            "selected_checks_count": int(
+                _coerce_optional_int(context_payload.get("selected_checks_count"))
+                or len(target_checks)
+            ),
+            "selection_evidence": selection_evidence,
+        },
+        "receipts": {"accel_context": receipt_context},
+        "warnings": warnings[:12],
+        "semantic_cache_hit": bool(context_payload.get("semantic_cache_hit", False)),
+    }
+
+    if include_governance_flag:
+        payload["governance"] = {
+            "require_accel": bool(require_accel_flag),
+            "workspace_root": str(project_dir),
+            "mode_hint": mode_hint_text,
+            "workflow": [
+                "hp_start_run",
+                "hp_create_blueprint",
+                "hp_create_snapshot",
+                "hp_allow_implementation",
+            ],
+            "scope_files_hint": [
+                str(item.get("path", ""))
+                for item in affected_files
+                if str(item.get("path", "")).strip()
+            ],
+        }
+
+    if include_pack_flag:
+        payload["pack"] = pack
+
+    return payload
+
+
 def _tool_verify(
     *,
     project: str = ".",
@@ -3678,6 +3893,53 @@ def create_server() -> FastMCP:
             )
         except Exception as exc:
             _debug_log(f"accel_context failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_plan_and_gate",
+        description="One-shot planning output with affected files, bounded snippets, impacted tests, and governance hints.",
+    )
+    def accel_plan_and_gate(
+        task: str,
+        project: str = ".",
+        changed_files: Any = None,
+        hints: Any = None,
+        feedback_path: str | None = None,
+        out: str | None = None,
+        budget: Any = None,
+        strict_changed_files: Any = None,
+        semantic_cache: Any = None,
+        semantic_cache_mode: Any = None,
+        constraint_mode: Any = None,
+        max_affected_files: Any = 12,
+        max_snippets: Any = 24,
+        include_governance: Any = True,
+        require_accel: Any = True,
+        mode_hint: str = "S2 Standard",
+        include_pack: Any = False,
+    ) -> JSONDict:
+        try:
+            return _tool_plan_and_gate(
+                project=project,
+                task=task,
+                changed_files=changed_files,
+                hints=hints,
+                feedback_path=feedback_path,
+                out=out,
+                budget=budget,
+                strict_changed_files=strict_changed_files,
+                semantic_cache=semantic_cache,
+                semantic_cache_mode=semantic_cache_mode,
+                constraint_mode=constraint_mode,
+                max_affected_files=max_affected_files,
+                max_snippets=max_snippets,
+                include_governance=include_governance,
+                require_accel=require_accel,
+                mode_hint=mode_hint,
+                include_pack=include_pack,
+            )
+        except Exception as exc:
+            _debug_log(f"accel_plan_and_gate failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
 
     @server.tool(

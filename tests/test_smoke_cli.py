@@ -59,6 +59,11 @@ def test_cli_context_output_kept_under_harborpilot() -> None:
     run_id = uuid4().hex[:10]
     accel_home = _repo_root() / ".harborpilot" / "runtime" / "pytest" / f"context_{run_id}"
     requested_out = f"context_pack_pytest_{run_id}.json"
+    _run_cli_json(
+        ["index", "build", "--project", "."],
+        extra_env={"ACCEL_HOME": str(accel_home)},
+        timeout_seconds=300,
+    )
     payload = _run_cli_json(
         [
             "context",
