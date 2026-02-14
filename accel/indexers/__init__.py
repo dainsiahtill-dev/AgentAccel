@@ -128,7 +128,8 @@ def _emit_index_progress(
         payload["message"] = str(message)
     try:
         progress_callback(payload)
-    except Exception:
+    except (TypeError, ValueError):
+        # Progress callbacks may be partial or user-supplied; ignore gracefully
         return
 
 
@@ -227,7 +228,9 @@ def _base_indexes_exist(index_dir: Path) -> bool:
     )
 
 
-def _process_file_for_index(job: tuple[str, str, str, dict[str, Any]]) -> dict[str, Any]:
+def _process_file_for_index(
+    job: tuple[str, str, str, dict[str, Any]],
+) -> dict[str, Any]:
     abs_path_str, rel_path, lang, syntax_runtime_cfg = job
     file_path = Path(abs_path_str)
     try:
@@ -239,7 +242,8 @@ def _process_file_for_index(job: tuple[str, str, str, dict[str, Any]]) -> dict[s
         )
         dependencies = extract_dependencies(file_path, rel_path, lang)
         references = extract_references(file_path, rel_path, lang)
-    except Exception:
+    except (OSError, ValueError, TypeError):
+        # File read or parsing errors should not fail the entire batch
         symbols = []
         dependencies = []
         references = []

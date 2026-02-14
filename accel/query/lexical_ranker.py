@@ -201,19 +201,19 @@ def _extract_path_from_stored_doc(doc: Any) -> str:
                     raw = value.get(key)
                     if isinstance(raw, str):
                         return raw
-        except Exception:
+        except (AttributeError, TypeError, KeyError):
             pass
 
     candidate: Any = None
     if hasattr(doc, "to_dict"):
         try:
             candidate = doc.to_dict()
-        except Exception:
+        except (AttributeError, TypeError):
             candidate = None
     if candidate is None and hasattr(doc, "as_dict"):
         try:
             candidate = doc.as_dict()
-        except Exception:
+        except (AttributeError, TypeError):
             candidate = None
     if candidate is None and isinstance(doc, dict):
         candidate = doc
@@ -260,7 +260,7 @@ def _score_with_tantivy(
                 writer.add_document(tantivy.Document(**payload))
                 added = True
                 break
-            except Exception as exc:
+            except (ValueError, TypeError) as exc:
                 add_errors.append(exc.__class__.__name__)
         if not added:
             raise RuntimeError(f"tantivy_document_add_failed:{','.join(add_errors)}")
@@ -285,7 +285,7 @@ def _score_with_tantivy(
         doc_addr = item[1]
         try:
             stored = searcher.doc(doc_addr)
-        except Exception:
+        except (ValueError, TypeError):
             continue
         path = _extract_path_from_stored_doc(stored)
         if path:
@@ -424,13 +424,19 @@ def apply_lexical_ranking(
         )
         item["signals"] = signals
 
-    candidates.sort(key=lambda row: (-float(row.get("score", 0.0)), str(row.get("path", ""))))
+    candidates.sort(
+        key=lambda row: (-float(row.get("score", 0.0)), str(row.get("path", "")))
+    )
 
     updated: dict[str, dict[str, Any]] = {
-        str(item.get("path", "")): item for item in candidates if str(item.get("path", ""))
+        str(item.get("path", "")): item
+        for item in candidates
+        if str(item.get("path", ""))
     }
     merged = [updated.get(str(item.get("path", "")), dict(item)) for item in ranked]
-    merged.sort(key=lambda row: (-float(row.get("score", 0.0)), str(row.get("path", ""))))
+    merged.sort(
+        key=lambda row: (-float(row.get("score", 0.0)), str(row.get("path", "")))
+    )
 
     metadata["applied"] = True
     metadata["engine"] = engine

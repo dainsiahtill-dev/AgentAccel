@@ -410,7 +410,7 @@ def _start_command_tick_thread(
             if activity_probe is not None:
                 try:
                     last_activity = float(activity_probe())
-                except Exception:
+                except (TypeError, ValueError):
                     last_activity = started
             stall_detected = False
             stall_elapsed = 0.0

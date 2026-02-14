@@ -97,7 +97,7 @@ def _extract_symbol_name(node: Any, source_bytes: bytes) -> str:
     if callable(child_by_field_name):
         try:
             name_node = child_by_field_name("name")
-        except Exception:
+        except (AttributeError, TypeError):
             name_node = None
 
     if name_node is None:
@@ -155,7 +155,7 @@ def _load_tree_sitter_parser(lang: str, file_path: Path) -> Any | None:
     for module_name in ("tree_sitter_languages", "tree_sitter_language_pack"):
         try:
             module = import_module(module_name)
-        except Exception:
+        except ImportError:
             continue
         parser_getter = getattr(module, "get_parser", None)
         if not callable(parser_getter):
@@ -163,7 +163,7 @@ def _load_tree_sitter_parser(lang: str, file_path: Path) -> Any | None:
         for alias in aliases:
             try:
                 parser = parser_getter(alias)
-            except Exception:
+            except (ValueError, TypeError):
                 continue
             if parser is not None:
                 return parser
@@ -183,7 +183,7 @@ def _ts_symbols_from_tree_sitter(
     source_bytes = text.encode("utf-8", errors="replace")
     try:
         tree = parser.parse(source_bytes)
-    except Exception:
+    except (ValueError, TypeError):
         return []
 
     rows: list[dict[str, Any]] = []
@@ -259,39 +259,45 @@ def extract_symbols(
     try:
         file_size = file_path.stat().st_size
         if file_size > MAX_FILE_SIZE_BYTES:
-            return [{
+            return [
+                {
+                    "type": "error",
+                    "name": "file_too_large",
+                    "line_start": 1,
+                    "line_end": 1,
+                    "char_start": 0,
+                    "char_end": 0,
+                    "error": f"File too large: {file_size:,} bytes",
+                }
+            ]
+    except OSError:
+        return [
+            {
                 "type": "error",
-                "name": "file_too_large",
+                "name": "stat_error",
                 "line_start": 1,
                 "line_end": 1,
                 "char_start": 0,
                 "char_end": 0,
-                "error": f"File too large: {file_size:,} bytes"
-            }]
-    except OSError:
-        return [{
-            "type": "error", 
-            "name": "stat_error",
-            "line_start": 1,
-            "line_end": 1,
-            "char_start": 0,
-            "char_end": 0,
-            "error": "Cannot read file stats"
-        }]
-    
+                "error": "Cannot read file stats",
+            }
+        ]
+
     try:
         text = file_path.read_text(encoding="utf-8", errors="replace")
     except (OSError, UnicodeDecodeError) as exc:
-        return [{
-            "type": "error",
-            "name": "read_error",
-            "line_start": 1,
-            "line_end": 1,
-            "char_start": 0,
-            "char_end": 0,
-            "error": str(exc)
-        }]
-    
+        return [
+            {
+                "type": "error",
+                "name": "read_error",
+                "line_start": 1,
+                "line_end": 1,
+                "char_start": 0,
+                "char_end": 0,
+                "error": str(exc),
+            }
+        ]
+
     if lang == "python":
         try:
             tree = ast.parse(text, filename=rel_path)

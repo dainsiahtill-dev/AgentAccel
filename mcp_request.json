@@ -1,0 +1,21 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "hp_start_run",
+    "arguments": {
+      "goal": "Agent-Accel 简化改进：错误处理、测试增强、CLI体验优化",
+      "acceptance_criteria": [
+        "修复所有裸 except Exception，使用具体异常类型",
+        "测试覆盖从14个提升到30+个",
+        "添加配置验证和友好错误提示",
+        "改进 CLI 输出可读性",
+        "优化缓存和性能监控"
+      ],
+      "mode": "S2 Standard",
+      "require_accel": "auto",
+      "workspace_root": "X:\\MCPs\\agent-accel"
+    }
+  }
+}

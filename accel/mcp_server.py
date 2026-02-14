@@ -622,7 +622,7 @@ def _resolve_sync_timeout_defaults(project_dir: Path) -> tuple[str, float]:
         )
         if grace_value is not None:
             grace_seconds = grace_value
-    except Exception:
+    except (AttributeError, KeyError, TypeError):
         action = "poll"
         grace_seconds = 5.0
     grace_seconds = max(0.2, min(30.0, float(grace_seconds)))
@@ -652,7 +652,7 @@ def _resolve_sync_wait_seconds(
             configured_value = _coerce_optional_float(runtime_cfg.get(runtime_key))
             if configured_value is not None:
                 wait_seconds = configured_value
-        except Exception:
+        except (AttributeError, KeyError, TypeError):
             wait_seconds = float(fallback_seconds)
     resolved = _clamp_float(wait_seconds, 1.0, _SYNC_WAIT_SECONDS_MAX)
     cap_value = _coerce_optional_float(rpc_safe_cap_seconds)
@@ -681,7 +681,7 @@ def _resolve_context_sync_timeout_action(
             runtime_cfg.get("sync_context_timeout_action"),
             default="fallback_async",
         )
-    except Exception:
+    except (AttributeError, KeyError, TypeError):
         action = "fallback_async"
     return action
 
@@ -1441,7 +1441,7 @@ def _to_string_list(value: list[str] | str | None) -> list[str]:
             parsed = json.loads(text)
             if isinstance(parsed, list):
                 return [str(item).strip() for item in parsed if str(item).strip()]
-        except Exception:
+        except (json.JSONDecodeError, TypeError):
             pass
 
     normalized = text.replace("\r\n", ",").replace("\n", ",").replace(";", ",")
@@ -1757,7 +1757,7 @@ def _discover_changed_files_from_index_fallback(
 
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except Exception:
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return [], "manifest_parse_failed", 0.0
 
     indexed_files = [
@@ -1942,7 +1942,7 @@ def _collect_changed_files_state(
         rel_path = path_token
         try:
             rel_path = abs_path.resolve().relative_to(project_root).as_posix()
-        except Exception:
+        except (ValueError, OSError):
             rel_path = path_token.replace("\\", "/")
         row: dict[str, Any] = {"path": rel_path}
         if abs_path.exists():
@@ -3343,7 +3343,7 @@ def create_server() -> FastMCP:
                 parsed = json.loads(text)
                 if isinstance(parsed, dict):
                     return dict(parsed)
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 return {}
         return {}
 

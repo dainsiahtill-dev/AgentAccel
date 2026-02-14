@@ -29,7 +29,7 @@ def _estimate_with_tiktoken(text: str, *, model: str, encoding: str) -> tuple[in
     if model:
         try:
             encoder = tiktoken.encoding_for_model(model)
-        except Exception:
+        except (KeyError, ValueError, ImportError):
             encoder = None
     if encoder is None:
         encoder = tiktoken.get_encoding(encoding)
@@ -76,7 +76,9 @@ def estimate_tokens_for_text(
         backend_used = "heuristic"
 
     estimated_tokens = max(1, int(round(raw_tokens * calibration_value)))
-    chars_per_token = float(len(content)) / float(raw_tokens) if raw_tokens > 0 else fallback_cpt
+    chars_per_token = (
+        float(len(content)) / float(raw_tokens) if raw_tokens > 0 else fallback_cpt
+    )
 
     return {
         "estimated_tokens": int(estimated_tokens),

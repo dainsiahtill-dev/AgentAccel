@@ -8,7 +8,15 @@ from typing import Any
 from uuid import uuid4
 
 
-_SESSION_STATUSES = {"open", "active", "closed", "expired", "canceled", "failed", "succeeded"}
+_SESSION_STATUSES = {
+    "open",
+    "active",
+    "closed",
+    "expired",
+    "canceled",
+    "failed",
+    "succeeded",
+}
 _RECEIPT_STATUSES = {
     "queued",
     "running",
@@ -90,7 +98,7 @@ def _to_meta_json(meta: Any) -> str:
             parsed = json.loads(text)
             if isinstance(parsed, dict):
                 return json.dumps(parsed, ensure_ascii=False)
-        except Exception:
+        except (json.JSONDecodeError, TypeError):
             return "{}"
     return "{}"
 
@@ -233,7 +241,9 @@ class SessionReceiptStore:
         owner_value = str(owner).strip() or "codex"
         ttl_value = _normalize_ttl_seconds(ttl_seconds)
         now = _utc_now()
-        lease_until = (datetime.now(timezone.utc) + timedelta(seconds=ttl_value)).isoformat()
+        lease_until = (
+            datetime.now(timezone.utc) + timedelta(seconds=ttl_value)
+        ).isoformat()
         lease_id = f"lease_{uuid4().hex[:16]}"
         meta_json = _to_meta_json(meta if isinstance(meta, dict) else {})
 
@@ -315,7 +325,9 @@ class SessionReceiptStore:
         run_id_value = str(run_id).strip()
         actor_value = str(actor).strip() or "policy"
         if not session_id_value or not run_id_value:
-            raise SessionReceiptError("E_INVALID_STATE", "session_id and run_id are required")
+            raise SessionReceiptError(
+                "E_INVALID_STATE", "session_id and run_id are required"
+            )
         readonly_flag = _normalize_bool_flag(readonly)
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
@@ -354,7 +366,9 @@ class SessionReceiptStore:
                     (session_id_value,),
                 ).fetchone()
                 if row_after is None:
-                    raise SessionReceiptError("E_SESSION_NOT_FOUND", "session not found")
+                    raise SessionReceiptError(
+                        "E_SESSION_NOT_FOUND", "session not found"
+                    )
                 return self._session_row_as_payload(row_after)
 
             lease_owner = str(row["lease_owner"] or "")
@@ -366,7 +380,9 @@ class SessionReceiptStore:
                 and lease_until_dt is not None
                 and lease_until_dt > now_dt
             ):
-                raise SessionReceiptError("E_SESSION_CONFLICT", "lease is owned by another actor")
+                raise SessionReceiptError(
+                    "E_SESSION_CONFLICT", "lease is owned by another actor"
+                )
 
             ttl_value = _normalize_ttl_seconds(int(row["ttl_seconds"] or 1800))
             next_lease = (now_dt + timedelta(seconds=ttl_value)).isoformat()
@@ -377,7 +393,14 @@ class SessionReceiptStore:
                 SET status = ?, lease_owner = ?, lease_id = ?, lease_until = ?, updated_at = ?
                 WHERE session_id = ?
                 """,
-                ("active", actor_value, lease_id_new, next_lease, now, session_id_value),
+                (
+                    "active",
+                    actor_value,
+                    lease_id_new,
+                    next_lease,
+                    now,
+                    session_id_value,
+                ),
             )
             conn.commit()
             row_after = conn.execute(
@@ -394,7 +417,9 @@ class SessionReceiptStore:
         session_id_value = str(session_id).strip()
         lease_id_value = str(lease_id).strip()
         if not session_id_value or not lease_id_value:
-            raise SessionReceiptError("E_INVALID_STATE", "session_id and lease_id are required")
+            raise SessionReceiptError(
+                "E_INVALID_STATE", "session_id and lease_id are required"
+            )
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
         conn = self._connect()
@@ -437,7 +462,9 @@ class SessionReceiptStore:
         finally:
             conn.close()
 
-    def close_session(self, *, session_id: str, final_status: str = "closed") -> dict[str, Any]:
+    def close_session(
+        self, *, session_id: str, final_status: str = "closed"
+    ) -> dict[str, Any]:
         session_id_value = str(session_id).strip()
         if not session_id_value:
             raise SessionReceiptError("E_INVALID_STATE", "session_id is required")
@@ -512,7 +539,9 @@ class SessionReceiptStore:
                     (session_id_value,),
                 ).fetchone()
                 if session_row is None:
-                    raise SessionReceiptError("E_SESSION_NOT_FOUND", "session not found")
+                    raise SessionReceiptError(
+                        "E_SESSION_NOT_FOUND", "session not found"
+                    )
                 session_run_id = str(session_row["run_id"])
                 if run_id_value and session_run_id != run_id_value:
                     raise SessionReceiptError(
@@ -715,7 +744,9 @@ class SessionReceiptStore:
         finally:
             conn.close()
 
-    def recover_expired_running_receipts(self, *, terminal_status: str = "failed") -> int:
+    def recover_expired_running_receipts(
+        self, *, terminal_status: str = "failed"
+    ) -> int:
         terminal_status_value = _normalize_receipt_status(terminal_status)
         if terminal_status_value not in {"failed", "canceled"}:
             raise SessionReceiptError(
