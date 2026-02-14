@@ -306,12 +306,30 @@ Generate one-shot implementation planning output from the indexed context pipeli
 }
 ```
 
+**Parameters:**
+- `task` (required): planning task description
+- `project`: workspace path (default `"."`)
+- `changed_files` / `hints` / `budget` / `constraint_mode`: same narrowing knobs as `accel_context`
+- `max_affected_files` / `max_snippets`: output caps for file list and snippet windows
+- `include_governance` / `require_accel` / `mode_hint`: governance hint payload controls
+- `include_pack`: include raw context pack in response (default `false`)
+- `rpc_timeout_seconds`: worker timeout for underlying context job
+- `wait_for_completion`: bounded sync wait (default `true`)
+- `sync_wait_seconds`: override sync wait window
+- `sync_timeout_action`: `fallback_async` (default) or `cancel`
+- `context_job_id`: resume/poll an existing `context_*` job instead of starting a new one
+
 **Key response fields:**
 - `affected_files`: ranked file shortlist (`path`, `rank`, `score`, `reasons`)
 - `minimal_snippets`: bounded snippet windows only (no full-file payload)
 - `impacted_tests`: `target_tests`, `target_checks`, and selection evidence
 - `receipts.accel_context`: context artifact references reused by the planning call
 - `governance` (optional): HarborPilot chain hint (`hp_start_run -> hp_create_blueprint -> hp_create_snapshot -> hp_allow_implementation`)
+- `context_job_id`: reusable context job identifier for continuation calls
+
+**Timeout behavior:**
+- If the context build exceeds the sync wait window, response returns `status=running` + `context_job_id`.
+- Reuse `context_job_id` in a follow-up `accel_plan_and_gate` call to resume without restarting expensive context compilation.
 
 #### `accel_verify`
 

@@ -2713,6 +2713,7 @@ def _tool_plan_and_gate(
     require_accel: Any = True,
     mode_hint: str = "S2 Standard",
     include_pack: Any = False,
+    context_payload: JSONDict | None = None,
 ) -> JSONDict:
     project_dir = _normalize_project_dir(project)
     task_text = str(task or "").strip()
@@ -2728,22 +2729,27 @@ def _tool_plan_and_gate(
     include_pack_flag = _coerce_bool(include_pack, False)
     mode_hint_text = str(mode_hint or "S2 Standard").strip() or "S2 Standard"
 
-    context_payload = _tool_context(
-        project=str(project_dir),
-        task=task_text,
-        changed_files=changed_files,
-        hints=hints,
-        feedback_path=feedback_path,
-        out=out,
-        include_pack=True,
-        budget=budget,
-        strict_changed_files=strict_changed_files,
-        snippets_only=False,
-        include_metadata=True,
-        semantic_cache=semantic_cache,
-        semantic_cache_mode=semantic_cache_mode,
-        constraint_mode=constraint_mode,
+    context_payload_value = (
+        dict(context_payload)
+        if isinstance(context_payload, dict)
+        else _tool_context(
+            project=str(project_dir),
+            task=task_text,
+            changed_files=changed_files,
+            hints=hints,
+            feedback_path=feedback_path,
+            out=out,
+            include_pack=True,
+            budget=budget,
+            strict_changed_files=strict_changed_files,
+            snippets_only=False,
+            include_metadata=True,
+            semantic_cache=semantic_cache,
+            semantic_cache_mode=semantic_cache_mode,
+            constraint_mode=constraint_mode,
+        )
     )
+    context_payload = dict(context_payload_value)
     pack = (
         dict(context_payload.get("pack", {}))
         if isinstance(context_payload.get("pack", {}), dict)
@@ -3917,27 +3923,201 @@ def create_server() -> FastMCP:
         require_accel: Any = True,
         mode_hint: str = "S2 Standard",
         include_pack: Any = False,
+        context_job_id: str = "",
+        rpc_timeout_seconds: Any = None,
+        wait_for_completion: Any = True,
+        sync_wait_seconds: Any = None,
+        sync_timeout_action: Any = None,
+        session_id: str = "",
+        run_id: str = "",
     ) -> JSONDict:
         try:
-            return _tool_plan_and_gate(
-                project=project,
+            wait_flag = _coerce_bool(wait_for_completion, True)
+            project_dir = _normalize_project_dir(project)
+            timeout_action_value = _resolve_context_sync_timeout_action(
+                project_dir=project_dir,
+                override_value=sync_timeout_action,
+            )
+            context_job_id_value = str(context_job_id).strip()
+
+            def _build_plan_payload(context_result: JSONDict) -> JSONDict:
+                status_value = str(context_result.get("status", "")).strip().lower()
+                if status_value and status_value not in {"ok"}:
+                    passthrough = dict(context_result)
+                    passthrough["context_job_id"] = context_job_id_value or str(
+                        passthrough.get("job_id", "")
+                    ).strip()
+                    return passthrough
+                plan_payload = _tool_plan_and_gate(
+                    project=project,
+                    task=task,
+                    changed_files=changed_files,
+                    hints=hints,
+                    feedback_path=feedback_path,
+                    out=out,
+                    budget=budget,
+                    strict_changed_files=strict_changed_files,
+                    semantic_cache=semantic_cache,
+                    semantic_cache_mode=semantic_cache_mode,
+                    constraint_mode=constraint_mode,
+                    max_affected_files=max_affected_files,
+                    max_snippets=max_snippets,
+                    include_governance=include_governance,
+                    require_accel=require_accel,
+                    mode_hint=mode_hint,
+                    include_pack=include_pack,
+                    context_payload=context_result,
+                )
+                plan_payload["context_job_id"] = context_job_id_value or str(
+                    context_result.get("job_id", "")
+                ).strip()
+                return plan_payload
+
+            wait_seconds = _resolve_sync_wait_seconds(
+                project_dir=project_dir,
+                override_value=sync_wait_seconds,
+                runtime_key="sync_context_wait_seconds",
+                fallback_seconds=float(_effective_sync_context_wait_seconds()),
+                rpc_safe_cap_seconds=float(_SYNC_CONTEXT_WAIT_RPC_SAFE_SECONDS),
+            )
+
+            if context_job_id_value:
+                jm = JobManager()
+                job = jm.get_job(context_job_id_value)
+                if job is None or not context_job_id_value.lower().startswith("context_"):
+                    return {"error": "job_not_found", "job_id": context_job_id_value}
+                if job.state == JobState.COMPLETED and isinstance(job.result, dict):
+                    return _build_plan_payload(dict(job.result))
+                if not wait_flag:
+                    status_payload = _normalize_job_status_payload(job.to_status())
+                    return {
+                        "status": "running",
+                        "exit_code": 0,
+                        "timed_out": False,
+                        "job_id": context_job_id_value,
+                        "context_job_id": context_job_id_value,
+                        "message": "Context job is still running. Reuse context_job_id with wait_for_completion=true or poll accel_context_status/events.",
+                        "poll_interval_sec": 1.0,
+                        "state": status_payload.get("state", "pending"),
+                        "stage": status_payload.get("stage", "running"),
+                        "progress": status_payload.get("progress", 0.0),
+                        "elapsed_sec": status_payload.get("elapsed_sec", 0.0),
+                    }
+                result = _wait_for_context_job_result(
+                    context_job_id_value,
+                    max_wait_seconds=wait_seconds,
+                    poll_seconds=_effective_sync_context_poll_seconds(),
+                )
+                if result is not None:
+                    return _build_plan_payload(result)
+                if timeout_action_value == "cancel":
+                    cancel_requested = _finalize_job_cancel(
+                        job, reason="sync_timeout_auto_cancel"
+                    )
+                    if cancel_requested:
+                        _safe_update_receipt_status(
+                            project_dir=project_dir,
+                            job_id=context_job_id_value,
+                            status="canceled",
+                            error_code="E_INVALID_STATE",
+                            error_message="plan_and_gate sync wait timeout auto-cancel",
+                        )
+                    timeout_payload = _timeout_cancel_payload_context(
+                        job_id=context_job_id_value,
+                        wait_seconds=wait_seconds,
+                        cancel_requested=cancel_requested,
+                    )
+                    timeout_payload["context_job_id"] = context_job_id_value
+                    return timeout_payload
+                timeout_payload = _sync_context_timeout_payload(
+                    context_job_id_value,
+                    wait_seconds,
+                    timeout_action=timeout_action_value,
+                )
+                timeout_payload["context_job_id"] = context_job_id_value
+                timeout_payload["message"] = (
+                    str(timeout_payload.get("message", "")).strip()
+                    + " Reuse context_job_id in accel_plan_and_gate to resume."
+                ).strip()
+                return timeout_payload
+
+            job = _start_context_job(
                 task=task,
+                project=project,
                 changed_files=changed_files,
                 hints=hints,
                 feedback_path=feedback_path,
                 out=out,
+                include_pack=True,
                 budget=budget,
                 strict_changed_files=strict_changed_files,
+                snippets_only=False,
+                include_metadata=True,
                 semantic_cache=semantic_cache,
                 semantic_cache_mode=semantic_cache_mode,
                 constraint_mode=constraint_mode,
-                max_affected_files=max_affected_files,
-                max_snippets=max_snippets,
-                include_governance=include_governance,
-                require_accel=require_accel,
-                mode_hint=mode_hint,
-                include_pack=include_pack,
+                rpc_timeout_seconds=rpc_timeout_seconds,
+                session_id=str(session_id).strip(),
+                run_id=str(run_id).strip(),
             )
+            job_id = str(job.job_id).strip()
+            context_job_id_value = job_id
+            if not wait_flag:
+                status_payload = _normalize_job_status_payload(job.to_status())
+                return {
+                    "status": "started",
+                    "exit_code": 0,
+                    "timed_out": False,
+                    "job_id": job_id,
+                    "context_job_id": job_id,
+                    "message": "Plan-and-gate context started asynchronously. Reuse context_job_id in accel_plan_and_gate or poll accel_context_status/events.",
+                    "poll_interval_sec": 1.0,
+                    "state": status_payload.get("state", "pending"),
+                    "stage": status_payload.get("stage", "running"),
+                    "progress": status_payload.get("progress", 0.0),
+                    "elapsed_sec": status_payload.get("elapsed_sec", 0.0),
+                }
+            result = _wait_for_context_job_result(
+                job_id,
+                max_wait_seconds=wait_seconds,
+                poll_seconds=_effective_sync_context_poll_seconds(),
+            )
+            if result is not None:
+                return _build_plan_payload(result)
+            if timeout_action_value == "cancel":
+                jm = JobManager()
+                cancel_requested = False
+                job_for_cancel = jm.get_job(job_id)
+                if job_for_cancel is not None:
+                    cancel_requested = _finalize_job_cancel(
+                        job_for_cancel, reason="sync_timeout_auto_cancel"
+                    )
+                if cancel_requested:
+                    _safe_update_receipt_status(
+                        project_dir=project_dir,
+                        job_id=job_id,
+                        status="canceled",
+                        error_code="E_INVALID_STATE",
+                        error_message="plan_and_gate sync wait timeout auto-cancel",
+                    )
+                timeout_payload = _timeout_cancel_payload_context(
+                    job_id=job_id,
+                    wait_seconds=wait_seconds,
+                    cancel_requested=cancel_requested,
+                )
+                timeout_payload["context_job_id"] = job_id
+                return timeout_payload
+            timeout_payload = _sync_context_timeout_payload(
+                job_id,
+                wait_seconds,
+                timeout_action=timeout_action_value,
+            )
+            timeout_payload["context_job_id"] = job_id
+            timeout_payload["message"] = (
+                str(timeout_payload.get("message", "")).strip()
+                + " Reuse context_job_id in accel_plan_and_gate to resume."
+            ).strip()
+            return timeout_payload
         except Exception as exc:
             _debug_log(f"accel_plan_and_gate failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc

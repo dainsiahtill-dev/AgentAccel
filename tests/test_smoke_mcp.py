@@ -123,3 +123,49 @@ def test_tool_plan_and_gate_optional_sections(
 def test_tool_plan_and_gate_requires_task(tmp_path) -> None:
     with pytest.raises(ValueError, match="task is required"):
         mcp_server._tool_plan_and_gate(project=str(tmp_path), task="")
+
+
+def test_tool_plan_and_gate_uses_precomputed_context_payload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    fake_context_payload = {
+        "status": "ok",
+        "out": "context_pack.json",
+        "out_meta": "context_pack.meta.json",
+        "constraint_mode": "warn",
+        "semantic_cache_hit": False,
+        "warnings": [],
+        "selected_tests_count": 1,
+        "selected_checks_count": 1,
+        "verify_plan": {
+            "target_tests": ["tests/test_alpha.py"],
+            "target_checks": ["pytest -q tests/test_alpha.py"],
+            "selection_evidence": {"run_all": False},
+        },
+        "pack": {
+            "top_files": [{"path": "accel/mcp_server.py", "score": 0.9, "reasons": []}],
+            "snippets": [
+                {
+                    "path": "accel/mcp_server.py",
+                    "line_start": 1,
+                    "line_end": 3,
+                    "symbol": "x",
+                    "content": "pass",
+                }
+            ],
+        },
+    }
+
+    def _unexpected_context_call(**_: object) -> dict:
+        raise AssertionError("_tool_context should not be called")
+
+    monkeypatch.setattr(mcp_server, "_tool_context", _unexpected_context_call)
+
+    result = mcp_server._tool_plan_and_gate(
+        project=str(tmp_path),
+        task="reuse context result",
+        context_payload=fake_context_payload,
+    )
+
+    assert result["status"] == "ok"
+    assert result["affected_files"][0]["path"] == "accel/mcp_server.py"
