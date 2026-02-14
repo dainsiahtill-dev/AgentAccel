@@ -3444,9 +3444,14 @@ def create_server() -> FastMCP:
     def accel_receipt_get(job_id: str, project: str = ".") -> JSONDict:
         project_dir = _normalize_project_dir(project)
         store = _session_receipt_store(project_dir)
-        receipt = store.get_receipt(job_id=str(job_id).strip())
+        job_id_value = str(job_id).strip()
+        receipt = store.get_receipt(job_id=job_id_value)
         if receipt is None:
-            return {"error": "E_JOB_NOT_FOUND", "job_id": job_id}
+            return {
+                "error": "E_RECEIPT_NOT_FOUND",
+                "job_id": job_id_value,
+                "hint": "Use accel_receipt_list to find valid job_ids. Receipt job_id is different from context_job_id.",
+            }
         return receipt
 
     @server.tool(
@@ -5596,6 +5601,7 @@ def create_server() -> FastMCP:
                 index_dir=index_dir,
                 project_dir=project_dir,
                 paths=paths,
+                job_manager=JobManager(),
             )
 
             return result

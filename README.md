@@ -901,7 +901,7 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## 🙏 Acknowledgments
 
-- Built for [HarborPilot](https://github.com/harborpilot) AI agent framework
+- Built for [HarborPilot](https://github.com/dainsiahtill-dev/harborpilot) AI agent framework
 - Uses [FastMCP](https://github.com/jlowin/fastmcp) for MCP server implementation
 - Inspired by code intelligence tools in the AI coding ecosystem
 

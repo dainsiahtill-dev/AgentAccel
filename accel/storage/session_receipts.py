@@ -67,14 +67,20 @@ def _normalize_receipt_status(value: Any) -> str:
     return token
 
 
+_VALID_SESSION_FINAL_STATUSES = {"closed", "canceled", "failed", "succeeded"}
+
+
 def _normalize_session_final_status(value: Any) -> str:
     token = str(value or "").strip().lower()
     if token == "cancelled":
         token = "canceled"
-    if token not in {"closed", "canceled", "failed", "succeeded"}:
+    if not token:
+        token = "closed"
+    if token not in _VALID_SESSION_FINAL_STATUSES:
+        valid = ", ".join(sorted(_VALID_SESSION_FINAL_STATUSES))
         raise SessionReceiptError(
             "E_INVALID_STATE",
-            f"unsupported session final_status: {value}",
+            f"unsupported session final_status: {value!r}. valid values: {valid}",
         )
     return token
 

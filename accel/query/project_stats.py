@@ -3,10 +3,15 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from ..storage.index_cache import load_index_rows, count_jsonl_lines
-from ..verify.job_manager import JobManager, JobState
+
+
+class JobManagerProtocol(Protocol):
+    """Protocol for job manager to avoid direct dependency on verify module."""
+
+    def get_all_jobs(self) -> list[Any]: ...
 
 
 def _normalize_path(path: str) -> str:
@@ -113,6 +118,7 @@ def get_health_status(
     index_dir: Path,
     project_dir: Path,
     paths: dict[str, Path],
+    job_manager: JobManagerProtocol | None = None,
 ) -> dict[str, Any]:
     """Get system health status.
 
@@ -120,6 +126,7 @@ def get_health_status(
         index_dir: Path to the index directory.
         project_dir: Path to the project directory.
         paths: Project storage paths.
+        job_manager: Optional job manager instance for job statistics.
 
     Returns:
         Dict with health status information.
@@ -162,15 +169,19 @@ def get_health_status(
     except OSError:
         pass
 
-    jm = JobManager()
-    all_jobs = jm.get_all_jobs()
     active_jobs = 0
     pending_jobs = 0
-    for job in all_jobs:
-        if job.state == JobState.RUNNING:
-            active_jobs += 1
-        elif job.state == JobState.PENDING:
-            pending_jobs += 1
+    total_jobs = 0
+
+    if job_manager is not None:
+        all_jobs = job_manager.get_all_jobs()
+        total_jobs = len(all_jobs)
+        for job in all_jobs:
+            state = getattr(job, "state", "")
+            if state == "running":
+                active_jobs += 1
+            elif state == "pending":
+                pending_jobs += 1
 
     overall_status = "healthy"
     issues: list[str] = []
@@ -205,7 +216,7 @@ def get_health_status(
         "jobs": {
             "active": active_jobs,
             "pending": pending_jobs,
-            "total_tracked": len(all_jobs),
+            "total_tracked": total_jobs,
         },
         "paths": {
             "project": str(project_dir),
