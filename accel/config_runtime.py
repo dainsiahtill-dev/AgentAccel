@@ -346,6 +346,16 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
             os.environ["ACCEL_LEXICAL_RANKER_WEIGHT"],
             float(runtime.get("lexical_ranker_weight", 0.2)),
         )
+    if os.environ.get("ACCEL_RELATION_RANKING_ENABLED") is not None:
+        runtime["relation_ranking_enabled"] = _normalize_bool(
+            os.environ["ACCEL_RELATION_RANKING_ENABLED"],
+            bool(runtime.get("relation_ranking_enabled", True)),
+        )
+    if os.environ.get("ACCEL_RELATION_RANKING_WEIGHT"):
+        runtime["relation_ranking_weight"] = _normalize_ratio(
+            os.environ["ACCEL_RELATION_RANKING_WEIGHT"],
+            float(runtime.get("relation_ranking_weight", 1.0)),
+        )
     if os.environ.get("ACCEL_SEMANTIC_RANKER_ENABLED") is not None:
         runtime["semantic_ranker_enabled"] = _normalize_bool(
             os.environ["ACCEL_SEMANTIC_RANKER_ENABLED"],
@@ -400,6 +410,31 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         runtime["command_plan_cache_max_entries"] = _normalize_positive_int(
             os.environ["ACCEL_COMMAND_PLAN_CACHE_MAX_ENTRIES"],
             int(runtime.get("command_plan_cache_max_entries", 600)),
+        )
+    if os.environ.get("ACCEL_ADAPTIVE_BUDGET_ENABLED") is not None:
+        runtime["adaptive_budget_enabled"] = _normalize_bool(
+            os.environ["ACCEL_ADAPTIVE_BUDGET_ENABLED"],
+            bool(runtime.get("adaptive_budget_enabled", True)),
+        )
+    if os.environ.get("ACCEL_ADAPTIVE_BUDGET_MIN_FACTOR"):
+        runtime["adaptive_budget_min_factor"] = _normalize_positive_float(
+            os.environ["ACCEL_ADAPTIVE_BUDGET_MIN_FACTOR"],
+            float(runtime.get("adaptive_budget_min_factor", 0.65)),
+        )
+    if os.environ.get("ACCEL_ADAPTIVE_BUDGET_MAX_FACTOR"):
+        runtime["adaptive_budget_max_factor"] = _normalize_positive_float(
+            os.environ["ACCEL_ADAPTIVE_BUDGET_MAX_FACTOR"],
+            float(runtime.get("adaptive_budget_max_factor", 1.45)),
+        )
+    if os.environ.get("ACCEL_SNIPPET_DEDUP_STRUCTURAL_THRESHOLD"):
+        runtime["snippet_dedup_structural_threshold"] = _normalize_ratio(
+            os.environ["ACCEL_SNIPPET_DEDUP_STRUCTURAL_THRESHOLD"],
+            float(runtime.get("snippet_dedup_structural_threshold", 0.92)),
+        )
+    if os.environ.get("ACCEL_SNIPPET_DEDUP_SEMANTIC_THRESHOLD"):
+        runtime["snippet_dedup_semantic_threshold"] = _normalize_ratio(
+            os.environ["ACCEL_SNIPPET_DEDUP_SEMANTIC_THRESHOLD"],
+            float(runtime.get("snippet_dedup_semantic_threshold", 0.82)),
         )
     if os.environ.get("ACCEL_CONSTRAINT_MODE"):
         runtime["constraint_mode"] = _normalize_constraint_mode(
@@ -641,6 +676,14 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
         runtime.get("lexical_ranker_weight", 0.2),
         default_value=0.2,
     )
+    runtime["relation_ranking_enabled"] = _normalize_bool(
+        runtime.get("relation_ranking_enabled", True),
+        default_value=True,
+    )
+    runtime["relation_ranking_weight"] = _normalize_ratio(
+        runtime.get("relation_ranking_weight", 1.0),
+        default_value=1.0,
+    )
     runtime["semantic_ranker_enabled"] = _normalize_bool(
         runtime.get("semantic_ranker_enabled", False),
         default_value=False,
@@ -684,6 +727,30 @@ def _validate_effective_config(config: dict[str, Any]) -> None:
     runtime["command_plan_cache_max_entries"] = _normalize_positive_int(
         runtime.get("command_plan_cache_max_entries", 600),
         default_value=600,
+    )
+    runtime["adaptive_budget_enabled"] = _normalize_bool(
+        runtime.get("adaptive_budget_enabled", True),
+        default_value=True,
+    )
+    runtime["adaptive_budget_min_factor"] = _normalize_positive_float(
+        runtime.get("adaptive_budget_min_factor", 0.65),
+        default_value=0.65,
+    )
+    runtime["adaptive_budget_max_factor"] = _normalize_positive_float(
+        runtime.get("adaptive_budget_max_factor", 1.45),
+        default_value=1.45,
+    )
+    if runtime["adaptive_budget_max_factor"] < runtime["adaptive_budget_min_factor"]:
+        runtime["adaptive_budget_max_factor"] = float(
+            runtime["adaptive_budget_min_factor"]
+        )
+    runtime["snippet_dedup_structural_threshold"] = _normalize_ratio(
+        runtime.get("snippet_dedup_structural_threshold", 0.92),
+        default_value=0.92,
+    )
+    runtime["snippet_dedup_semantic_threshold"] = _normalize_ratio(
+        runtime.get("snippet_dedup_semantic_threshold", 0.82),
+        default_value=0.82,
     )
     runtime["constraint_mode"] = _normalize_constraint_mode(
         runtime.get("constraint_mode", "warn"),

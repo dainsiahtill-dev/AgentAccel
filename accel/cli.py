@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from .config import init_project, resolve_effective_config
+from .eval.runner import load_benchmark_suite, run_benchmark_suite
 from .harborpilot_paths import resolve_artifact_path
 from .semantic_ranker import probe_semantic_runtime
 from .indexers import build_or_update_indexes
@@ -192,6 +193,38 @@ def cmd_explain(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_benchmark(args: argparse.Namespace) -> int:
+    project_dir = _normalize_path(Path(args.project))
+    cfg = resolve_effective_config(project_dir)
+    suite_arg = Path(str(args.suite))
+    suite_path = (
+        _normalize_path(suite_arg)
+        if suite_arg.is_absolute()
+        else (project_dir / suite_arg).resolve()
+    )
+    suite = load_benchmark_suite(suite_path)
+    result = run_benchmark_suite(
+        project_dir=project_dir,
+        config=cfg,
+        suite=suite,
+        case_limit=args.limit,
+    )
+    if args.out:
+        out_path = resolve_artifact_path(
+            project_dir,
+            args.out,
+            default_subdir="logs",
+            default_name=f"benchmark_{uuid4().hex[:10]}.json",
+        )
+        out_path.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        result["out"] = str(out_path)
+    _print_output(result, args.output)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="accel",
@@ -263,6 +296,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     explain_parser.add_argument("--output", choices=["text", "json"], default="text")
     explain_parser.set_defaults(func=cmd_explain)
+
+    benchmark_parser = sub.add_parser(
+        "benchmark",
+        help="Run benchmark suite and compute retrieval/token metrics",
+    )
+    benchmark_parser.add_argument("--project", default=".", help="Project directory")
+    benchmark_parser.add_argument("--suite", required=True, help="Benchmark suite JSON path")
+    benchmark_parser.add_argument("--limit", type=int, default=None, help="Optional case limit")
+    benchmark_parser.add_argument("--out", help="Optional output file path")
+    benchmark_parser.add_argument("--output", choices=["text", "json"], default="text")
+    benchmark_parser.set_defaults(func=cmd_benchmark)
 
     return parser
 

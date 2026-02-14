@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from json import JSONDecodeError
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,12 +12,19 @@ from ..language_profiles import (
     resolve_enabled_verify_groups,
     resolve_extension_verify_group_map,
 )
+from .adaptive_budget import resolve_adaptive_budget
 from .lexical_ranker import apply_lexical_ranking
 from ..semantic_ranker import apply_semantic_ranking
 from .planner import build_candidate_files, normalize_task_tokens
 from .ranker import score_file
 from .rule_compressor import compress_snippet_content
 from .snippet_extractor import extract_snippet
+from .semantic_relations import (
+    build_semantic_relation_graph,
+    collect_seed_files,
+    expand_candidates_with_relations,
+    relation_graph_stats,
+)
 from ..storage.cache import project_paths
 from ..storage.index_cache import load_index_rows
 
@@ -58,6 +66,28 @@ def _estimate_source_bytes(
 def _snippet_fingerprint(content: str) -> str:
     normalized = " ".join(str(content).lower().split())
     return hashlib.sha1(normalized.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _structural_signature(content: str) -> str:
+    lowered = str(content or "").lower()
+    lowered = re.sub(r"[A-Za-z_][A-Za-z0-9_]*", "id", lowered)
+    lowered = re.sub(r"\d+", "num", lowered)
+    lowered = re.sub(r"\s+", " ", lowered).strip()
+    return lowered
+
+
+def _semantic_token_set(content: str) -> set[str]:
+    tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]{1,63}", str(content or "").lower())
+    return set(tokens[:400])
+
+
+def _jaccard_similarity(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    union = left | right
+    if not union:
+        return 0.0
+    return float(len(left & right)) / float(len(union))
 
 
 def _normalize_path_key(path: str) -> str:
@@ -231,13 +261,46 @@ def _rank_candidate_files(
     references_by_file: dict[str, list[dict[str, Any]]],
     deps_by_file: dict[str, list[dict[str, Any]]],
     tests_by_file: dict[str, list[dict[str, Any]]],
-) -> tuple[list[dict[str, Any]], list[str], dict[str, Any], dict[str, Any]]:
+) -> tuple[
+    list[dict[str, Any]],
+    list[str],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+]:
     task_tokens = normalize_task_tokens(task)
     changed_files = [item.replace("\\", "/") for item in changed_files]
+    runtime_cfg = dict(config.get("runtime", {}))
+    relation_enabled = bool(runtime_cfg.get("relation_ranking_enabled", True))
+    relation_weight = max(
+        0.0,
+        min(1.0, float(runtime_cfg.get("relation_ranking_weight", 1.0))),
+    )
+    indexed_files = [str(item) for item in list(manifest.get("indexed_files", []))]
     candidate_files = build_candidate_files(
-        list(manifest.get("indexed_files", [])),
+        indexed_files,
         changed_files=changed_files,
     )
+    relation_graph: dict[str, dict[str, float]] = {}
+    relation_seeds: list[str] = []
+    if relation_enabled:
+        relation_graph = build_semantic_relation_graph(
+            symbols_by_file=symbols_by_file,
+            references_by_file=references_by_file,
+            deps_by_file=deps_by_file,
+            indexed_files=indexed_files,
+        )
+        relation_seeds = collect_seed_files(
+            changed_files=changed_files,
+            hints=hints,
+            candidate_files=candidate_files,
+        )
+        candidate_files = expand_candidates_with_relations(
+            candidates=candidate_files,
+            relation_graph=relation_graph,
+            seed_files=relation_seeds,
+            changed_files=changed_files,
+        )
     changed_set = set(changed_files)
     ranked = [
         score_file(
@@ -248,6 +311,9 @@ def _rank_candidate_files(
             deps_by_file=deps_by_file,
             tests_by_file=tests_by_file,
             changed_file_set=changed_set,
+            relation_graph=relation_graph,
+            relation_seed_files=relation_seeds,
+            relation_weight=relation_weight,
         )
         for file_path in candidate_files
     ]
@@ -288,7 +354,14 @@ def _rank_candidate_files(
         tests_by_file=tests_by_file,
     )
     ranked = _apply_changed_scope_prioritization(ranked, changed_files)
-    return ranked, task_tokens, lexical_meta, semantic_meta
+    relation_meta = {
+        "enabled": bool(relation_enabled),
+        "weight": round(float(relation_weight), 4),
+        "seed_files": relation_seeds[:20],
+        "seed_count": int(len(relation_seeds)),
+        "graph": relation_graph_stats(relation_graph),
+    }
+    return ranked, task_tokens, lexical_meta, semantic_meta, relation_meta
 
 
 def explain_context_selection(
@@ -335,7 +408,7 @@ def explain_context_selection(
     deps_by_file = _group_by_file(deps_rows, "edge_from")
     tests_by_file = _group_by_file(ownership_rows, "owns_file")
 
-    ranked, task_tokens, lexical_meta, semantic_meta = _rank_candidate_files(
+    ranked, task_tokens, lexical_meta, semantic_meta, relation_meta = _rank_candidate_files(
         config=config,
         manifest=manifest,
         changed_files=changed_files,
@@ -382,6 +455,7 @@ def explain_context_selection(
         "threshold_score": round(float(threshold_score), 6),
         "lexical_ranking": lexical_meta,
         "semantic_ranking": semantic_meta,
+        "relation_ranking": relation_meta,
         "selected": selected,
         "alternatives": alternatives_enriched,
     }
@@ -431,22 +505,9 @@ def compile_context_pack(
     tests_by_file = _group_by_file(ownership_rows, "owns_file")
 
     context_cfg = dict(config.get("context", {}))
-    if budget_override:
-        context_cfg.update(budget_override)
+    runtime_cfg = dict(config.get("runtime", {}))
 
-    top_n_files = int(context_cfg.get("top_n_files", 12))
-    snippet_radius = int(context_cfg.get("snippet_radius", 40))
-    max_chars = int(context_cfg.get("max_chars", 24000))
-    max_snippets = int(context_cfg.get("max_snippets", 60))
-    effective_file_window = max(1, min(max_snippets, top_n_files))
-    per_snippet_max_chars = int(
-        context_cfg.get(
-            "per_snippet_max_chars",
-            max(800, min(6000, int((max_chars / effective_file_window) * 2))),
-        )
-    )
-
-    ranked, task_tokens, lexical_meta, semantic_meta = _rank_candidate_files(
+    ranked, task_tokens, lexical_meta, semantic_meta, relation_meta = _rank_candidate_files(
         config=config,
         manifest=manifest,
         changed_files=changed_files,
@@ -458,6 +519,32 @@ def compile_context_pack(
         tests_by_file=tests_by_file,
     )
 
+    effective_budget, budget_strategy = resolve_adaptive_budget(
+        context_cfg=context_cfg,
+        runtime_cfg=runtime_cfg,
+        task=task,
+        task_tokens=task_tokens,
+        changed_files=changed_files,
+        ranked_files=ranked,
+        budget_override=budget_override,
+    )
+    max_chars = int(effective_budget["max_chars"])
+    max_snippets = int(effective_budget["max_snippets"])
+    top_n_files = int(effective_budget["top_n_files"])
+    snippet_radius = int(effective_budget["snippet_radius"])
+    effective_file_window = max(1, min(max_snippets, top_n_files))
+    computed_per_snippet_max_chars = max(
+        800,
+        min(6000, int((max_chars / effective_file_window) * 2)),
+    )
+    per_snippet_max_chars = max(
+        800,
+        min(
+            6000,
+            int(context_cfg.get("per_snippet_max_chars", computed_per_snippet_max_chars)),
+        ),
+    )
+
     top_files = ranked[:top_n_files]
 
     snippets: list[dict[str, Any]] = []
@@ -465,9 +552,26 @@ def compile_context_pack(
     raw_snippet_chars = 0
     compacted_snippet_chars = 0
     deduped_snippet_count = 0
+    similarity_deduped_count = 0
     low_signal_dropped_count = 0
     seen_fingerprints: set[str] = set()
+    seen_structural_tokens: list[set[str]] = []
+    seen_semantic_tokens: list[set[str]] = []
     compression_rule_counts: dict[str, int] = {}
+    structural_threshold = max(
+        0.0,
+        min(
+            1.0,
+            float(runtime_cfg.get("snippet_dedup_structural_threshold", 0.92)),
+        ),
+    )
+    semantic_threshold = max(
+        0.0,
+        min(
+            1.0,
+            float(runtime_cfg.get("snippet_dedup_semantic_threshold", 0.82)),
+        ),
+    )
     for top_item in top_files:
         file_path = top_item["path"]
         symbol_rows = symbols_by_file.get(file_path, [])
@@ -506,7 +610,25 @@ def compile_context_pack(
         if fingerprint in seen_fingerprints:
             deduped_snippet_count += 1
             continue
+
+        structural_tokens = _semantic_token_set(_structural_signature(compact_content))
+        semantic_tokens = _semantic_token_set(compact_content)
+        is_similar = any(
+            _jaccard_similarity(structural_tokens, existing_structural)
+            >= structural_threshold
+            or _jaccard_similarity(semantic_tokens, existing_semantic)
+            >= semantic_threshold
+            for existing_structural, existing_semantic in zip(
+                seen_structural_tokens, seen_semantic_tokens
+            )
+        )
+        if is_similar:
+            similarity_deduped_count += 1
+            continue
+
         seen_fingerprints.add(fingerprint)
+        seen_structural_tokens.append(structural_tokens)
+        seen_semantic_tokens.append(semantic_tokens)
 
         raw_snippet_chars += len(raw_content)
         size = len(compact_content)
@@ -555,14 +677,19 @@ def compile_context_pack(
             "snippet_chars": compacted_snippet_chars,
             "snippet_saved_chars": max(0, raw_snippet_chars - compacted_snippet_chars),
             "snippet_deduped_count": deduped_snippet_count,
+            "snippet_similarity_deduped_count": similarity_deduped_count,
             "snippet_low_signal_dropped_count": low_signal_dropped_count,
+            "snippet_dedup_structural_threshold": structural_threshold,
+            "snippet_dedup_semantic_threshold": semantic_threshold,
             "compression_rules_applied": compression_rule_counts,
             "compression_saved_chars": max(
                 0, raw_snippet_chars - compacted_snippet_chars
             ),
             "drift_reason": "",
+            "budget_strategy": budget_strategy,
             "lexical_ranking": lexical_meta,
             "semantic_ranking": semantic_meta,
+            "relation_ranking": relation_meta,
         },
     }
     if previous_attempt_feedback:

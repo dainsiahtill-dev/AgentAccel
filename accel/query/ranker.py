@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .semantic_relations import compute_relation_proximity
+
 
 def _contains_any(text: str, tokens: list[str]) -> int:
     low = str(text or "").lower()
@@ -37,6 +39,9 @@ def score_file(
     deps_by_file: dict[str, list[dict[str, Any]]],
     tests_by_file: dict[str, list[dict[str, Any]]],
     changed_file_set: set[str],
+    relation_graph: dict[str, dict[str, float]] | None = None,
+    relation_seed_files: list[str] | None = None,
+    relation_weight: float = 1.0,
 ) -> dict[str, Any]:
     symbol_rows = symbols_by_file.get(file_path, [])
     ref_rows = references_by_file.get(file_path, [])
@@ -77,16 +82,30 @@ def score_file(
     structural_match = _normalized_hits(relation_hits, len(task_tokens), scale=1.2)
     syntax_unit_coverage = min(1.0, float(syntax_unit_rows) / 4.0)
     test_relevance = min(1.0, test_hits / 3.0)
+    relation_proximity_raw = (
+        compute_relation_proximity(
+            file_path=file_path,
+            relation_graph=relation_graph or {},
+            seed_files=relation_seed_files or [],
+        )
+        if relation_graph and relation_seed_files
+        else 0.0
+    )
+    relation_proximity = min(
+        1.0,
+        max(0.0, float(relation_proximity_raw) * max(0.0, min(1.0, float(relation_weight)))),
+    )
 
     changed_boost = 0.12 if file_path in changed_file_set else 0.0
     score = (
-        0.27 * symbol_match
-        + 0.22 * reference_proximity
-        + 0.14 * dependency_impact
-        + 0.12 * test_relevance
-        + 0.13 * signature_match
+        0.24 * symbol_match
+        + 0.20 * reference_proximity
+        + 0.13 * dependency_impact
+        + 0.10 * test_relevance
+        + 0.12 * signature_match
         + 0.08 * structural_match
-        + 0.04 * syntax_unit_coverage
+        + 0.03 * syntax_unit_coverage
+        + 0.10 * relation_proximity
         + changed_boost
     )
 
@@ -103,6 +122,8 @@ def score_file(
         reasons.append("structural_match")
     if syntax_unit_coverage > 0:
         reasons.append("syntax_unit_coverage")
+    if relation_proximity > 0:
+        reasons.append("relation_proximity")
     if test_relevance > 0:
         reasons.append("test_relevance")
     if file_path in changed_file_set:
@@ -121,6 +142,7 @@ def score_file(
             {"signal_name": "dependency_impact", "score": round(dependency_impact, 6)},
             {"signal_name": "structural_match", "score": round(structural_match, 6)},
             {"signal_name": "syntax_unit_coverage", "score": round(syntax_unit_coverage, 6)},
+            {"signal_name": "relation_proximity", "score": round(relation_proximity, 6)},
             {"signal_name": "test_relevance", "score": round(test_relevance, 6)},
             {"signal_name": "changed_boost", "score": round(changed_boost, 6)},
         ],
