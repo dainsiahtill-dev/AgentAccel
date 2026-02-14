@@ -108,10 +108,26 @@ def _build_doc_text(
     for row in symbol_rows[:50]:
         symbol = str(row.get("symbol", "")).strip()
         qn = str(row.get("qualified_name", "")).strip()
+        signature = str(row.get("signature", "")).strip()
+        scope = str(row.get("scope", "")).strip()
+        return_type = str(row.get("return_type", "")).strip()
+        kind = str(row.get("kind", "")).strip()
         if symbol:
             symbols.append(symbol)
         if qn:
             symbols.append(qn)
+        if signature:
+            symbols.append(signature)
+        if scope:
+            symbols.append(scope)
+        if return_type:
+            symbols.append(return_type)
+        if kind:
+            symbols.append(kind)
+        for key in ("parameters", "decorators", "bases", "relation_targets"):
+            value = row.get(key, [])
+            if isinstance(value, list):
+                symbols.extend(str(item).strip() for item in value[:12] if str(item).strip())
     for row in ref_rows[:50]:
         target = str(row.get("target_symbol", "")).strip()
         if target:

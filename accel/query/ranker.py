@@ -4,8 +4,29 @@ from typing import Any
 
 
 def _contains_any(text: str, tokens: list[str]) -> int:
-    low = text.lower()
+    low = str(text or "").lower()
     return sum(1 for token in tokens if token in low)
+
+
+def _collect_symbol_metadata(row: dict[str, Any]) -> str:
+    parts = [
+        str(row.get("symbol", "")),
+        str(row.get("qualified_name", "")),
+        str(row.get("signature", "")),
+        str(row.get("scope", "")),
+        str(row.get("return_type", "")),
+        str(row.get("kind", "")),
+    ]
+    for key in ("parameters", "decorators", "bases", "relation_targets", "attributes"):
+        value = row.get(key, [])
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value[:16])
+    return " ".join(item for item in parts if item)
+
+
+def _normalized_hits(hit_count: int, token_count: int, scale: float = 1.0) -> float:
+    denominator = max(1.0, float(token_count) * max(0.2, float(scale)))
+    return min(1.0, float(hit_count) / denominator)
 
 
 def score_file(
@@ -23,13 +44,25 @@ def score_file(
     test_rows = tests_by_file.get(file_path, [])
 
     symbol_hits = 0
+    signature_hits = 0
+    relation_hits = 0
+    syntax_unit_rows = 0
     for row in symbol_rows:
         symbol_hits += _contains_any(str(row.get("symbol", "")), task_tokens)
         symbol_hits += _contains_any(str(row.get("qualified_name", "")), task_tokens)
+        signature_hits += _contains_any(_collect_symbol_metadata(row), task_tokens)
+        relation_targets = row.get("relation_targets", [])
+        if isinstance(relation_targets, list):
+            relation_hits += _contains_any(" ".join(str(item) for item in relation_targets), task_tokens)
+        line_start = int(row.get("line_start", 1) or 1)
+        line_end = int(row.get("line_end", line_start) or line_start)
+        if line_end > line_start:
+            syntax_unit_rows += 1
 
     ref_hits = 0
     for row in ref_rows:
         ref_hits += _contains_any(str(row.get("target_symbol", "")), task_tokens)
+        ref_hits += _contains_any(str(row.get("source_symbol", "")), task_tokens)
 
     dep_hits = 0
     for row in dep_rows:
@@ -37,27 +70,39 @@ def score_file(
 
     test_hits = len(test_rows)
 
-    symbol_match = min(1.0, symbol_hits / max(1, len(task_tokens)))
-    reference_proximity = min(1.0, ref_hits / max(1, len(task_tokens)))
-    dependency_impact = min(1.0, dep_hits / max(1, len(task_tokens)))
+    symbol_match = _normalized_hits(symbol_hits, len(task_tokens), scale=1.0)
+    signature_match = _normalized_hits(signature_hits, len(task_tokens), scale=1.8)
+    reference_proximity = _normalized_hits(ref_hits, len(task_tokens), scale=1.0)
+    dependency_impact = _normalized_hits(dep_hits, len(task_tokens), scale=1.0)
+    structural_match = _normalized_hits(relation_hits, len(task_tokens), scale=1.2)
+    syntax_unit_coverage = min(1.0, float(syntax_unit_rows) / 4.0)
     test_relevance = min(1.0, test_hits / 3.0)
 
-    changed_boost = 0.15 if file_path in changed_file_set else 0.0
+    changed_boost = 0.12 if file_path in changed_file_set else 0.0
     score = (
-        0.35 * symbol_match
-        + 0.25 * reference_proximity
-        + 0.20 * dependency_impact
-        + 0.20 * test_relevance
+        0.27 * symbol_match
+        + 0.22 * reference_proximity
+        + 0.14 * dependency_impact
+        + 0.12 * test_relevance
+        + 0.13 * signature_match
+        + 0.08 * structural_match
+        + 0.04 * syntax_unit_coverage
         + changed_boost
     )
 
     reasons: list[str] = []
     if symbol_match > 0:
         reasons.append("symbol_match")
+    if signature_match > 0:
+        reasons.append("signature_match")
     if reference_proximity > 0:
         reasons.append("reference_proximity")
     if dependency_impact > 0:
         reasons.append("dependency_impact")
+    if structural_match > 0:
+        reasons.append("structural_match")
+    if syntax_unit_coverage > 0:
+        reasons.append("syntax_unit_coverage")
     if test_relevance > 0:
         reasons.append("test_relevance")
     if file_path in changed_file_set:
@@ -71,8 +116,11 @@ def score_file(
         "reasons": reasons,
         "signals": [
             {"signal_name": "symbol_match", "score": round(symbol_match, 6)},
+            {"signal_name": "signature_match", "score": round(signature_match, 6)},
             {"signal_name": "reference_proximity", "score": round(reference_proximity, 6)},
             {"signal_name": "dependency_impact", "score": round(dependency_impact, 6)},
+            {"signal_name": "structural_match", "score": round(structural_match, 6)},
+            {"signal_name": "syntax_unit_coverage", "score": round(syntax_unit_coverage, 6)},
             {"signal_name": "test_relevance", "score": round(test_relevance, 6)},
             {"signal_name": "changed_boost", "score": round(changed_boost, 6)},
         ],

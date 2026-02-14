@@ -1,0 +1,3 @@
+runtime:
+  syntax_parser_enabled: true
+  syntax_parser_provider: "tree_sitter"
