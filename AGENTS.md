@@ -177,9 +177,67 @@ The MCP server provides tool endpoints for AI agents. Run with:
 python -m accel.mcp_server
 ```
 
-Key tools: `accel_index_build`, `accel_context`, `accel_verify`
+### Core Tools
+
+| Tool | Description |
+|------|-------------|
+| `accel_index_build` | Build/rebuild project index |
+| `accel_index_update` | Incremental index update |
+| `accel_context` | Generate context pack for a task |
+| `accel_plan_and_gate` | Two-stage planning with governance |
+| `accel_verify` | Run verification commands |
+
+### Symbol Query Tools (High Token Efficiency)
+
+| Tool | Description | Token Savings |
+|------|-------------|---------------|
+| `accel_symbols_search` | Search symbols by name/type/language | ~93% vs `rg` |
+| `accel_symbols_get_details` | Get symbol details + relations | ~90% vs file read |
+| `accel_context_get_symbol_context` | Get precise symbol context with snippets | ~90% vs multi-file read |
+
+### Relation Analysis Tools
+
+| Tool | Description | Token Savings |
+|------|-------------|---------------|
+| `accel_relations_get_call_graph` | Build call graph from symbol/file | ~94% vs manual trace |
+| `accel_relations_get_inheritance_tree` | Get class hierarchy | ~95% vs AST parse |
+| `accel_relations_get_dependencies` | Get file import/export relations | ~90% vs `rg import` |
+
+### Analysis & Monitoring Tools
+
+| Tool | Description |
+|------|-------------|
+| `accel_analysis_detect_patterns` | Detect design patterns (singleton/factory/observer/decorator/builder) |
+| `accel_monitor_get_project_stats` | Get project statistics (files/symbols/languages) |
+| `accel_monitor_get_health` | Get system health status |
 
 See `accel/mcp_server.py` for implementation details.
+
+### Recommended Usage Patterns
+
+**Code Understanding Task**:
+```
+1. accel_monitor_get_health()                              # Verify index available
+2. accel_symbols_search(query="keyword", max_results=5)    # Locate symbols
+3. accel_symbols_get_details(symbol_name="...")            # Get details + relations
+4. accel_context_get_symbol_context(symbol_name="...", context_type="related")
+```
+
+**Architecture Analysis Task**:
+```
+1. accel_monitor_get_project_stats()                       # Project overview
+2. accel_relations_get_inheritance_tree()                  # Class hierarchy
+3. accel_relations_get_dependencies(direction="both")      # Module dependencies
+4. accel_relations_get_call_graph(file_path="...", depth=2) # Call flow
+5. accel_analysis_detect_patterns()                        # Design patterns
+```
+
+### Token Optimization Principles
+
+- **Index First**: Always ensure index is available (`accel_monitor_get_health`)
+- **Symbol > File**: Prefer `accel_symbols_*` over file-level queries
+- **MCP > Local**: Never use `rg`/`grep` before calling accel tools
+- **Budget Aware**: Respect `max_results`, `depth`, `max_files` limits
 
 ## License
 
