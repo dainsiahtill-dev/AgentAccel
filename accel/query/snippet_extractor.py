@@ -18,7 +18,7 @@ def extract_snippet(
     file_path = project_dir / rel_path
     if not file_path.exists():
         return None
-    
+
     # Check file size to prevent blocking on large files
     try:
         file_size = file_path.stat().st_size
@@ -35,7 +35,7 @@ def extract_snippet(
     except OSError:
         # If we can't stat the file, skip it
         return None
-    
+
     try:
         text = file_path.read_text(encoding="utf-8", errors="replace")
     except (OSError, UnicodeDecodeError) as exc:
@@ -48,7 +48,7 @@ def extract_snippet(
             "reason": "read_error",
             "content": f"[Error reading file: {exc}]",
         }
-    
+
     lines = text.splitlines()
     if not lines:
         return None
@@ -57,8 +57,17 @@ def extract_snippet(
     focus_symbol = ""
 
     if symbol_rows:
-        symbol_rows_sorted = sorted(symbol_rows, key=lambda row: int(row.get("line_start", 1)))
-        focus_line = int(symbol_rows_sorted[0].get("line_start", 1))
+
+        def safe_int(val, default=1):
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return default
+
+        symbol_rows_sorted = sorted(
+            symbol_rows, key=lambda row: safe_int(row.get("line_start"), 1)
+        )
+        focus_line = safe_int(symbol_rows_sorted[0].get("line_start"), 1)
         focus_symbol = str(symbol_rows_sorted[0].get("symbol", ""))
     else:
         lowered_tokens = [token.lower() for token in task_tokens]

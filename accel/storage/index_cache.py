@@ -16,6 +16,9 @@ INDEX_FILE_NAMES: dict[str, str] = {
 
 
 def base_path_for_kind(index_dir: Path, kind: str) -> Path:
+    if kind not in INDEX_FILE_NAMES:
+        allowed = ", ".join(sorted(INDEX_FILE_NAMES.keys()))
+        raise ValueError(f"Invalid kind: {kind!r}. Allowed: {allowed}")
     file_name = INDEX_FILE_NAMES[kind]
     return index_dir / file_name
 
@@ -69,7 +72,9 @@ def count_jsonl_lines(path: Path) -> int:
         return count
 
 
-def group_rows_by_key(rows: list[dict[str, Any]], key_field: str) -> dict[str, list[dict[str, Any]]]:
+def group_rows_by_key(
+    rows: list[dict[str, Any]], key_field: str
+) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         key = str(row.get(key_field, ""))
@@ -79,7 +84,9 @@ def group_rows_by_key(rows: list[dict[str, Any]], key_field: str) -> dict[str, l
     return grouped
 
 
-def flatten_grouped_rows(grouped: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+def flatten_grouped_rows(
+    grouped: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for key in sorted(grouped.keys()):
         rows.extend(grouped[key])
@@ -114,7 +121,9 @@ def load_grouped_rows_with_delta(
 
 
 def load_index_rows(index_dir: Path, kind: str, key_field: str) -> list[dict[str, Any]]:
-    grouped, _ = load_grouped_rows_with_delta(index_dir=index_dir, kind=kind, key_field=key_field)
+    grouped, _ = load_grouped_rows_with_delta(
+        index_dir=index_dir, kind=kind, key_field=key_field
+    )
     return flatten_grouped_rows(grouped)
 
 

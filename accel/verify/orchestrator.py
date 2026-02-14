@@ -403,7 +403,9 @@ def _build_verify_selection_evidence(
             continue
         baseline_commands.extend(verify_group_commands.get(group, []))
 
-    accelerated_commands = [command for command in commands if command not in baseline_commands]
+    accelerated_commands = [
+        command for command in commands if command not in baseline_commands
+    ]
     targeted_tests: list[str] = []
     seen_targets: set[str] = set()
     for command in commands:
@@ -692,8 +694,7 @@ def run_verify(
     )
     _append_line(
         log_path,
-        "SELECTION_EVIDENCE "
-        + json.dumps(selection_evidence, ensure_ascii=False),
+        "SELECTION_EVIDENCE " + json.dumps(selection_evidence, ensure_ascii=False),
     )
     _append_jsonl(
         jsonl_path,
@@ -1046,9 +1047,10 @@ def run_verify(
         if runnable_with_keys:
             # Add overall timeout detection for the entire parallel execution
             overall_start = time.perf_counter()
-            max_overall_timeout = (
-                per_command_timeout * len(runnable_with_keys) * 2
-            )  # generous buffer
+            max_overall_timeout = min(
+                per_command_timeout * len(runnable_with_keys) * 2,
+                3600.0,  # cap at 1 hour to prevent memory issues
+            )
 
             try:
                 with ThreadPoolExecutor(
@@ -1500,8 +1502,7 @@ def run_verify_with_callback(
     )
     _append_line(
         log_path,
-        "SELECTION_EVIDENCE "
-        + json.dumps(selection_evidence, ensure_ascii=False),
+        "SELECTION_EVIDENCE " + json.dumps(selection_evidence, ensure_ascii=False),
     )
     _append_jsonl(
         jsonl_path,
@@ -1633,7 +1634,9 @@ def run_verify_with_callback(
                         "fail_fast_skipped": False,
                     },
                 )
-                callback.on_skip(verify_job_id, effective_command, preflight_skip_reason)
+                callback.on_skip(
+                    verify_job_id, effective_command, preflight_skip_reason
+                )
                 continue
         binary = _command_binary(effective_command)
         if binary and shutil.which(binary) is None:
