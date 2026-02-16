@@ -8,6 +8,7 @@ from .symbol_query import (
 from .relation_query import get_inheritance_tree, get_file_dependencies
 from .project_stats import get_project_stats, get_health_status
 from .pattern_detector import detect_patterns
+from .content_search import search_code_content
 
 __all__ = [
     # context_compiler
@@ -26,4 +27,6 @@ __all__ = [
     "get_health_status",
     # pattern_detector
     "detect_patterns",
+    # content_search
+    "search_code_content",
 ]

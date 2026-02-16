@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 import accel.mcp_server as mcp_server
@@ -11,6 +13,37 @@ def test_create_mcp_server_smoke() -> None:
     assert server is not None
     assert SERVER_NAME == "agent-accel-mcp"
     assert hasattr(server, "run")
+
+
+def test_create_mcp_server_registers_accel_code_search() -> None:
+    server = create_server()
+    assert "accel_code_search" in server._tool_manager._tools
+
+
+def test_accel_code_search_tool_smoke(tmp_path) -> None:
+    file_path = tmp_path / "src" / "llm.py"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text('provider = "anthropic_compat"\n', encoding="utf-8")
+
+    async def _invoke() -> dict:
+        server = create_server()
+        result = await server._tool_manager.call_tool(
+            "accel_code_search",
+            {
+                "pattern": "anthropic_compat",
+                "project": str(tmp_path),
+                "file_patterns": ["*.py"],
+                "use_regex": False,
+                "max_results": 5,
+            },
+        )
+        return result.structured_content
+
+    payload = asyncio.run(_invoke())
+
+    assert payload["status"] == "ok"
+    assert payload["result_count"] == 1
+    assert payload["matches"][0]["file"] == "src/llm.py"
 
 
 def test_tool_plan_and_gate_shapes_and_limits(

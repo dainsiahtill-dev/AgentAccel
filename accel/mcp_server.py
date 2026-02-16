@@ -5355,6 +5355,7 @@ def create_server() -> FastMCP:
     from .query.relation_query import get_inheritance_tree, get_file_dependencies
     from .query.project_stats import get_project_stats, get_health_status
     from .query.pattern_detector import detect_patterns
+    from .query.content_search import search_code_content
 
     @server.tool(
         name="accel_context_get_symbol_context",
@@ -5403,6 +5404,63 @@ def create_server() -> FastMCP:
             return result
         except Exception as exc:
             _debug_log(f"accel_context_get_symbol_context failed: {exc!r}")
+            raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
+
+    @server.tool(
+        name="accel_code_search",
+        description="Search file contents using regex or literal patterns with path filters and bounded context snippets.",
+    )
+    def accel_code_search(
+        pattern: str,
+        project: str = ".",
+        file_patterns: Any = None,
+        include_patterns: Any = None,
+        exclude_patterns: Any = None,
+        context_lines: Any = 2,
+        max_results: Any = 50,
+        case_sensitive: Any = False,
+        use_regex: Any = True,
+    ) -> JSONDict:
+        """Search file contents for text/regex patterns with contextual snippets.
+
+        Args:
+            pattern: Regex or literal pattern to search.
+            project: Project directory path.
+            file_patterns: Optional file glob filters (for example, *.py, *.ts).
+            include_patterns: Optional include path globs.
+            exclude_patterns: Optional exclude path globs.
+            context_lines: Number of surrounding lines to include per match.
+            max_results: Maximum number of returned matches.
+            case_sensitive: Whether matching is case-sensitive.
+            use_regex: Whether pattern is treated as regex (false = literal).
+
+        Returns:
+            Dict with bounded search matches and metadata.
+        """
+        try:
+            project_dir = _normalize_project_dir(project)
+            file_pattern_list = _to_string_list(file_patterns)
+            include_pattern_list = _to_string_list(include_patterns)
+            exclude_pattern_list = _to_string_list(exclude_patterns)
+
+            context_lines_value = int(_coerce_optional_int(context_lines) or 2)
+            max_results_value = int(_coerce_optional_int(max_results) or 50)
+            case_sensitive_value = _coerce_bool(case_sensitive, False)
+            use_regex_value = _coerce_bool(use_regex, True)
+
+            return search_code_content(
+                project_dir=project_dir,
+                pattern=str(pattern or "").strip(),
+                file_patterns=file_pattern_list,
+                include_patterns=include_pattern_list,
+                exclude_patterns=exclude_pattern_list,
+                context_lines=context_lines_value,
+                max_results=max_results_value,
+                case_sensitive=case_sensitive_value,
+                use_regex=use_regex_value,
+            )
+        except Exception as exc:
+            _debug_log(f"accel_code_search failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
 
     @server.tool(
