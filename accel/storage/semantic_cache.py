@@ -9,8 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+from ..utils import utc_now as _utc_now  # noqa: E302
 
 
 def _utc_text(value: datetime) -> str:

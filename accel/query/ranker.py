@@ -4,6 +4,31 @@ from typing import Any
 
 from .semantic_relations import compute_relation_proximity
 
+# ---------------------------------------------------------------------------
+# Scoring signal weights — must sum to ~1.0 (excluding changed_boost).
+# Adjust these to tune file relevance ranking.
+# ---------------------------------------------------------------------------
+WEIGHT_SYMBOL_MATCH = 0.24
+WEIGHT_REFERENCE_PROXIMITY = 0.20
+WEIGHT_DEPENDENCY_IMPACT = 0.13
+WEIGHT_SIGNATURE_MATCH = 0.12
+WEIGHT_RELATION_PROXIMITY = 0.10
+WEIGHT_TEST_RELEVANCE = 0.10
+WEIGHT_STRUCTURAL_MATCH = 0.08
+WEIGHT_SYNTAX_UNIT_COVERAGE = 0.03
+CHANGED_FILE_BOOST = 0.12
+
+# Normalization scales for hit-count → 0-1 conversion.
+SCALE_SYMBOL = 1.0
+SCALE_SIGNATURE = 1.8
+SCALE_REFERENCE = 1.0
+SCALE_DEPENDENCY = 1.0
+SCALE_STRUCTURAL = 1.2
+
+# Thresholds for coverage normalization.
+SYNTAX_UNIT_COVERAGE_DIVISOR = 4.0
+TEST_RELEVANCE_DIVISOR = 3.0
+
 
 def _contains_any(text: str, tokens: list[str]) -> int:
     low = str(text or "").lower()

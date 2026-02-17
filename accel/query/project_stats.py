@@ -14,8 +14,7 @@ class JobManagerProtocol(Protocol):
     def get_all_jobs(self) -> list[Any]: ...
 
 
-def _normalize_path(path: str) -> str:
-    return str(path or "").replace("\\", "/").strip()
+from ..utils import normalize_path_str as _normalize_path  # noqa: E302
 
 
 def _get_file_mtime_iso(path: Path) -> str | None:

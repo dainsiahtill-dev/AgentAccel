@@ -43,8 +43,7 @@ from ..storage.cache import ensure_project_dirs, project_paths
 from .callbacks import VerifyProgressCallback, VerifyStage, NoOpCallback
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from ..utils import utc_now_iso as _utc_now  # noqa: E302
 
 
 def _command_binary(command: str) -> str:

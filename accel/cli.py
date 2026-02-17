@@ -24,12 +24,7 @@ from .storage.cache import ensure_project_dirs, project_paths
 from .verify.orchestrator import run_verify
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _normalize_path(path: Path) -> Path:
-    return Path(os.path.abspath(str(path)))
+from .utils import normalize_path_abs as _normalize_path, utc_now_iso as _utc_now
 
 
 def _print_output(payload: dict[str, Any], output: str) -> None:

@@ -8,8 +8,7 @@ from ..storage.index_cache import load_index_rows
 _VALID_PATTERN_TYPES = {"singleton", "factory", "observer", "decorator", "builder"}
 
 
-def _normalize_path(path: str) -> str:
-    return str(path or "").replace("\\", "/").strip()
+from ..utils import normalize_path_str as _normalize_path  # noqa: E302
 
 
 def detect_patterns(

@@ -133,8 +133,7 @@ def _emit_index_progress(
         return
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from ..utils import utc_now_iso as _utc_now  # noqa: E302
 
 
 def _normalize_rel_path(path: Path) -> str:

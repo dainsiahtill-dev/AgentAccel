@@ -19,11 +19,7 @@ from ..storage.semantic_cache import (
 from .sharding_workspace import _apply_workspace_routing
 
 
-def _normalize_path(value: str) -> str:
-    normalized = value.replace("\\", "/").strip()
-    if normalized.startswith("./"):
-        normalized = normalized[2:]
-    return normalized
+from ..utils import normalize_path_str as _normalize_path  # noqa: E302
 
 
 def _project_rel_path(path: str, project_dir: Path) -> str:

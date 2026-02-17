@@ -7,11 +7,7 @@ from pathlib import Path
 from typing import Any
 
 
-def _normalize_path(value: str) -> str:
-    normalized = value.replace("\\", "/").strip()
-    if normalized.startswith("./"):
-        normalized = normalized[2:]
-    return normalized
+from ..utils import normalize_path_str as _normalize_path  # noqa: E302
 
 
 def _parse_command_tokens(command: str) -> list[str]:

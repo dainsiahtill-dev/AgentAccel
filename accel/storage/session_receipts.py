@@ -29,8 +29,7 @@ _RECEIPT_STATUSES = {
 _RECOVERABLE_RECEIPT_STATUSES = {"queued", "running"}
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from ..utils import utc_now_iso as _utc_now  # noqa: E302
 
 
 def _parse_utc(value: str) -> datetime | None:

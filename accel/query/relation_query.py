@@ -7,8 +7,7 @@ from typing import Any
 from ..storage.index_cache import load_index_rows
 
 
-def _normalize_path(path: str) -> str:
-    return str(path or "").replace("\\", "/").strip()
+from ..utils import normalize_path_str as _normalize_path  # noqa: E302
 
 
 def get_inheritance_tree(

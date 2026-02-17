@@ -13,8 +13,7 @@ _VALID_LANGUAGES = {"python", "typescript", "javascript", "jsx", "tsx"}
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
-def _normalize_path(path: str) -> str:
-    return str(path or "").replace("\\", "/").strip()
+from ..utils import normalize_path_str as _normalize_path  # noqa: E302
 
 
 def _match_score(query: str, symbol: str, qualified_name: str) -> float:

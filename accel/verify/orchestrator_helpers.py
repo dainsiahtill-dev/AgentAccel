@@ -13,8 +13,7 @@ from typing import Any, Callable
 from .callbacks import VerifyProgressCallback
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from ..utils import utc_now_iso as _utc_now  # noqa: E302
 
 
 def _normalize_positive_int(value: Any, default_value: int) -> int:
