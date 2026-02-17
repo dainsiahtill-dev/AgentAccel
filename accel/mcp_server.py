@@ -23,7 +23,7 @@ from .indexers import build_or_update_indexes
 from .query.context_compiler import compile_context_pack, write_context_pack
 from .query.planner import normalize_task_tokens
 from .storage.cache import ensure_project_dirs, project_paths
-from .storage.session_receipts import SessionReceiptError, SessionReceiptStore
+from .storage.session_receipts import SessionReceiptStore
 from .storage.semantic_cache import (
     SemanticCacheStore,
     context_changed_fingerprint,
@@ -3331,111 +3331,6 @@ def create_server() -> FastMCP:
         except Exception as exc:
             _debug_log(f"accel_index_cancel failed: {exc!r}")
             raise RuntimeError(f"{TOOL_ERROR_EXECUTION_FAILED}: {exc}") from exc
-
-    def _coerce_meta_dict(meta: Any) -> dict[str, Any]:
-        if isinstance(meta, dict):
-            return dict(meta)
-        text = str(meta or "").strip()
-        if not text:
-            return {}
-        if text.startswith("{") and text.endswith("}"):
-            try:
-                parsed = json.loads(text)
-                if isinstance(parsed, dict):
-                    return dict(parsed)
-            except (json.JSONDecodeError, TypeError):
-                return {}
-        return {}
-
-    @server.tool(
-        name="accel_session_open",
-        description="Open or refresh a logical shared session for cross-process coordination.",
-    )
-    def accel_session_open(
-        run_id: str,
-        session_id: str = "",
-        owner: str = "codex",
-        ttl_seconds: int = 1800,
-        meta: Any = None,
-        project: str = ".",
-    ) -> JSONDict:
-        project_dir = _normalize_project_dir(project)
-        store = _session_receipt_store(project_dir)
-        try:
-            session = store.open_session(
-                run_id=str(run_id).strip(),
-                session_id=str(session_id).strip(),
-                owner=str(owner).strip() or "codex",
-                ttl_seconds=int(_coerce_optional_int(ttl_seconds) or 1800),
-                meta=_coerce_meta_dict(meta),
-            )
-            return {"status": "ok", **session}
-        except SessionReceiptError as exc:
-            return {"error": exc.code, "message": str(exc)}
-
-    @server.tool(
-        name="accel_session_attach",
-        description="Attach to an existing logical session with optional readonly mode.",
-    )
-    def accel_session_attach(
-        session_id: str,
-        run_id: str,
-        actor: str = "policy",
-        readonly: Any = True,
-        project: str = ".",
-    ) -> JSONDict:
-        project_dir = _normalize_project_dir(project)
-        store = _session_receipt_store(project_dir)
-        try:
-            session = store.attach_session(
-                session_id=str(session_id).strip(),
-                run_id=str(run_id).strip(),
-                actor=str(actor).strip() or "policy",
-                readonly=_coerce_bool(readonly, True),
-            )
-            return {"status": "ok", **session}
-        except SessionReceiptError as exc:
-            return {"error": exc.code, "message": str(exc)}
-
-    @server.tool(
-        name="accel_session_heartbeat",
-        description="Renew session lease for the active writable session holder.",
-    )
-    def accel_session_heartbeat(
-        session_id: str,
-        lease_id: str,
-        project: str = ".",
-    ) -> JSONDict:
-        project_dir = _normalize_project_dir(project)
-        store = _session_receipt_store(project_dir)
-        try:
-            session = store.heartbeat_session(
-                session_id=str(session_id).strip(),
-                lease_id=str(lease_id).strip(),
-            )
-            return {"status": "ok", **session}
-        except SessionReceiptError as exc:
-            return {"error": exc.code, "message": str(exc)}
-
-    @server.tool(
-        name="accel_session_close",
-        description="Close session and release lease.",
-    )
-    def accel_session_close(
-        session_id: str,
-        final_status: str = "closed",
-        project: str = ".",
-    ) -> JSONDict:
-        project_dir = _normalize_project_dir(project)
-        store = _session_receipt_store(project_dir)
-        try:
-            session = store.close_session(
-                session_id=str(session_id).strip(),
-                final_status=str(final_status).strip().lower(),
-            )
-            return {"status": "ok", **session}
-        except SessionReceiptError as exc:
-            return {"error": exc.code, "message": str(exc)}
 
     @server.tool(
         name="accel_receipt_get",
